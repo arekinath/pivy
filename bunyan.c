@@ -28,6 +28,10 @@ static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
 static enum bunyan_log_level bunyan_min_level = INFO;
 
+#if defined(__APPLE__)
+typedef unsigned int uint;
+#endif
+
 struct bunyan_timers {
 	struct timer_block *bt_first;
 	struct timer_block *bt_last;

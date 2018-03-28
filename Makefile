@@ -46,13 +46,12 @@ PIVTOOL_HEADERS=		\
 	bunyan.h		\
 	debug.h
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)
-PIVTOOL_CFLAGS=		-I/usr/include/PCSC \
-			-I/usr/include/openssl-1.0 \
+PIVTOOL_CFLAGS=		-I/System/Library/Frameworks/PCSC.framework/Headers/ \
+			-I$(PWD)/libressl/include \
 			-fstack-protector-all \
 			-O2 -g
 PIVTOOL_LDFLAGS=	-m64
-PIVTOOL_LIBS=		-L/usr/lib/openssl-1.0 \
-			-lcrypto -lpcsclite -lbsd
+PIVTOOL_LIBS=		-framework PCSC $(PWD)/libressl/crypto/.libs/libcrypto.a
 
 piv-tool :		CFLAGS=		$(PIVTOOL_CFLAGS)
 piv-tool :		LIBS+=		$(PIVTOOL_LIBS)
@@ -75,13 +74,12 @@ AGENT_HEADERS=		\
 	bunyan.h		\
 	debug.h
 AGENT_OBJS=		$(AGENT_SOURCES:%.c=%.o)
-AGENT_CFLAGS=		-I/usr/include/PCSC \
-			-I/usr/include/openssl-1.0 \
+AGENT_CFLAGS=		-I/System/Library/Frameworks/PCSC.framework/Headers/ \
+			-I$(PWD)/libressl/include \
 			-fstack-protector-all \
 			-O2 -g
 AGENT_LDFLAGS=		-m64
-AGENT_LIBS=		-L/usr/lib/openssl-1.0 \
-			-lcrypto -lpcsclite -lbsd
+AGENT_LIBS=		-framework PCSC $(PWD)/libressl/crypto/.libs/libcrypto.a
 
 piv-agent :		CFLAGS=		$(AGENT_CFLAGS)
 piv-agent :		LIBS+=		$(AGENT_LIBS)
