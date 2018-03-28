@@ -222,11 +222,16 @@ agent_piv_open(void)
 		}
 	}
 
-	if ((rc = piv_select(selk)) != 0 ||
-	    (rc = piv_read_all_certs(selk)) != 0) {
+	if ((rc = piv_select(selk)) != 0) {
 		piv_txn_end(selk);
 		return (rc);
 	}
+	rc = piv_read_all_certs(selk);
+	if (rc != 0 && rc != ENOENT && rc != ENOTSUP) {
+		piv_txn_end(selk);
+		return (rc);
+	}
+	piv_txn_end(selk);
 	return (0);
 }
 
