@@ -92,6 +92,7 @@
 static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
 static SCARDCONTEXT ctx;
+static struct timespec last_update;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static char *pin = NULL;
@@ -311,6 +312,7 @@ process_request_identities(SocketEntry *e)
 	struct sshkey *k;
 	struct piv_slot *slot;
 	char comment[256];
+	struct timespec now;
 	int r, n, i;
 
 	if ((msg = sshbuf_new()) == NULL)
@@ -321,7 +323,11 @@ process_request_identities(SocketEntry *e)
 		send_status(e, 0);
 		return;
 	}
-	piv_read_all_certs(selk);
+	VERIFY0(clock_gettime(CLOCK_MONOTONIC, &now));
+	if (now.tv_sec - last_update.tv_sec > 300) {
+		last_update = now;
+		piv_read_all_certs(selk);
+	}
 	piv_txn_end(selk);
 
 	n = 0;
