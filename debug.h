@@ -7,7 +7,9 @@ extern "C" {
 
 #include <stdint.h>
 
+#if !defined(__APPLE__)
 typedef uint64_t uintmax_t;
+#endif
 
 /*
  * ASSERT(ex) causes a panic or debugger entry if expression ex is not
