@@ -154,7 +154,9 @@ sdebug(const char *fmt, ...)
 	if (ssh_dbglevel > TRACE)
 		return;
 	va_start(args, fmt);
+	fprintf(stderr, "TRACE: ");
 	vfprintf(stderr, fmt, args);
+	fprintf(stderr, "\n");
 	va_end(args);
 }
 static void
@@ -164,7 +166,9 @@ verbose(const char *fmt, ...)
 	if (ssh_dbglevel > DEBUG)
 		return;
 	va_start(args, fmt);
+	fprintf(stderr, "DEBUG: ");
 	vfprintf(stderr, fmt, args);
+	fprintf(stderr, "\n");
 	va_end(args);
 }
 static void
@@ -174,7 +178,9 @@ error(const char *fmt, ...)
 	if (ssh_dbglevel > ERROR)
 		return;
 	va_start(args, fmt);
+	fprintf(stderr, "ERROR: ");
 	vfprintf(stderr, fmt, args);
+	fprintf(stderr, "\n");
 	va_end(args);
 }
 static void
@@ -182,7 +188,9 @@ fatal(const char *fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
+	fprintf(stderr, "FATAL: ");
 	vfprintf(stderr, fmt, args);
+	fprintf(stderr, "\n");
 	va_end(args);
 	exit(1);
 }

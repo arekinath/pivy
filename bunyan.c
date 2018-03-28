@@ -321,11 +321,11 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 			break;
 		case BNY_UINT:
 			uintval = va_arg(ap, uint);
-			printf_buf("%s = %u", propname, uintval);
+			printf_buf("%s = 0x%x", propname, uintval);
 			break;
 		case BNY_UINT64:
 			uint64val = va_arg(ap, uint64_t);
-			printf_buf("%s = %llu", propname, uint64val);
+			printf_buf("%s = 0x%llx", propname, uint64val);
 			break;
 		case BNY_SIZE_T:
 			szval = va_arg(ap, size_t);
