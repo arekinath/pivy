@@ -44,6 +44,7 @@
 
 boolean_t debug = B_FALSE;
 static boolean_t parseable = B_FALSE;
+static const char *cn = NULL;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static uint min_retries = 1;
@@ -716,10 +717,15 @@ cmd_generate(uint slotid, enum piv_alg alg)
 
 	subj = X509_NAME_new();
 	assert(subj != NULL);
-	assert(X509_NAME_add_entry_by_NID(subj, NID_title, MBSTRING_ASC,
-	    (unsigned char *)name, -1, -1, 0) == 1);
-	assert(X509_NAME_add_entry_by_NID(subj, NID_commonName, MBSTRING_ASC,
-	    (unsigned char *)guid, -1, -1, 0) == 1);
+	if (cn == NULL) {
+		assert(X509_NAME_add_entry_by_NID(subj, NID_title, MBSTRING_ASC,
+		    (unsigned char *)name, -1, -1, 0) == 1);
+		assert(X509_NAME_add_entry_by_NID(subj, NID_commonName,
+		    MBSTRING_ASC, (unsigned char *)guid, -1, -1, 0) == 1);
+	} else {
+		assert(X509_NAME_add_entry_by_NID(subj, NID_commonName,
+		    MBSTRING_ASC, (unsigned char *)cn, -1, -1, 0) == 1);
+	}
 	/*assert(X509_NAME_add_entry_by_NID(subj, NID_organizationalUnitName,
 	    MBSTRING_ASC, (unsigned char *)"tokens", -1, -1, 0) == 1);
 	assert(X509_NAME_add_entry_by_NID(subj, NID_organizationName,
@@ -1340,7 +1346,9 @@ usage(void)
 	    "                         instead of a slot\n"
 	    "  --force|-f             Attempt to unlock with PIN code even\n"
 	    "                         if there is only 1 attempt left before\n"
-	    "                         card lock\n");
+	    "                         card lock\n"
+	    "  -n <cn>                Used with 'generate', to customise the\n"
+	    "                         CN= attribute used on certificate\n");
 	exit(3);
 }
 
@@ -1398,7 +1406,7 @@ check_select_key(void)
     "f(force)"
     "K:(admin-key)"
     "k:(key)";*/
-const char *optstring = "dpg:P:a:fK:k:";
+const char *optstring = "dpg:P:a:fK:k:n:";
 
 int
 main(int argc, char *argv[])
@@ -1437,6 +1445,9 @@ main(int argc, char *argv[])
 				    "24 bytes in length (you gave %d)\n", len);
 				exit(3);
 			}
+			break;
+		case 'n':
+			cn = optarg;
 			break;
 		case 'f':
 			min_retries = 0;
