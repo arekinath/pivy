@@ -231,7 +231,6 @@ agent_piv_open(void)
 		piv_txn_end(selk);
 		return (rc);
 	}
-	piv_txn_end(selk);
 	return (0);
 }
 
