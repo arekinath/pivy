@@ -262,10 +262,16 @@ process_request_identities(SocketEntry *e)
 	struct sshbuf *msg;
 	struct sshkey *k;
 	struct piv_slot *slot;
+	char comment[256];
 	int r, n, i;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
+
+	VERIFY0(piv_txn_begin(selk));
+	VERIFY0(piv_select(selk));
+	piv_read_all_certs(selk);
+	piv_txn_end(selk);
 
 	n = 0;
 	for (i = 0x9A; i < 0x9F; ++i) {
@@ -283,8 +289,11 @@ process_request_identities(SocketEntry *e)
 		slot = piv_get_slot(selk, i);
 		if (slot == NULL)
 			continue;
+		comment[0] = 0;
+		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
+		    i, slot->ps_subj);
 		if ((r = sshkey_puts(slot->ps_pubkey, msg)) != 0 ||
-		    (r = sshbuf_put_cstring(msg, slot->ps_subj)) != 0) {
+		    (r = sshbuf_put_cstring(msg, comment)) != 0) {
 			error("%s: put key/comment: %s", __func__,
 			    ssh_err(r));
 			continue;

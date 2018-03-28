@@ -720,10 +720,10 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	    (unsigned char *)name, -1, -1, 0) == 1);
 	assert(X509_NAME_add_entry_by_NID(subj, NID_commonName, MBSTRING_ASC,
 	    (unsigned char *)guid, -1, -1, 0) == 1);
-	assert(X509_NAME_add_entry_by_NID(subj, NID_organizationalUnitName,
+	/*assert(X509_NAME_add_entry_by_NID(subj, NID_organizationalUnitName,
 	    MBSTRING_ASC, (unsigned char *)"tokens", -1, -1, 0) == 1);
 	assert(X509_NAME_add_entry_by_NID(subj, NID_organizationName,
-	    MBSTRING_ASC, (unsigned char *)"triton", -1, -1, 0) == 1);
+	    MBSTRING_ASC, (unsigned char *)"triton", -1, -1, 0) == 1);*/
 	assert(X509_set_subject_name(cert, subj) == 1);
 	assert(X509_set_issuer_name(cert, subj) == 1);
 
@@ -1389,7 +1389,7 @@ check_select_key(void)
 	}
 }
 
-const char *optstring =
+/*const char *optstring =
     "d(debug)"
     "p(parseable)"
     "g:(guid)"
@@ -1397,7 +1397,8 @@ const char *optstring =
     "a:(algorithm)"
     "f(force)"
     "K:(admin-key)"
-    "k:(key)";
+    "k:(key)";*/
+const char *optstring = "dpg:P:a:fK:k:";
 
 int
 main(int argc, char *argv[])
