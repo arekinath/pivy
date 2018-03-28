@@ -186,6 +186,50 @@ fatal(const char *fmt, ...)
 	exit(1);
 }
 
+static int
+agent_piv_open(void)
+{
+	struct piv_token *t;
+	int rc;
+
+	if (selk == NULL || (rc = piv_txn_begin(selk)) != 0) {
+		selk = NULL;
+		if (ks != NULL)
+			piv_release(ks);
+		ks = piv_enumerate(ctx);
+
+		for (t = ks; t != NULL; t = t->pt_next) {
+			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
+				if (selk == NULL) {
+					selk = t;
+				} else {
+					fprintf(stderr, "error: GUID prefix "
+					    "specified is not unique\n");
+					selk = NULL;
+					return (ENOENT);
+				}
+			}
+		}
+		if (selk == NULL) {
+			fprintf(stderr, "warning: no PIV card present "
+			    "matching given GUID\n");
+			return (ENOENT);
+		}
+
+		if ((rc = piv_txn_begin(selk)) != 0) {
+			fprintf(stderr, "warning: failed to open PIV token\n");
+			return (rc);
+		}
+	}
+
+	if ((rc = piv_select(selk)) != 0 ||
+	    (rc = piv_read_all_certs(selk)) != 0) {
+		piv_txn_end(selk);
+		return (rc);
+	}
+	return (0);
+}
+
 static void
 close_socket(SocketEntry *e)
 {
@@ -268,8 +312,11 @@ process_request_identities(SocketEntry *e)
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
 
-	VERIFY0(piv_txn_begin(selk));
-	VERIFY0(piv_select(selk));
+	if (agent_piv_open() != 0) {
+		sshbuf_free(msg);
+		send_status(e, 0);
+		return;
+	}
 	piv_read_all_certs(selk);
 	piv_txn_end(selk);
 
@@ -346,8 +393,9 @@ process_sign_request2(SocketEntry *e)
 		goto send;
 	}
 
-	VERIFY0(piv_txn_begin(selk));
-	VERIFY0(piv_select(selk));
+	if (agent_piv_open() != 0) {
+		goto send;
+	}
 	if (pin != NULL) {
 		r = piv_verify_pin(selk, pin, &retries);
 		if (r == EACCES) {
@@ -1157,11 +1205,10 @@ skip:
 	ks = piv_enumerate(ctx);
 
 	if (ks == NULL) {
-		fprintf(stderr, "error: no PIV cards present\n");
-		exit(1);
+		fprintf(stderr, "warning: no PIV cards present\n");
 	}
 
-	if (guid != NULL) {
+	{
 		struct piv_token *t;
 		for (t = ks; t != NULL; t = t->pt_next) {
 			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
@@ -1175,16 +1222,17 @@ skip:
 			}
 		}
 		if (selk == NULL) {
-			fprintf(stderr, "error: no PIV card present "
+			fprintf(stderr, "warning: no PIV card present "
 			    "matching given GUID\n");
-			exit(3);
 		}
 	}
 
-	VERIFY0(piv_txn_begin(selk));
-	VERIFY0(piv_select(selk));
-	piv_read_all_certs(selk);
-	piv_txn_end(selk);
+	if (selk != NULL) {
+		VERIFY0(piv_txn_begin(selk));
+		VERIFY0(piv_select(selk));
+		piv_read_all_certs(selk);
+		piv_txn_end(selk);
+	}
 
 	while (1) {
 		prepare_poll(&pfd, &npfd, &timeout);
