@@ -146,15 +146,18 @@ static long lifetime = 0;
 
 static int fingerprint_hash = SSH_FP_HASH_DEFAULT;
 
+extern void bunyan_timestamp(char *, size_t);
 static int ssh_dbglevel = WARN;
 static void
 sdebug(const char *fmt, ...)
 {
 	va_list args;
+	char ts[128];
 	if (ssh_dbglevel > TRACE)
 		return;
+	bunyan_timestamp(ts, sizeof (ts));
 	va_start(args, fmt);
-	fprintf(stderr, "TRACE: ");
+	fprintf(stderr, "[%s] TRACE: ", ts);
 	vfprintf(stderr, fmt, args);
 	fprintf(stderr, "\n");
 	va_end(args);
@@ -163,10 +166,12 @@ static void
 verbose(const char *fmt, ...)
 {
 	va_list args;
+	char ts[128];
 	if (ssh_dbglevel > DEBUG)
 		return;
+	bunyan_timestamp(ts, sizeof (ts));
 	va_start(args, fmt);
-	fprintf(stderr, "DEBUG: ");
+	fprintf(stderr, "[%s] DEBUG: ", ts);
 	vfprintf(stderr, fmt, args);
 	fprintf(stderr, "\n");
 	va_end(args);
@@ -175,10 +180,12 @@ static void
 error(const char *fmt, ...)
 {
 	va_list args;
+	char ts[128];
 	if (ssh_dbglevel > ERROR)
 		return;
+	bunyan_timestamp(ts, sizeof (ts));
 	va_start(args, fmt);
-	fprintf(stderr, "ERROR: ");
+	fprintf(stderr, "[%s] ERROR: ", ts);
 	vfprintf(stderr, fmt, args);
 	fprintf(stderr, "\n");
 	va_end(args);
@@ -187,8 +194,10 @@ static void
 fatal(const char *fmt, ...)
 {
 	va_list args;
+	char ts[128];
 	va_start(args, fmt);
-	fprintf(stderr, "FATAL: ");
+	bunyan_timestamp(ts, sizeof (ts));
+	fprintf(stderr, "[%s] FATAL: ", ts);
 	vfprintf(stderr, fmt, args);
 	fprintf(stderr, "\n");
 	va_end(args);
@@ -212,35 +221,49 @@ agent_piv_open(void)
 				if (selk == NULL) {
 					selk = t;
 				} else {
-					fprintf(stderr, "error: GUID prefix "
-					    "specified is not unique\n");
+					bunyan_log(ERROR, "GUID prefix is not "
+					    "unique; refusing to open token",
+					    NULL);
 					selk = NULL;
 					return (ENOENT);
 				}
 			}
 		}
 		if (selk == NULL) {
-			fprintf(stderr, "warning: no PIV card present "
-			    "matching given GUID\n");
+			bunyan_log(WARN, "PIV card with given GUID is not "
+			    "present on the system", NULL);
+			if (pin != NULL)
+				explicit_bzero(pin, strlen(pin));
+			free(pin);
+			pin = NULL;
 			return (ENOENT);
 		}
 
 		if ((rc = piv_txn_begin(selk)) != 0) {
-			fprintf(stderr, "warning: failed to open PIV token\n");
+			bunyan_log(WARN, "PIV card could not be opened",
+			    "piv_txn_begin_rc", BNY_INT, rc, NULL);
 			return (rc);
 		}
-	}
 
-	if ((rc = piv_select(selk)) != 0) {
-		piv_txn_end(selk);
-		return (rc);
+		if ((rc = piv_select(selk)) != 0) {
+			piv_txn_end(selk);
+			return (rc);
+		}
+	} else {
+		if ((rc = piv_select(selk)) != 0) {
+			piv_txn_end(selk);
+			return (rc);
+		}
+		rc = piv_read_all_certs(selk);
+		if (rc != 0 && rc != ENOENT && rc != ENOTSUP) {
+			bunyan_log(WARN, "piv_read_all_certs returned error",
+			    "code", BNY_INT, rc,
+			    "error", BNY_STRING, strerror(rc), NULL);
+			piv_txn_end(selk);
+			return (rc);
+		}
+		return (0);
 	}
-	rc = piv_read_all_certs(selk);
-	if (rc != 0 && rc != ENOENT && rc != ENOTSUP) {
-		piv_txn_end(selk);
-		return (rc);
-	}
-	return (0);
 }
 
 static void
@@ -496,6 +519,25 @@ process_sign_request2(SocketEntry *e)
 	free(signature);
 }
 
+static int
+valid_pin(const char *pin)
+{
+	int i;
+	if (strlen(pin) < 6 || strlen(pin) > 8) {
+		bunyan_log(WARN, "invalid PIN: must be 6-8 digits",
+		     "length", BNY_UINT, (uint)strlen(pin), NULL);
+		return (0);
+	}
+	for (i = 0; pin[i] != 0; ++i) {
+		if (!(pin[i] >= '0' && pin[i] <= '9')) {
+			bunyan_log(WARN, "invalid PIN: contains invalid "
+			    "characters", "pin", BNY_STRING, pin, NULL);
+			return (0);
+		}
+	}
+	return (1);
+}
+
 static void
 process_lock_agent(SocketEntry *e, int lock)
 {
@@ -511,41 +553,52 @@ process_lock_agent(SocketEntry *e, int lock)
 	 */
 	if ((r = sshbuf_get_cstring(e->request, &passwd, &pwlen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	VERIFY(passwd != NULL);
 
 	if (lock) {
-		explicit_bzero(pin, strlen(pin));
+		if (pin != NULL)
+			explicit_bzero(pin, strlen(pin));
 		free(pin);
 		pin = NULL;
 		explicit_bzero(passwd, pwlen);
 		free(passwd);
 		send_status(e, 1);
 	} else {
-		VERIFY0(piv_txn_begin(selk));
-		VERIFY0(piv_select(selk));
+		if (!valid_pin(passwd)) {
+			send_status(e, 0);
+			return;
+		}
+
+		if (agent_piv_open() != 0) {
+			send_status(e, 0);
+			return;
+		}
 		r = piv_verify_pin(selk, passwd, &retries);
 		piv_txn_end(selk);
 
 		if (r == 0) {
 			pin = passwd;
 			send_status(e, 1);
+			return;
 		}
 
 		if (r == EACCES) {
 			if (retries == 0) {
-				fprintf(stderr,
-				    "error: token is locked due to too "
-				    "many invalid PIN code entries\n");
+				bunyan_log(ERROR, "token is locked due to "
+				    "too many invalid PIN retries", NULL);
 			} else {
-				fprintf(stderr, "error: invalid PIN code "
-				    "(%d attempts remaining)\n", retries);
+				bunyan_log(ERROR, "invalid PIN code",
+				    "attempts_left", BNY_INT, retries, NULL);
 			}
 		} else if (r == EAGAIN) {
-			fprintf(stderr, "error: insufficient retries "
-			    "remaining (%d left)\n", retries);
+			bunyan_log(ERROR, "insufficient retries remaining; "
+			    "didn't attempt PIN to avoid locking card",
+			    "attempts_left", BNY_INT, retries, NULL);
 		}
+		bunyan_log(ERROR, "piv_verify_pin returned error",
+		    "code", BNY_INT, r, "error", BNY_STRING, strerror(r), NULL);
 		send_status(e, 0);
 	}
-	
 }
 
 /* dispatch incoming messages */

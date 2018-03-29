@@ -228,7 +228,7 @@ bunyan_get_hostname(void)
 {
 }
 
-static void
+void
 bunyan_timestamp(char *buffer, size_t len)
 {
 	struct timespec ts;
