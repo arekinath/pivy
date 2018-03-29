@@ -539,6 +539,16 @@ valid_pin(const char *pin)
 }
 
 static void
+process_remove_all_identities(SocketEntry *e)
+{
+	if (pin != NULL)
+		explicit_bzero(pin, strlen(pin));
+	free(pin);
+	pin = NULL;
+	send_status(e, 1);
+}
+
+static void
 process_lock_agent(SocketEntry *e, int lock)
 {
 	int r, success = 0, delay;
@@ -655,6 +665,9 @@ process_message(u_int socknum)
 		break;
 	case SSH2_AGENTC_REQUEST_IDENTITIES:
 		process_request_identities(e);
+		break;
+	case SSH2_AGENTC_REMOVE_ALL_IDENTITIES:
+		process_remove_all_identities(e);
 		break;
 	default:
 		/* Unknown message.  Respond with failure. */
