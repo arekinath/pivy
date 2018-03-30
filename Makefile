@@ -2,16 +2,21 @@ all: piv-tool piv-agent
 
 SYSTEM	= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
-	PCSC_CFLAGS	= -I/usr/include/PCSC
-	PCSC_LIBS	= -lpcsclite
-	CRYPTO_CFLAGS	= -I/usr/include/openssl-1.0
-	CRYPTO_LIBS	= -L /usr/lib/openssl-1.0 -lcrypto -lbsd
+	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
+	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
+	PKG_CONFIG_PATH := /usr/lib/openssl-1.0/pkgconfig:$(PKG_CONFIG_PATH)
+	CRYPTO_CFLAGS	= $(shell pkg-config --cflags libcrypto)
+	CRYPTO_LIBS	= $(shell pkg-config --libs libcrypto)
+	SYSTEM_CFLAGS	=
+	SYSTEM_LIBS	= -lbsd
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
 	PCSC_LIBS	= -framework PCSC
 	CRYPTO_CFLAGS	= -I$(PWD)/libressl/include
 	CRYPTO_LIBS	= $(PWD)/libressl/crypto/.libs/libcrypto.a
+	SYSTEM_CFLAGS	=
+	SYSTEM_LIBS	=
 endif
 
 _ED25519_SOURCES=		\
@@ -62,11 +67,13 @@ PIVTOOL_HEADERS=		\
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)
 PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O2 -g
+			-O2 -g -m64
 PIVTOOL_LDFLAGS=	-m64
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
-			$(CRYPTO_LIBS)
+			$(CRYPTO_LIBS) \
+			$(SYSTEM_LIBS)
 
 piv-tool :		CFLAGS=		$(PIVTOOL_CFLAGS)
 piv-tool :		LIBS+=		$(PIVTOOL_LIBS)
@@ -91,11 +98,13 @@ AGENT_HEADERS=		\
 AGENT_OBJS=		$(AGENT_SOURCES:%.c=%.o)
 AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O2 -g
+			-O2 -g -m64
 AGENT_LDFLAGS=		-m64
 AGENT_LIBS=		$(PCSC_LIBS) \
-			$(CRYPTO_LIBS)
+			$(CRYPTO_LIBS) \
+			$(SYSTEM_LIBS)
 
 piv-agent :		CFLAGS=		$(AGENT_CFLAGS)
 piv-agent :		LIBS+=		$(AGENT_LIBS)
