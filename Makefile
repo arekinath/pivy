@@ -5,8 +5,8 @@ ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
 	PKG_CONFIG_PATH := /usr/lib/openssl-1.0/pkgconfig:$(PKG_CONFIG_PATH)
-	CRYPTO_CFLAGS	= $(shell pkg-config --cflags libcrypto)
-	CRYPTO_LIBS	= $(shell pkg-config --libs libcrypto)
+	CRYPTO_CFLAGS	= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags libcrypto)
+	CRYPTO_LIBS	= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs libcrypto)
 	SYSTEM_CFLAGS	=
 	SYSTEM_LIBS	= -lbsd
 endif
