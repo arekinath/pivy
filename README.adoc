@@ -101,11 +101,11 @@ itself works fine for `piv-agent`.
 The commands you will need to run are as follows:
 
 -----
-# Clone the piv-agent repository
+## Clone the piv-agent repository
 $ git clone https://github.com/arekinath/piv-agent
 $ cd piv-agent
 
-# Build libressl-portable
+## Build libressl-portable
 $ git clone https://github.com/libressl-portable/portable ./libressl
 $ cd libressl
 $ git checkout v2.7.1
@@ -113,7 +113,7 @@ $ ./autogen.sh
 $ ./configure --enable-static
 $ make
 
-# Now build piv-agent
+## Now build piv-agent
 $ cd ..
 $ make
 $ ./piv-tool list
