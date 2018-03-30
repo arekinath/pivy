@@ -34,6 +34,8 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 
+#include <zlib.h>
+
 #include "libssh/sshkey.h"
 #include "libssh/sshbuf.h"
 #include "libssh/digest.h"
@@ -46,6 +48,8 @@
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"
+
+#define	PIV_MAX_CERT_LEN		16384
 
 const uint8_t AID_PIV[] = {
 	0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00
@@ -148,6 +152,7 @@ piv_read_chuid(struct piv_token *pk)
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag;
+	size_t used;
 
 	assert(pk->pt_intxn == B_TRUE);
 
@@ -160,7 +165,7 @@ piv_read_chuid(struct piv_token *pk)
 	apdu->a_cmd.b_data = tlv_buf(tlv);
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
-	rv = piv_apdu_transceive(pk, apdu);
+	rv = piv_apdu_transceive_chain(pk, apdu);
 	if (rv != 0) {
 		bunyan_log(WARN, "piv_read_chuid.transceive_apdu failed",
 		    "reader", BNY_STRING, pk->pt_rdrname,
@@ -173,7 +178,9 @@ piv_read_chuid(struct piv_token *pk)
 
 	tlv_free(tlv);
 
-	if (apdu->a_sw == SW_NO_ERROR) {
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
 		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
@@ -189,21 +196,40 @@ piv_read_chuid(struct piv_token *pk)
 		}
 		while (!tlv_at_end(tlv)) {
 			tag = tlv_read_tag(tlv);
+			bunyan_log(TRACE, "reading chuid tlv tag", "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0xEE:	/* Buffer Length */
+			case 0xFE:	/* CRC */
 			case 0x30:	/* FASC-N */
 			case 0x32:	/* Org Ident */
 			case 0x33:	/* DUNS */
+				tlv_skip(tlv);
+				break;
 			case 0x35:	/* Expiration date */
+				used = tlv_read(tlv, pk->pt_expiry, 0,
+				    sizeof (pk->pt_expiry));
+				if (used < sizeof (pk->pt_expiry)) {
+					bunyan_log(DEBUG, "card expiry date "
+					    "is short", "len", BNY_UINT, used,
+					    NULL);
+				}
+				tlv_end(tlv);
+				break;
 			case 0x36:	/* Cardholder UUID */
+				tlv_read(tlv, pk->pt_chuuid, 0,
+				    sizeof (pk->pt_chuuid));
+				tlv_end(tlv);
+				break;
 			case 0x3E:	/* Signature */
-			case 0xFE:	/* CRC */
+				if (tlv_rem(tlv) > 0)
+					pk->pt_signedchuid = B_TRUE;
 				tlv_skip(tlv);
 				break;
 			case 0x34:	/* Card GUID */
-				assert(tlv_read(tlv, pk->pt_guid, 0,
-				    sizeof (pk->pt_guid)) ==
+				VERIFY3U(tlv_read(tlv, pk->pt_guid, 0,
+				    sizeof (pk->pt_guid)), ==,
 				    sizeof (pk->pt_guid));
+				bunyan_log(TRACE, "read guid", "guid", BNY_BIN_HEX, pk->pt_guid, sizeof (pk->pt_guid), NULL);
 				tlv_end(tlv);
 				break;
 			default:
@@ -378,21 +404,28 @@ static uint8_t *
 apdu_to_buffer(struct apdu *apdu, uint *outlen)
 {
 	struct apdubuf *d = &(apdu->a_cmd);
-	uint8_t *buf = calloc(1, 5 + d->b_len);
+	uint8_t *buf = calloc(1, 6 + d->b_len);
 	buf[0] = apdu->a_cls;
 	buf[1] = apdu->a_ins;
 	buf[2] = apdu->a_p1;
 	buf[3] = apdu->a_p2;
 	if (d->b_data == NULL) {
+		if (apdu->a_cls == CLA_ISO && apdu->a_ins == INS_CONTINUE) {
+			buf[4] = apdu->a_le;
+			*outlen = 5;
+			return (buf);
+		}
 		buf[4] = 0;
-		*outlen = 5;
+		buf[5] = apdu->a_le;
+		*outlen = 6;
 		return (buf);
 	} else {
 		/* TODO: maybe look at handling ext APDUs? */
 		assert(d->b_len < 256 && d->b_len > 0);
 		buf[4] = d->b_len;
 		bcopy(d->b_data + d->b_offset, buf + 5, d->b_len);
-		*outlen = d->b_len + 5;
+		buf[d->b_len + 5] = apdu->a_le;
+		*outlen = d->b_len + 6;
 		return (buf);
 	}
 }
@@ -464,7 +497,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	size_t offset;
 	size_t rem;
 
-	assert(pk->pt_intxn == B_TRUE);
+	VERIFY(pk->pt_intxn == B_TRUE);
 
 	/* First, send the command. */
 	rem = apdu->a_cmd.b_len;
@@ -501,14 +534,17 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	 */
 	offset = apdu->a_reply.b_offset;
 
-	while ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00) {
+	while ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00 ||
+	    (apdu->a_sw == SW_NO_ERROR && apdu->a_reply.b_len >= 0xFF)) {
 		apdu->a_cls = CLA_ISO;
 		apdu->a_ins = INS_CONTINUE;
 		apdu->a_p1 = 0;
 		apdu->a_p2 = 0;
+		if ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00)
+			apdu->a_le = apdu->a_sw & 0x00FF;
 		apdu->a_cmd.b_data = NULL;
 		apdu->a_reply.b_offset += apdu->a_reply.b_len;
-		assert(apdu->a_reply.b_offset < apdu->a_reply.b_size);
+		VERIFY(apdu->a_reply.b_offset < apdu->a_reply.b_size);
 
 		rv = piv_apdu_transceive(pk, apdu);
 		if (rv != 0)
@@ -525,7 +561,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 int
 piv_txn_begin(struct piv_token *key)
 {
-	assert(key->pt_intxn == B_FALSE);
+	VERIFY(key->pt_intxn == B_FALSE);
 	LONG rv;
 	DWORD activeProtocol;
 retry:
@@ -587,7 +623,7 @@ piv_select(struct piv_token *tk)
 	apdu->a_cmd.b_data = (uint8_t *)AID_PIV;
 	apdu->a_cmd.b_len = sizeof (AID_PIV);
 
-	rv = piv_apdu_transceive(tk, apdu);
+	rv = piv_apdu_transceive_chain(tk, apdu);
 	if (rv != 0) {
 		bunyan_log(WARN, "piv_select.transceive_apdu failed",
 		    "reader", BNY_STRING, tk->pt_rdrname,
@@ -597,7 +633,7 @@ piv_select(struct piv_token *tk)
 		return (EIO);
 	}
 
-	if (apdu->a_sw == SW_NO_ERROR) {
+	if (apdu->a_sw == SW_NO_ERROR || apdu->a_sw == SW_WARNING_EOF) {
 		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
@@ -907,7 +943,9 @@ piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
 
 	tlv_free(tlv);
 
-	if (apdu->a_sw == SW_NO_ERROR) {
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
 		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
@@ -1050,7 +1088,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag;
-	uint8_t *ptr;
+	uint8_t *ptr, *buf = NULL;
 	size_t len;
 	X509 *cert;
 	struct piv_slot *pc;
@@ -1096,7 +1134,13 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 
 	tlv_free(tlv);
 
-	if (apdu->a_sw == SW_NO_ERROR) {
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+		if (apdu->a_reply.b_offset + 1 > apdu->a_reply.b_len) {
+			piv_apdu_free(apdu);
+			return (ENOENT);
+		}
 		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
@@ -1139,9 +1183,38 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			return (ENOTSUP);
 		}
 
-		/* TODO: gzip support */
-		if ((certinfo & PIV_CI_COMPTYPE) != PIV_COMP_NONE) {
-			bunyan_log(WARN, "card returned compressed cert",
+		if ((certinfo & PIV_CI_COMPTYPE) == PIV_COMP_GZIP) {
+			z_stream strm;
+			buf = calloc(1, PIV_MAX_CERT_LEN);
+			VERIFY(buf != NULL);
+
+			bzero(&strm, sizeof (strm));
+			VERIFY0(inflateInit2(&strm, 31));
+
+			strm.avail_in = len;
+			strm.next_in = ptr;
+			strm.avail_out = PIV_MAX_CERT_LEN;
+			strm.next_out = buf;
+
+			VERIFY3S(inflate(&strm, Z_NO_FLUSH), ==, Z_STREAM_END);
+
+			VERIFY3U(strm.avail_out, >, 0);
+			VERIFY3U(strm.avail_out, <, PIV_MAX_CERT_LEN);
+
+			bunyan_log(DEBUG, "decompressed cert",
+			    "compressed_len", BNY_UINT, len,
+			    "avail_out", BNY_UINT, strm.avail_out,
+			    "uncompressed_len", BNY_UINT, PIV_MAX_CERT_LEN -
+			    strm.avail_out, NULL);
+
+			ptr = buf;
+			len = PIV_MAX_CERT_LEN - strm.avail_out;
+
+			VERIFY0(inflateEnd(&strm));
+
+		} else if ((certinfo & PIV_CI_COMPTYPE) != PIV_COMP_NONE) {
+			bunyan_log(DEBUG, "card returned cert with unknown "
+			    "compression type, assuming invalid",
 			    "reader", BNY_STRING, pk->pt_rdrname,
 			    "slotid", BNY_UINT, (uint)slotid, NULL);
 			tlv_free(tlv);
@@ -1167,6 +1240,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		}
 
 		tlv_free(tlv);
+		free(buf);
 
 		for (pc = pk->pt_slots; pc != NULL; pc = pc->ps_next) {
 			if (pc->ps_slot == slotid)
@@ -1225,6 +1299,9 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
 		rv = ENOENT;
 
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		rv = EPERM;
+
 	} else {
 		bunyan_log(DEBUG, "card did not accept INS_GET_DATA for PIV",
 		    "reader", BNY_STRING, pk->pt_rdrname,
@@ -1245,16 +1322,16 @@ piv_read_all_certs(struct piv_token *tk)
 	assert(tk->pt_intxn == B_TRUE);
 
 	rv = piv_read_cert(tk, PIV_SLOT_9E);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP)
+	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
 		return (rv);
 	rv = piv_read_cert(tk, PIV_SLOT_9A);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP)
+	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
 		return (rv);
 	rv = piv_read_cert(tk, PIV_SLOT_9C);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP)
+	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
 		return (rv);
 	rv = piv_read_cert(tk, PIV_SLOT_9D);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP)
+	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
 		return (rv);
 
 	return (rv);
@@ -1347,6 +1424,18 @@ piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries)
 				piv_apdu_free(apdu);
 				return (0);
 			} else {
+				rv = 0;
+			}
+		} else if (apdu->a_sw == SW_WRONG_LENGTH ||
+		    apdu->a_sw == SW_WRONG_DATA) {
+			if (pin == NULL) {
+				piv_apdu_free(apdu);
+				return (ENOTSUP);
+			} else {
+				/*
+				 * We can't seem to check the number of retries
+				 * remaining, so just proceed through.
+				 */
 				rv = 0;
 			}
 		} else {
@@ -1587,7 +1676,9 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 
 	tlv_free(tlv);
 
-	if (apdu->a_sw == SW_NO_ERROR) {
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
 		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
@@ -1692,7 +1783,9 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 
 	tlv_free(tlv);
 
-	if (apdu->a_sw == SW_NO_ERROR) {
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
 		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);

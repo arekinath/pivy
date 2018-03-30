@@ -250,6 +250,7 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 			perror("getpass");
 			exit(3);
 		}
+		pin = strdup(pin);
 		free(guid);
 	}
 	rv = piv_verify_pin(pk, pin, &retries);
@@ -324,10 +325,10 @@ cmd_list(SCARDCONTEXT ctx)
 		piv_read_all_certs(pk);
 		piv_txn_end(pk);
 
-		free(buf);
-		buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid), B_FALSE);
-
 		if (parseable) {
+			free(buf);
+			buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid),
+			    B_FALSE);
 			printf("%s:%s:%s:%s:%d.%d.%d:",
 			    pk->pt_rdrname, buf,
 			    pk->pt_nochuid ? "true" : "false",
@@ -352,27 +353,53 @@ cmd_list(SCARDCONTEXT ctx)
 			continue;
 		}
 
-		printf("PIV card in '%s': guid = %s\n",
-		    pk->pt_rdrname, buf);
+		free(buf);
+		buf = buf_to_hex(pk->pt_guid, 4, B_FALSE);
+		printf("%10s: %s\n", "card", buf);
+		printf("%10s: %s\n", "device", pk->pt_rdrname);
 		if (pk->pt_nochuid) {
-			printf("  * No CHUID file (needs initialization)\n");
+			printf("%10s: %s\n", "chuid", "not set "
+			    "(needs initialization)");
+		} else if (pk->pt_signedchuid) {
+			printf("%10s: %s\n", "chuid", "ok, signed");
+		} else {
+			printf("%10s: %s\n", "chuid", "ok");
+		}
+		free(buf);
+		buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid), B_FALSE);
+		printf("%10s: %s\n", "guid", buf);
+		free(buf);
+		buf = buf_to_hex(pk->pt_chuuid, sizeof (pk->pt_chuuid),
+		    B_FALSE);
+		printf("%10s: %s\n", "owner", buf);
+		if (pk->pt_expiry[0] >= '0' && pk->pt_expiry[0] <= '9') {
+			printf("%10s: %c%c%c%c-%c%c-%c%c\n", "expiry",
+			    pk->pt_expiry[0], pk->pt_expiry[1],
+			    pk->pt_expiry[2], pk->pt_expiry[3],
+			    pk->pt_expiry[4], pk->pt_expiry[5],
+			    pk->pt_expiry[6], pk->pt_expiry[7]);
 		}
 		if (pk->pt_ykpiv) {
-			printf("  * YubicoPIV-compatible (v%d.%d.%d)\n",
-			    pk->pt_ykver[0], pk->pt_ykver[1], pk->pt_ykver[2]);
+			printf("%10s: implements YubicoPIV extensions "
+			    "(v%d.%d.%d)\n", "yubico", pk->pt_ykver[0],
+			    pk->pt_ykver[1], pk->pt_ykver[2]);
 		}
 		if (pk->pt_alg_count > 0) {
-			printf("  * Algo support: ");
+			printf("%10s: ", "algos");
 			for (i = 0; i < pk->pt_alg_count; ++i) {
 				printf("%s ", alg_to_string(pk->pt_algs[i]));
 			}
 			printf("\n");
 		}
+		printf("%10s:\n", "slots");
+		printf("%10s %-3s  %-6s  %-4s  %-30s\n", "", "ID", "TYPE",
+		    "BITS", "CERTIFICATE");
 		for (slot = pk->pt_slots; slot != NULL; slot = slot->ps_next) {
-			printf("  * Slot %02X: '%s' (%s %d)\n", slot->ps_slot,
-			    slot->ps_subj, sshkey_type(slot->ps_pubkey),
-			    sshkey_size(slot->ps_pubkey));
+			printf("%10s %-3x  %-6s  %-4d  %-30s\n", "",
+			    slot->ps_slot, sshkey_type(slot->ps_pubkey),
+			    sshkey_size(slot->ps_pubkey), slot->ps_subj);
 		}
+		printf("\n");
 	}
 }
 
@@ -511,6 +538,7 @@ cmd_set_system(void)
 			perror("getpass");
 			exit(3);
 		}
+		pin = strdup(pin);
 		free(guid);
 	}
 

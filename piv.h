@@ -62,12 +62,14 @@ enum iso_sw {
 	SW_SECURITY_STATUS_NOT_SATISFIED = 0x6982,
 	SW_BYTES_REMAINING_00 = 0x6100,
 	SW_WARNING_NO_CHANGE_00 = 0x6200,
+	SW_WARNING_EOF = 0x6282,
 	SW_WARNING_00 = 0x6300,
 	SW_FILE_NOT_FOUND = 0x6A82,
 	SW_INCORRECT_PIN = 0x63C0,
 	SW_INCORRECT_P1P2 = 0x6A86,
 	SW_WRONG_DATA = 0x6A80,
 	SW_OUT_OF_MEMORY = 0x6A84,
+	SW_WRONG_LENGTH = 0x6700,
 };
 
 enum piv_sel_tag {
@@ -153,6 +155,7 @@ struct apdu {
 	enum iso_ins a_ins;
 	uint8_t a_p1;
 	uint8_t a_p2;
+	uint8_t a_le;
 
 	struct apdubuf a_cmd;
 	uint16_t a_sw;
@@ -178,11 +181,14 @@ struct piv_token {
 	boolean_t pt_reset;
 
 	uint8_t pt_guid[16];
+	uint8_t pt_chuuid[16];
+	uint8_t pt_expiry[8];
 	enum piv_alg pt_algs[32];
 	size_t pt_alg_count;
 	uint pt_pinretries;
 	boolean_t pt_ykpiv;
 	boolean_t pt_nochuid;
+	boolean_t pt_signedchuid;
 	uint8_t pt_ykver[3];
 
 	struct piv_slot *pt_slots;
@@ -255,6 +261,8 @@ int piv_select(struct piv_token *tk);
  * Errors:
  *  - EIO: general card communication failure
  *  - ENOENT: no key/cert is present in this slot
+ *  - EPERM: the cert in this slot requires either using a contact interface
+ *           (and the card is connected contactless), or requires a PIN
  *  - EINVAL: card rejected the request (e.g. because applet not selected) or
  *            returned an unparseable invalid certificate
  *  - ENOTSUP: type of certificate in this slot is not supported
