@@ -1,0 +1,129 @@
+:toc: left
+:source-highlighter: pygments
+:doctype: book
+:idprefix:
+:docinfo:
+
+# piv-agent
+
+## About
+
+This is an implementation of a simple PIV client for desktop Linux and OSX with
+minimal dependencies. It contains a `piv-tool` binary which can conduct basic
+operations using PIV cards, and the `piv-agent`, which implements the SSH agent
+protocol as a drop-in replacement for the OpenSSH `ssh-agent` command (except
+that the keys it contains are always on a PIV card).
+
+## Using the agent
+
+Using the PIV agent is identical to running the normal `ssh-agent` command,
+with the exception that `piv-agent` requires a `-g` argument specifying the
+GUID of the PIV card to attach to.
+
+For example, the GUID of my PIV card is `995E171383029CDA0D9CDBDBAD580813` (if
+you don't know your GUID, the `piv-tool` command can display it). I can use the
+following command to start the `piv-agent` against my card:
+
+-----
+$ piv-agent -g 995E171383029CDA0D9CDBDBAD580813 bash
+$ ssh-add -l
+256 SHA256:PJ6ucGKUqlQhiJdArDaF65+AVImg8SVq77vL6nVE/ME PIV_slot_9C /CN=Digital Signature (ECDSA)
+256 SHA256:U86TVxP/gxVk4CQibIWit3Q+/5i4aZuXa2NALIahjww PIV_slot_9E /CN=Card Authentication (ECDSA)
+-----
+
+I can now use the 9E Card Authentication key with `ssh` or any other tools that
+use speak the OpenSSH agent protocol (e.g. the Joyent `manta` and `triton`
+tools). If I try to use the 9C Digital Signature key right now though, I will
+get an error like this:
+
+-----
+$ ssh user@host
+sign_and_send_pubkey: signing failed: agent refused operation
+user@host: Permission denied (publickey).
+-----
+
+To use the 9C key I will have to give my PIV PIN to the agent using the
+`ssh-add -X` command, so that it can unlock the card to use the key.
+
+-----
+$ ssh-add -X
+Enter lock password:
+Agent unlocked.
+$ ssh user@host
+Last login: Wed Mar 28 21:56:11 2018 from laptop
+[user@host ~]$
+-----
+
+You can make the agent forget the PIN by using the `ssh-add -x` command to
+"lock" it. You can supply any password you like (including an empty string)
+for the "lock" command. The command `ssh-add -D` can also be used, and will not
+prompt for a password (useful from scripts).
+
+Note that it's perfectly fine to leave the `piv-agent` running and remove your
+PIV card: the agent will just return errors on any attempt to use it until
+you insert your card again. You can even start the agent without the PIV card
+present at all.
+
+One useful way to use the `piv-agent` is to set up a systemd unit file for it
+to run whenever you log in, and adjust your shell profile to use it as your
+normal SSH agent. Then your PIV keys are automatically ready for use in any
+shell.
+
+## Installing on Linux
+
+On Linux you will need to have `pcsclite` and `openssl` installed. There are no
+other dependencies (other than a compiler and basic build tools and headers).
+
+Then, clone this repository and use `make` to build the binaries:
+
+-----
+$ git clone https://github.com/arekinath/piv-agent
+$ cd piv-agent
+$ make
+$ ./piv-tool list
+PIV card in 'ACS ACR1281 1S Dual Reader 00 01': guid = 995E171383029CDA0D9CDBDBAD580813
+  * YubicoPIV-compatible (v1.0.4)
+  * Slot 9C: '/CN=Digital Signature' (ECDSA 256)
+  * Slot 9E: '/CN=Card Authentication' (ECDSA 256)
+-----
+
+## Installing on OSX
+
+Compiling and installing on OSX is slightly more involved, due to the lack of
+a useable OpenSSL `libcrypto` in the base system. Rather than depend on homebrew
+or MacPorts or another similar system, we will simply build `libressl-portable`
+in a subdirectory and statically link the binaries against it.
+
+Note there is no need to install PCSClite or OpenSC or any of the related
+tools or libraries on OSX -- the PCSC framework built into the operating system
+itself works fine for `piv-agent`.
+
+The commands you will need to run are as follows:
+
+-----
+# Clone the piv-agent repository
+$ git clone https://github.com/arekinath/piv-agent
+$ cd piv-agent
+
+# Build libressl-portable
+$ git clone https://github.com/libressl-portable/portable ./libressl
+$ cd libressl
+$ git checkout v2.7.1
+$ ./autogen.sh
+$ ./configure --enable-static
+$ make
+
+# Now build piv-agent
+$ cd ..
+$ make
+$ ./piv-tool list
+PIV card in 'ACS ACR1281 1S Dual Reader 00 01': guid = 995E171383029CDA0D9CDBDBAD580813
+  * YubicoPIV-compatible (v1.0.4)
+  * Slot 9C: '/CN=Digital Signature' (ECDSA 256)
+  * Slot 9E: '/CN=Card Authentication' (ECDSA 256)
+-----
+
+There is one known issue on OSX currently: the PCSC framework does not work
+after calling `fork()`, which puts the `piv-agent` code in a bit of a dilemma.
+You can use it in "debug" mode for now with the `-d` switch, but it's not very
+convenient.
