@@ -11,8 +11,6 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stdint.h>
-#include <wintypes.h>
-#include <winscard.h>
 #include <string.h>
 #include <assert.h>
 #include <unistd.h>
@@ -20,6 +18,14 @@
 #include <stddef.h>
 #include <errno.h>
 #include <strings.h>
+
+#if defined(__APPLE__)
+#include <PCSC/wintypes.h>
+#include <PCSC/winscard.h>
+#else
+#include <wintypes.h>
+#include <winscard.h>
+#endif
 
 #include <sys/mman.h>
 #include <sys/errno.h>

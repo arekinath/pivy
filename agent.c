@@ -67,8 +67,13 @@
 #include "tlv.h"
 #include "piv.h"
 
+#if defined(__APPLE__)
+#include <PCSC/wintypes.h>
+#include <PCSC/winscard.h>
+#else
 #include <wintypes.h>
 #include <winscard.h>
+#endif
 
 #include "libssh/digest.h"
 #include "libssh/cipher.h"
