@@ -391,6 +391,15 @@ cmd_list(SCARDCONTEXT ctx)
 			}
 			printf("\n");
 		}
+		if (pk->pt_nochuid) {
+			printf("%10s:\n", "action");
+			printf("%10s Initialize this card using 'piv-tool "
+			    "init'\n", "");
+			printf("%10s No keys can be stored on an uninitialized"
+			    " card\n", "");
+			printf("\n");
+			continue;
+		}
 		printf("%10s:\n", "slots");
 		printf("%10s %-3s  %-6s  %-4s  %-30s\n", "", "ID", "TYPE",
 		    "BITS", "CERTIFICATE");
