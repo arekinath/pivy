@@ -81,10 +81,17 @@ $ git clone https://github.com/arekinath/piv-agent
 $ cd piv-agent
 $ make
 $ ./piv-tool list
-PIV card in 'ACS ACR1281 1S Dual Reader 00 01': guid = 995E171383029CDA0D9CDBDBAD580813
-  * YubicoPIV-compatible (v1.0.4)
-  * Slot 9C: '/CN=Digital Signature' (ECDSA 256)
-  * Slot 9E: '/CN=Card Authentication' (ECDSA 256)
+      card: 995E1713
+    device: Yubico Yubikey NEO OTP+U2F+CCID 02 00
+     chuid: ok
+      guid: 995E171383029CDA0D9CDBDBAD580813
+     owner: 00000000000000000000000000000000
+    expiry: 2030-01-01
+     slots:
+           ID   TYPE    BITS  CERTIFICATE
+           9c   ECDSA   256   /CN=Digital Signature
+           9e   ECDSA   256   /CN=Card Authentication
+
 -----
 
 ## Installing on OSX
@@ -117,10 +124,17 @@ $ make
 $ cd ..
 $ make
 $ ./piv-tool list
-PIV card in 'ACS ACR1281 1S Dual Reader 00 01': guid = 995E171383029CDA0D9CDBDBAD580813
-  * YubicoPIV-compatible (v1.0.4)
-  * Slot 9C: '/CN=Digital Signature' (ECDSA 256)
-  * Slot 9E: '/CN=Card Authentication' (ECDSA 256)
+      card: 995E1713
+    device: Yubico Yubikey NEO OTP+U2F+CCID 02 00
+     chuid: ok
+      guid: 995E171383029CDA0D9CDBDBAD580813
+     owner: 00000000000000000000000000000000
+    expiry: 2030-01-01
+     slots:
+           ID   TYPE    BITS  CERTIFICATE
+           9c   ECDSA   256   /CN=Digital Signature
+           9e   ECDSA   256   /CN=Card Authentication
+
 -----
 
 There is one known issue on OSX currently: the PCSC framework does not work
