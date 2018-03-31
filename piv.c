@@ -410,14 +410,8 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 	buf[2] = apdu->a_p1;
 	buf[3] = apdu->a_p2;
 	if (d->b_data == NULL) {
-		if (apdu->a_cls == CLA_ISO && apdu->a_ins == INS_CONTINUE) {
-			buf[4] = apdu->a_le;
-			*outlen = 5;
-			return (buf);
-		}
-		buf[4] = 0;
 		buf[5] = apdu->a_le;
-		*outlen = 6;
+		*outlen = 5;
 		return (buf);
 	} else {
 		/* TODO: maybe look at handling ext APDUs? */
