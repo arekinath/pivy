@@ -1,5 +1,33 @@
-/* $OpenBSD: ssh-agent.c,v 1.228 2018/02/23 15:58:37 markus Exp $ */
 /*
+ * Newly written portions Copyright 2018 Joyent, Inc.
+ * Author: Alex Wilson <alex.wilson@joyent.com>
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Partially derived from the original OpenSSH agent.c.
+ *
+ * Original copyright and license from OpenSSH:
+ *
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
  *                    All rights reserved
@@ -941,7 +969,7 @@ check_parent_exists(void)
 	 * so testing for that should be safe.
 	 */
 	if (parent_pid != -1 && getppid() != parent_pid) {
-		/* printf("Parent has died - Authentication agent exiting.\n"); */
+		bunyan_log(INFO, "Parent has died - Authentication agent exiting.");
 		cleanup_socket();
 		_exit(2);
 	}
@@ -1123,6 +1151,7 @@ main(int ac, char **av)
 	int timeout = -1; /* INFTIM */
 	struct pollfd *pfd = NULL;
 	size_t npfd = 0;
+	uint i;
 	int r;
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
@@ -1245,10 +1274,6 @@ main(int ac, char **av)
 		strlcpy(socket_name, agentsocket, sizeof socket_name);
 	}
 
-	/*
-	 * Create socket early so it will exist before command gets run from
-	 * the parent.
-	 */
 	prev_mask = umask(0177);
 	sock = unix_listener(socket_name, SSH_LISTEN_BACKLOG, 0);
 	if (sock < 0) {
@@ -1312,7 +1337,7 @@ main(int ac, char **av)
 		/* XXX might close listen socket */
 		(void)dup2(fd, STDIN_FILENO);
 		(void)dup2(fd, STDOUT_FILENO);
-		(void)dup2(fd, STDERR_FILENO);
+		//(void)dup2(fd, STDERR_FILENO);
 		if (fd > 2)
 			close(fd);
 	}
@@ -1331,33 +1356,33 @@ skip:
 
 	r = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
 	if (r != SCARD_S_SUCCESS) {
-		fprintf(stderr, "SCardEstablishContext failed: %s\n",
-		    pcsc_stringify_error(r));
+		bunyan_log(ERROR, "SCardEstablishContext failed",
+		    "error", BNY_STRING, pcsc_stringify_error(r), NULL);
 		return (1);
 	}
 
 	ks = piv_enumerate(ctx);
 
 	if (ks == NULL) {
-		fprintf(stderr, "warning: no PIV cards present\n");
-	}
-
-	{
+		bunyan_log(WARN, "no PIV cards present", NULL);
+	} else {
 		struct piv_token *t;
 		for (t = ks; t != NULL; t = t->pt_next) {
 			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
 				if (selk == NULL) {
 					selk = t;
 				} else {
-					fprintf(stderr, "error: GUID prefix "
-					    "specified is not unique\n");
-					exit(3);
+					bunyan_log(ERROR, "PIV GUID prefix is "
+					    "not unique; refusing to do "
+					    "anything", NULL);
+					selk = NULL;
+					break;
 				}
 			}
 		}
 		if (selk == NULL) {
-			fprintf(stderr, "warning: no PIV card present "
-			    "matching given GUID\n");
+			bunyan_log(WARN, "PIV card with given GUID not found: "
+			    "will sleep until ready", NULL);
 		}
 	}
 
