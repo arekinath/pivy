@@ -128,3 +128,37 @@ piv-agent: $(AGENT_OBJS)
 clean:
 	rm -f piv-tool $(PIVTOOL_OBJS)
 	rm -f piv-agent $(AGENT_OBJS)
+
+.PHONY: install
+
+.dist:
+	@mkdir .dist
+
+.dist/guid.plist: net.cooperi.piv-agent.plist .dist
+	@./piv-tool list
+	@printf "Enter a GUID to use for piv-agent: "
+	@read guid && \
+	cat $< | sed "s/@@GUID@@/$${guid}/g" > $@
+
+.dist/home.plist: .dist/guid.plist .dist
+	@cat $< | sed "s|@@HOME@@|$${HOME}|g" > $@
+
+.dist/net.cooperi.piv-agent.plist: .dist/home.plist .dist
+	@cp $< $@
+
+ifeq ($(SYSTEM), Darwin)
+install: .dist/net.cooperi.piv-agent.plist piv-tool piv-agent
+	sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
+	sudo install -o root -g wheel -m 0755 piv-agent piv-tool  /opt/piv-agent/bin
+	install .dist/net.cooperi.piv-agent.plist $(HOME)/Library/LaunchAgents
+	launchctl load $(HOME)/Library/LaunchAgents/net.cooperi.piv-agent.plist
+	launchctl start net.cooperi.piv-agent
+	@echo "Add the following lines to your .profile or .bashrc:"
+	@echo '  export PATH=/opt/piv-agent/bin:$$PATH'
+	@echo '  if [[ ! -e "$$SSH_AUTH_SOCK" || "$$SSH_AUTH_SOCK" == *"launchd"* ]]; then'
+	@echo '    source $$HOME/.ssh/agent.env >/dev/null'
+	@echo '  fi'
+endif
+
+ifeq ($(SYSTEM), Linux)
+endif
