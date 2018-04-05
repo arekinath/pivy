@@ -128,6 +128,7 @@ piv-agent: $(AGENT_OBJS)
 clean:
 	rm -f piv-tool $(PIVTOOL_OBJS)
 	rm -f piv-agent $(AGENT_OBJS)
+	rm -fr .dist
 
 ifeq ($(SYSTEM), Darwin)
 piv-agent: $(PWD)/libressl/crypto/.libs/libcrypto.a
