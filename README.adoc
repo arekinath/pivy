@@ -94,6 +94,12 @@ $ ./piv-tool list
 
 -----
 
+You can run `make install` to install the agent into `/opt/piv-agent` and set
+up a user systemd service to start it automatically at login. The `make install`
+command will also print out lines to add to your `.profile` or `.bashrc` to
+make sure the agent is automatically available in all your shells (while still
+preferring a forwarded SSH agent if you SSH into your machine later).
+
 ## Installing on OSX
 
 Compiling and installing on OSX is slightly more involved, due to the lack of
@@ -138,6 +144,9 @@ $ ./piv-tool list
 -----
 
 There is one known issue on OSX currently: the PCSC framework does not work
-after calling `fork()`, which puts the `piv-agent` code in a bit of a dilemma.
-You can use it in "debug" mode for now with the `-d` switch, but it's not very
-convenient.
+after calling `fork()`, which forces the `piv-agent` code to not run in the
+background.
+
+Like on Linux, there is a `make install` target that will set up a `launchd`
+service for the `piv-agent` for you and advise you on what to add to `.profile`
+to make it available in all new shells.
