@@ -134,6 +134,7 @@ clean:
 .dist:
 	@mkdir .dist
 
+ifeq ($(SYSTEM), Darwin)
 .dist/guid.plist: net.cooperi.piv-agent.plist .dist
 	@./piv-tool list
 	@printf "Enter a GUID to use for piv-agent: "
@@ -146,7 +147,6 @@ clean:
 .dist/net.cooperi.piv-agent.plist: .dist/home.plist .dist
 	@cp $< $@
 
-ifeq ($(SYSTEM), Darwin)
 install: .dist/net.cooperi.piv-agent.plist piv-tool piv-agent
 	sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
 	sudo install -o root -g wheel -m 0755 piv-agent piv-tool  /opt/piv-agent/bin
@@ -161,4 +161,24 @@ install: .dist/net.cooperi.piv-agent.plist piv-tool piv-agent
 endif
 
 ifeq ($(SYSTEM), Linux)
+.dist/guid.service: piv-agent.service .dist
+	@./piv-tool list
+	@printf "Enter a GUID to use for piv-agent: "
+	@read guid && \
+	cat $< | sed "s/@@GUID@@/$${guid}/g" > $@
+.dist/piv-agent.service: .dist/guid.service .dist
+	@cp $< $@
+
+install: .dist/piv-agent.service piv-tool piv-agent
+	sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
+	sudo install -o root -g wheel -m 0755 piv-agent piv-tool  /opt/piv-agent/bin
+	install -d $(HOME)/.config/systemd/user
+	install .dist/piv-agent.service $(HOME)/.config/systemd/user
+	systemctl --user enable piv-agent.service
+	systemctl --user start piv-agent.service
+	@echo "Add the following lines to your .profile or .bashrc:"
+	@echo '  export PATH=/opt/piv-agent/bin:$$PATH'
+	@echo '  if [[ ! -e "$$SSH_AUTH_SOCK" || "$$SSH_AUTH_SOCK" == *"/keyring/"* ]]; then'
+	@echo '    export SSH_AUTH_SOCK="$$XDG_RUNTIME_DIR/ssh-agent.socket"'
+	@echo '  fi'
 endif
