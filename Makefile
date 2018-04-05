@@ -129,6 +129,19 @@ clean:
 	rm -f piv-tool $(PIVTOOL_OBJS)
 	rm -f piv-agent $(AGENT_OBJS)
 
+ifeq ($(SYSTEM), Darwin)
+piv-agent: $(PWD)/libressl/crypto/.libs/libcrypto.a
+piv-tool: $(PWD)/libressl/crypto/.libs/libcrypto.a
+
+$(PWD)/libressl/crypto/.libs/libcrypto.a:
+	git clone https://github.com/libressl-portable/portable ./libressl
+	cd libressl && \
+	    git checkout v2.7.1 && \
+	    ./autogen.sh && \
+	    ./configure --enable-static && \
+	    $(MAKE)
+endif
+
 .PHONY: install
 
 .dist:
