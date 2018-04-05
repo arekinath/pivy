@@ -1297,6 +1297,28 @@ main(int ac, char **av)
 		fflush(stdout);
 		goto skip;
 	}
+#if defined(__APPLE__)
+	ssh_dbglevel = INFO;
+	bunyan_set_level(INFO);
+	if (ac != 0) {
+		bunyan_log(FATAL, "OSX does not support fork() inside "
+		    "applications which use smartcards, and you have "
+		    "specified a command to run. It is not possible to "
+		    "execute it and remain in the foreground", NULL);
+		exit(1);
+	}
+	bunyan_log(WARN, "OSX does not support fork() inside applications "
+	    "which use smartcards; this agent will operate in the foreground",
+	    NULL);
+	format = c_flag ? "setenv %s %s;\n" : "%s=%s; export %s;\n";
+	printf(format, SSH_AUTHSOCKET_ENV_NAME, socket_name,
+	    SSH_AUTHSOCKET_ENV_NAME);
+	printf(format, SSH_AGENTPID_ENV_NAME, pidstrbuf,
+	    SSH_AGENTPID_ENV_NAME);
+	printf("echo Agent pid %ld;\n", (long)parent_pid);
+	fflush(stdout);
+
+#else
 	pid = fork();
 	if (pid == -1) {
 		perror("fork");
@@ -1341,6 +1363,7 @@ main(int ac, char **av)
 		if (fd > 2)
 			close(fd);
 	}
+#endif
 
 skip:
 
@@ -1350,7 +1373,11 @@ skip:
 	if (ac > 0)
 		parent_alive_interval = 10;
 	signal(SIGPIPE, SIG_IGN);
+#if defined(__APPLE__)
+	signal(SIGINT, cleanup_handler);
+#else
 	signal(SIGINT, (d_flag | D_flag) ? cleanup_handler : SIG_IGN);
+#endif
 	signal(SIGHUP, cleanup_handler);
 	signal(SIGTERM, cleanup_handler);
 
