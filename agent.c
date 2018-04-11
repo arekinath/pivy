@@ -368,6 +368,16 @@ send_status(SocketEntry *e, int success)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 }
 
+static void
+send_extfail(SocketEntry *e)
+{
+	int r;
+
+	if ((r = sshbuf_put_u32(e->output, 1)) != 0 ||
+	    (r = sshbuf_put_u8(e->output, SSH2_AGENT_EXT_FAILURE)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+}
+
 /* send list of supported public keys to 'client' */
 static void
 process_request_identities(SocketEntry *e)
@@ -581,6 +591,73 @@ process_remove_all_identities(SocketEntry *e)
 	send_status(e, 1);
 }
 
+static void process_ext_query(SocketEntry *, struct sshbuf *);
+
+struct exthandler {
+	const char *eh_name;
+	void (*eh_handler)(SocketEntry *, struct sshbuf *);
+};
+struct exthandler exthandlers[] = {
+	{ "query", process_ext_query },
+	{ NULL, NULL }
+};
+
+static void
+process_extension(SocketEntry *e)
+{
+	int r;
+	char *extname;
+	size_t enlen;
+	struct sshbuf *inner;
+	struct exthandler *h, *hdlr = NULL;
+
+	if ((r = sshbuf_get_cstring(e->request, &extname, &enlen)) != 0 ||
+	    (r = sshbuf_froms(e->request, &inner)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	VERIFY(extname != NULL);
+	VERIFY(inner != NULL);
+
+	for (h = exthandlers; h->eh_name != NULL; ++h) {
+		if (strcmp(h->eh_name, extname) == 0) {
+			hdlr = h;
+			break;
+		}
+	}
+	if (h == NULL) {
+		send_status(e, 0);
+		return;
+	}
+	h->eh_handler(e, inner);
+
+	sshbuf_free(inner);
+}
+
+static void
+process_ext_query(SocketEntry *e, struct sshbuf *buf)
+{
+	int r, n = 0;
+	struct exthandler *h;
+	struct sshbuf *msg;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+
+	for (h = exthandlers; h->eh_name != NULL; ++h)
+		++n;
+
+	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (r = sshbuf_put_u32(msg, n)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	for (h = exthandlers; h->eh_name != NULL; ++h) {
+		if ((r = sshbuf_put_cstring(msg, h->eh_name)) != 0)
+			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	}
+
+	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	sshbuf_free(msg);
+}
+
 static void
 process_lock_agent(SocketEntry *e, int lock)
 {
@@ -701,6 +778,9 @@ process_message(u_int socknum)
 		break;
 	case SSH2_AGENTC_REMOVE_ALL_IDENTITIES:
 		process_remove_all_identities(e);
+		break;
+	case SSH2_AGENTC_EXTENSION:
+		process_extension(e);
 		break;
 	default:
 		/* Unknown message.  Respond with failure. */
