@@ -591,14 +591,58 @@ process_remove_all_identities(SocketEntry *e)
 	send_status(e, 1);
 }
 
-static void process_ext_query(SocketEntry *, struct sshbuf *);
-
 struct exthandler {
 	const char *eh_name;
 	void (*eh_handler)(SocketEntry *, struct sshbuf *);
 };
+struct exthandler exthandlers[];
+
+static void
+process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
+{
+	int r;
+	struct sshbuf *msg;
+	send_extfail(e);
+}
+
+static void
+process_ext_x509_certs(SocketEntry *e, struct sshbuf *buf)
+{
+	int r;
+	struct sshbuf *msg;
+	send_extfail(e);
+}
+
+static void
+process_ext_query(SocketEntry *e, struct sshbuf *buf)
+{
+	int r, n = 0;
+	struct exthandler *h;
+	struct sshbuf *msg;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+
+	for (h = exthandlers; h->eh_name != NULL; ++h)
+		++n;
+
+	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (r = sshbuf_put_u32(msg, n)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	for (h = exthandlers; h->eh_name != NULL; ++h) {
+		if ((r = sshbuf_put_cstring(msg, h->eh_name)) != 0)
+			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	}
+
+	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	sshbuf_free(msg);
+}
+
 struct exthandler exthandlers[] = {
 	{ "query", process_ext_query },
+	{ "ecdh@joyent.com", process_ext_ecdh },
+	{ "x509-certs@joyent.com", process_ext_x509_certs },
 	{ NULL, NULL }
 };
 
@@ -630,32 +674,6 @@ process_extension(SocketEntry *e)
 	h->eh_handler(e, inner);
 
 	sshbuf_free(inner);
-}
-
-static void
-process_ext_query(SocketEntry *e, struct sshbuf *buf)
-{
-	int r, n = 0;
-	struct exthandler *h;
-	struct sshbuf *msg;
-
-	if ((msg = sshbuf_new()) == NULL)
-		fatal("%s: sshbuf_new failed", __func__);
-
-	for (h = exthandlers; h->eh_name != NULL; ++h)
-		++n;
-
-	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
-	    (r = sshbuf_put_u32(msg, n)) != 0)
-		fatal("%s: buffer error: %s", __func__, ssh_err(r));
-	for (h = exthandlers; h->eh_name != NULL; ++h) {
-		if ((r = sshbuf_put_cstring(msg, h->eh_name)) != 0)
-			fatal("%s: buffer error: %s", __func__, ssh_err(r));
-	}
-
-	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
-		fatal("%s: buffer error: %s", __func__, ssh_err(r));
-	sshbuf_free(msg);
 }
 
 static void
