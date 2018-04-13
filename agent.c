@@ -69,6 +69,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <sys/mman.h>
 
 #include <openssl/evp.h>
 
@@ -299,6 +300,49 @@ agent_piv_open(void)
 	}
 }
 
+static int
+agent_piv_try_pin(void)
+{
+	int r, retries = 1;
+	if (pin != NULL) {
+		r = piv_verify_pin(selk, pin, &retries);
+		if (r == EACCES) {
+			piv_txn_end(selk);
+			if (retries == 0) {
+				bunyan_log(ERROR, "token is locked due to "
+				    "too many invalid PIN code attempts",
+				    NULL);
+			} else {
+				bunyan_log(ERROR, "invalid PIN code",
+				    "attempts_remaining", BNY_INT, retries,
+				    NULL);
+				explicit_bzero(pin, strlen(pin));
+				free(pin);
+				pin = NULL;
+			}
+			return (EACCES);
+		} else if (r == EAGAIN) {
+			piv_txn_end(selk);
+			bunyan_log(ERROR, "insufficient PIN retries "
+			    "remaining (stubbornly refusing to use up the "
+			    "last one)", "attempts_remaining", BNY_INT, retries,
+			    NULL);
+			explicit_bzero(pin, strlen(pin));
+			free(pin);
+			pin = NULL;
+			return (EACCES);
+		} else if (r != 0) {
+			piv_txn_end(selk);
+			bunyan_log(ERROR, "piv_verify_pin returned error",
+			    "code", BNY_INT, r,
+			    "error", BNY_STRING, strerror(r), NULL);
+			return (r);
+		}
+	}
+
+	return (0);
+}
+
 static void
 close_socket(SocketEntry *e)
 {
@@ -477,39 +521,10 @@ process_sign_request2(SocketEntry *e)
 		goto send;
 	}
 
-	if (agent_piv_open() != 0) {
+	if (agent_piv_open() != 0)
 		goto send;
-	}
-	if (pin != NULL) {
-		r = piv_verify_pin(selk, pin, &retries);
-		if (r == EACCES) {
-			piv_txn_end(selk);
-			if (retries == 0) {
-				fprintf(stderr,
-				    "error: token is locked due to too "
-				    "many invalid PIN code entries\n");
-			} else {
-				fprintf(stderr, "error: invalid PIN code "
-				    "(%d attempts remaining)\n", retries);
-				explicit_bzero(pin, strlen(pin));
-				free(pin);
-				pin = NULL;
-			}
-			goto send;
-		} else if (r == EAGAIN) {
-			piv_txn_end(selk);
-			fprintf(stderr, "error: insufficient retries "
-			    "remaining (%d left)\n", retries);
-			explicit_bzero(pin, strlen(pin));
-			free(pin);
-			pin = NULL;
-			goto send;
-		} else if (r != 0) {
-			piv_txn_end(selk);
-			fprintf(stderr, "error: failed to verify PIN");
-			goto send;
-		}
-	}
+	if (agent_piv_try_pin() != 0)
+		goto send;
 	if (key->type == KEY_RSA) {
 		hashalg = SSH_DIGEST_SHA1;
 		if (flags & SSH_AGENT_RSA_SHA2_256)
@@ -600,9 +615,164 @@ struct exthandler exthandlers[];
 static void
 process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 {
-	int r;
+	int r, i;
 	struct sshbuf *msg;
+	struct sshkey *key = NULL;
+	struct sshkey *partner = NULL;
+	struct piv_slot *slot;
+	uint8_t *secret;
+	size_t seclen;
+	uint flags;
+	int found = 0;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+	if ((r = sshkey_froms(buf, &key)) != 0 ||
+	    (r = sshkey_froms(buf, &partner)) != 0 ||
+	    (r = sshbuf_get_u32(buf, &flags)) != 0) {
+		error("%s: couldn't parse request: %s", __func__, ssh_err(r));
+		goto fail;
+	}
+
+	if (flags != 0)
+		goto fail;
+
+	for (i = 0x9A; i < 0x9F; ++i) {
+		slot = piv_get_slot(selk, i);
+		if (slot == NULL)
+			continue;
+		if (sshkey_equal(slot->ps_pubkey, key)) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found) {
+		verbose("%s: %s key not found", __func__, sshkey_type(key));
+		goto fail;
+	}
+
+	if (key->type != KEY_ECDSA || partner->type != KEY_ECDSA) {
+		verbose("%s: keys are not both EC keys (%s and %s)", __func__,
+		    sshkey_type(key), sshkey_type(partner));
+		goto fail;
+	}
+
+	if (agent_piv_open() != 0)
+		goto fail;
+	if (agent_piv_try_pin() != 0)
+		goto fail;
+	r = piv_ecdh(selk, slot, partner, &secret, &seclen);\
+	piv_txn_end(selk);
+	if (r != 0) {
+		bunyan_log(ERROR, "piv_ecdh returned error",
+		    "code", BNY_INT, r,
+		    "error", BNY_STRING, strerror(r), NULL);
+		goto fail;
+	}
+
+	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (r = sshbuf_put_string(msg, secret, seclen)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	explicit_bzero(secret, seclen);
+	free(secret);
+
+	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	goto done;
+
+fail:
 	send_extfail(e);
+
+done:
+	sshbuf_free(msg);
+	sshkey_free(key);
+	sshkey_free(partner);
+}
+
+static void
+process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
+{
+	int r;
+	struct sshbuf *msg, *boxbuf, *guid;
+	struct sshkey *partner;
+	struct piv_ecdh_box *box = NULL, *newbox = NULL;
+	uint8_t slotid;
+	uint flags;
+	struct piv_slot *slot;
+	struct piv_token *tk;
+	uint8_t *secret = NULL, *out = NULL;
+	size_t seclen, outlen;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+	if ((r = sshbuf_froms(buf, &boxbuf)) != 0 ||
+	    (r = sshbuf_froms(buf, &guid)) != 0 ||
+	    (r = sshbuf_get_u8(buf, &slotid)) != 0 ||
+	    (r = sshkey_froms(buf, &partner)) != 0 ||
+	    (r = sshbuf_get_u32(buf, &flags)) != 0) {
+		error("%s: couldn't parse request: %s", __func__, ssh_err(r));
+		goto fail;
+	}
+
+	if (flags != 0)
+		goto fail;
+
+	r = piv_box_from_binary(sshbuf_ptr(boxbuf), sshbuf_len(boxbuf), &box);
+	if (r != 0)
+		goto fail;
+
+	r = piv_box_find_token(selk, box, &tk, &slot);
+	if (r != 0)
+		goto fail;
+	if (tk != selk)
+		goto fail;
+
+	if (agent_piv_open() != 0 ||
+	    agent_piv_try_pin() != 0)
+		goto fail;
+	if ((r = piv_box_open(selk, slot, box)) != 0 ||
+	    (r = piv_box_take_data(box, &secret, &seclen)) != 0)
+		goto fail;
+
+	newbox = piv_box_new();
+	VERIFY(newbox != NULL);
+
+	bcopy(sshbuf_ptr(guid), newbox->pdb_guid, sizeof (newbox->pdb_guid));
+	newbox->pdb_slot = slotid;
+	VERIFY0(piv_box_set_data(newbox, secret, seclen));
+	if ((r = piv_box_seal_offline(partner, newbox)) != 0)
+		goto fail;
+
+	VERIFY0(piv_box_to_binary(newbox, &out, &outlen));
+
+	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (r = sshbuf_put_string(msg, out, outlen)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+	goto done;
+
+fail:
+	send_extfail(e);
+done:
+	if (box != NULL)
+		piv_box_free(box);
+	if (newbox != NULL)
+		piv_box_free(newbox);
+	if (secret != NULL) {
+		explicit_bzero(secret, seclen);
+		free(secret);
+	}
+	if (out != NULL) {
+		explicit_bzero(out, outlen);
+		free(out);
+	}
+	sshbuf_free(msg);
+	sshkey_free(partner);
+	sshbuf_free(boxbuf);
+	sshbuf_free(guid);
 }
 
 static void
@@ -642,6 +812,7 @@ process_ext_query(SocketEntry *e, struct sshbuf *buf)
 struct exthandler exthandlers[] = {
 	{ "query", process_ext_query },
 	{ "ecdh@joyent.com", process_ext_ecdh },
+	{ "ecdh-rebox@joyent.com", process_ext_rebox },
 	{ "x509-certs@joyent.com", process_ext_x509_certs },
 	{ NULL, NULL }
 };
@@ -1464,6 +1635,13 @@ main(int ac, char **av)
 #endif
 
 skip:
+
+	r = mlockall(MCL_CURRENT | MCL_FUTURE);
+	if (r != 0) {
+		bunyan_log(WARN, "mlockall() failed, sensitive data "
+		    "may be swapped out to disk if system is low on "
+		    "memory", "error", BNY_STRING, strerror(r), NULL);
+	}
 
 	cleanup_pid = getpid();
 
