@@ -659,8 +659,10 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 
 	if (agent_piv_open() != 0)
 		goto fail;
-	if (agent_piv_try_pin() != 0)
+	if (agent_piv_try_pin() != 0) {
+		piv_txn_end(selk);
 		goto fail;
+	}
 	r = piv_ecdh(selk, slot, partner, &secret, &seclen);\
 	piv_txn_end(selk);
 	if (r != 0) {
@@ -727,12 +729,18 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	if (tk != selk)
 		goto fail;
 
-	if (agent_piv_open() != 0 ||
-	    agent_piv_try_pin() != 0)
+	if (agent_piv_open() != 0)
 		goto fail;
+	if (agent_piv_try_pin() != 0) {
+		piv_txn_end(selk);
+		goto fail;
+	}
 	if ((r = piv_box_open(selk, slot, box)) != 0 ||
-	    (r = piv_box_take_data(box, &secret, &seclen)) != 0)
+	    (r = piv_box_take_data(box, &secret, &seclen)) != 0) {
+		piv_txn_end(selk);
 		goto fail;
+	}
+	piv_txn_end(selk);
 
 	newbox = piv_box_new();
 	VERIFY(newbox != NULL);
