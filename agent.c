@@ -587,9 +587,13 @@ valid_pin(const char *pin)
 		return (0);
 	}
 	for (i = 0; pin[i] != 0; ++i) {
-		if (!(pin[i] >= '0' && pin[i] <= '9')) {
+		if (!(pin[i] >= '0' && pin[i] <= '9') &&
+		    !(pin[i] >= 'a' && pin[i] <= 'z') &&
+		    !(pin[i] >= 'A' && pin[i] <= 'Z')) {
+			char val[2] = {pin[i], '\0'};
+
 			bunyan_log(WARN, "invalid PIN: contains invalid "
-			    "characters", "pin", BNY_STRING, pin, NULL);
+			    "characters", "inval_char", BNY_STRING, val, NULL);
 			return (0);
 		}
 	}
