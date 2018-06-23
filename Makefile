@@ -1,12 +1,17 @@
 all: piv-tool piv-agent
 
+LIBRESSL_VER	= 2.7.4
+LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
+
+LIBRESSL_INC	= $(PWD)/libressl/include
+LIBRESSL_LIB	= $(PWD)/libressl/crypto/.libs
+
 SYSTEM	= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
-	PKG_CONFIG_PATH := /usr/lib/openssl-1.0/pkgconfig:$(PKG_CONFIG_PATH)
-	CRYPTO_CFLAGS	= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --cflags libcrypto)
-	CRYPTO_LIBS	= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs libcrypto)
+	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a -pthread
 	ZLIB_CFLAGS	= $(shell pkg-config --cflags zlib)
 	ZLIB_LIBS	= $(shell pkg-config --libs zlib)
 	SYSTEM_CFLAGS	=
@@ -15,8 +20,8 @@ endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
 	PCSC_LIBS	= -framework PCSC
-	CRYPTO_CFLAGS	= -I$(PWD)/libressl/include
-	CRYPTO_LIBS	= $(PWD)/libressl/crypto/.libs/libcrypto.a
+	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
@@ -86,7 +91,7 @@ piv-tool :		LIBS+=		$(PIVTOOL_LIBS)
 piv-tool :		LDFLAGS+=	$(PIVTOOL_LDFLAGS)
 piv-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 
-piv-tool: $(PIVTOOL_OBJS)
+piv-tool: $(PIVTOOL_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
 
 AGENT_SOURCES=			\
@@ -119,29 +124,26 @@ piv-agent :		LIBS+=		$(AGENT_LIBS)
 piv-agent :		LDFLAGS+=	$(AGENT_LDFLAGS)
 piv-agent :		HEADERS=	$(AGENT_HEADERS)
 
-piv-agent: $(AGENT_OBJS)
+piv-agent: $(AGENT_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(AGENT_OBJS) $(LIBS)
 
-%.o: %.c $(HEADERS)
+%.o: %.c $(HEADERS) $(LIBRESSL_INC)
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
 	rm -f piv-tool $(PIVTOOL_OBJS)
 	rm -f piv-agent $(AGENT_OBJS)
 	rm -fr .dist
+	rm -fr libressl
 
-ifeq ($(SYSTEM), Darwin)
-piv-agent: $(PWD)/libressl/crypto/.libs/libcrypto.a
-piv-tool: $(PWD)/libressl/crypto/.libs/libcrypto.a
+$(LIBRESSL_INC):
+	curl $(LIBRESSL_URL) | tar -zxf - && \
+	    mv libressl-$(LIBRESSL_VER) libressl
 
-$(PWD)/libressl/crypto/.libs/libcrypto.a:
-	git clone https://github.com/libressl-portable/portable ./libressl
+$(LIBRESSL_LIB)/libcrypto.a:
 	cd libressl && \
-	    git checkout v2.7.1 && \
-	    ./autogen.sh && \
 	    ./configure --enable-static && \
 	    $(MAKE)
-endif
 
 .PHONY: install
 
