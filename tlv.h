@@ -15,7 +15,7 @@
 #include <assert.h>
 #include <strings.h>
 
-#if !defined(__sun)
+#if !defined(__sun) && !defined(USING_SPL)
 typedef enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
 typedef unsigned int uint;
 #endif
