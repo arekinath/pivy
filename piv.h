@@ -429,6 +429,8 @@ int piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box);
 int piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
 void piv_box_free(struct piv_ecdh_box *box);
 
+int sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
+
 int piv_write_file(struct piv_token *pt, uint tag,
     const uint8_t *data, size_t len);
 

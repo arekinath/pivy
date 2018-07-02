@@ -6,7 +6,9 @@ LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_
 LIBRESSL_INC	= $(PWD)/libressl/include
 LIBRESSL_LIB	= $(PWD)/libressl/crypto/.libs
 
-SYSTEM	= $(shell uname -s)
+HAVE_ZFS	:= no
+
+SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
@@ -16,6 +18,14 @@ ifeq ($(SYSTEM), Linux)
 	ZLIB_LIBS	= $(shell pkg-config --libs zlib)
 	SYSTEM_CFLAGS	= $(shell pkg-config --cflags libbsd-overlay)
 	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
+	LIBZFS_VER	= $(shell pkg-config --modversion libzfs)
+	ifneq (,$(LIBZFS_VER))
+		HAVE_ZFS	:= yes
+		LIBZFS_CFLAGS	= $(shell pkg-config --cflags libzfs)
+		LIBZFS_LIBS	= $(shell pkg-config --libs libzfs) -lnvpair
+	else
+		HAVE_ZFS	:= no
+	endif
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
@@ -26,6 +36,7 @@ ifeq ($(SYSTEM), Darwin)
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
 	SYSTEM_LIBS	=
+	HAVE_ZFS	:= no
 endif
 
 _ED25519_SOURCES=		\
@@ -61,6 +72,11 @@ LIBSSH_SOURCES=				\
 	$(ED25519_SOURCES)		\
 	$(CHAPOLY_SOURCES)
 
+_SSS_SOURCES=			\
+	hazmat.c		\
+	randombytes.c
+SSS_SOURCES=$(_SSS_SOURCES:%=sss/%)
+
 PIVTOOL_SOURCES=		\
 	pivtool.c		\
 	tlv.c			\
@@ -95,6 +111,55 @@ piv-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 
 piv-tool: $(PIVTOOL_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
+
+PIVZFS_SOURCES=			\
+	piv-zfs.c		\
+	tlv.c			\
+	piv.c			\
+	debug.c			\
+	bunyan.c		\
+	json.c			\
+	custr.c			\
+	$(LIBSSH_SOURCES)	\
+	$(SSS_SOURCES)
+PIVZFS_HEADERS=			\
+	tlv.h			\
+	piv.h			\
+	bunyan.h		\
+	json.h			\
+	custr.h			\
+	debug.h
+
+ifeq (yes, $(HAVE_ZFS))
+
+PIVZFS_OBJS=		$(PIVZFS_SOURCES:%.c=%.o)
+PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(LIBZFS_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			-fstack-protector-all \
+			-O2 -g -m64 -fwrapv -fwrapv-pointer \
+			-fPIC -D_FORTIFY_SOURCE=2 \
+			-Wall -Werror -D_GNU_SOURCE -std=gnu99
+PIVZFS_LDFLAGS=		-m64
+PIVZFS_LIBS=		$(PCSC_LIBS) \
+			$(CRYPTO_LIBS) \
+			$(ZLIB_LIBS) \
+			$(LIBZFS_LIBS) \
+			$(SYSTEM_LIBS)
+
+piv-zfs :		CFLAGS=		$(PIVZFS_CFLAGS)
+piv-zfs :		LIBS+=		$(PIVZFS_LIBS)
+piv-zfs :		LDFLAGS+=	$(PIVZFS_LDFLAGS)
+piv-zfs :		HEADERS=	$(PIVZFS_HEADERS)
+
+piv-zfs: $(PIVZFS_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+	$(CC) $(LDFLAGS) -o $@ $(PIVZFS_OBJS) $(LIBS)
+
+all: piv-zfs
+
+endif
 
 AGENT_SOURCES=			\
 	agent.c			\
@@ -137,6 +202,7 @@ piv-agent: $(AGENT_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 clean:
 	rm -f piv-tool $(PIVTOOL_OBJS)
 	rm -f piv-agent $(AGENT_OBJS)
+	rm -f piv-zfs $(PIVZFS_OBJS)
 	rm -fr .dist
 	rm -fr libressl
 
