@@ -170,7 +170,7 @@ int	 sshkey_sign(const struct sshkey *, u_char **, size_t *,
 int	 sshkey_verify(const struct sshkey *, const u_char *, size_t,
     const u_char *, size_t, u_int);
 
-int	 sshkey_sig_from_asn1(enum sshkey_types ktype,
+int	 sshkey_sig_from_asn1(const struct sshkey *,
     enum sshdigest_types dtype, const uint8_t *sig, size_t siglen,
     struct sshbuf *buf);
 
@@ -219,8 +219,8 @@ int ssh_ed25519_verify(const struct sshkey *key,
 
 int ssh_ecdsa_sig_from_asn1(enum sshdigest_types dtype, const uint8_t *sig,
     size_t siglen, struct sshbuf *buf);
-int ssh_rsa_sig_from_asn1(enum sshdigest_types dtype, const uint8_t *sig,
-    size_t siglen, struct sshbuf *buf);
+int ssh_rsa_sig_from_asn1(const struct sshkey *key, enum sshdigest_types dtype,
+    const uint8_t *sig, size_t siglen, struct sshbuf *buf);
 int ssh_ed25519_sig_from_asn1(enum sshdigest_types dtype, const uint8_t *sig,
     size_t siglen, struct sshbuf *buf);
 #endif

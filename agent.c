@@ -496,7 +496,7 @@ process_sign_request2(SocketEntry *e)
 	int found = 0;
 	int retries = 1;
 	int i;
-	enum sshdigest_types hashalg;
+	enum sshdigest_types hashalg, ohashalg;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -534,6 +534,7 @@ process_sign_request2(SocketEntry *e)
 	} else if (key->type == KEY_ECDSA) {
 		hashalg = SSH_DIGEST_SHA256;
 	}
+	ohashalg = hashalg;
 	r = piv_sign(selk, slot, data, dlen, &hashalg, &rawsig, &rslen);
 	piv_txn_end(selk);
 
@@ -546,10 +547,15 @@ process_sign_request2(SocketEntry *e)
 		goto send;
 	}
 
+	if (hashalg != ohashalg) {
+		fprintf(stderr, "error: PIV signed with different hash algo\n");
+		goto send;
+	}
+
 	buf = sshbuf_new();
 	VERIFY(buf != NULL);
-	VERIFY0(sshkey_sig_from_asn1(slot->ps_pubkey->type,
-	    hashalg, rawsig, rslen, buf));
+	VERIFY0(sshkey_sig_from_asn1(slot->ps_pubkey, hashalg,
+	    rawsig, rslen, buf));
 	explicit_bzero(rawsig, rslen);
 	free(rawsig);
 

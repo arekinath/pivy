@@ -1589,10 +1589,22 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		out = NULL;
 
 		/*
-		 * XXX: I thought this should be sha256WithRSAEncryption?
-		 *      but that doesn't work lol
+		 * XXX: I thought this should be sha256WithRSAEncryption (etc)
+		 *      rather than just NID_sha256 but that doesn't work
 		 */
-		nid = NID_sha256;
+		switch (*hashalgo) {
+		case SSH_DIGEST_SHA1:
+			nid = NID_sha1;
+			break;
+		case SSH_DIGEST_SHA256:
+			nid = NID_sha256;
+			break;
+		case SSH_DIGEST_SHA512:
+			nid = NID_sha512;
+			break;
+		default:
+			VERIFY(0);
+		}
 		bcopy(buf, tmp, dglen);
 		digestInfo.algor = &algor;
 		digestInfo.algor->algorithm = OBJ_nid2obj(nid);

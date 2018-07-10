@@ -75,14 +75,23 @@ rsa_hash_alg_nid(int type)
 }
 
 int
-ssh_rsa_sig_from_asn1(enum sshdigest_types dtype, const uint8_t *sig,
-    size_t siglen, struct sshbuf *buf)
+ssh_rsa_sig_from_asn1(const struct sshkey *pubkey, enum sshdigest_types dtype,
+    const uint8_t *sig, size_t siglen, struct sshbuf *buf)
 {
 	int r;
 	const char *algid = rsa_hash_alg_ident(dtype);
+	size_t slen;
 
 	if (algid == NULL)
 		return (SSH_ERR_KEY_TYPE_MISMATCH);
+	if (pubkey->type != KEY_RSA)
+		return (SSH_ERR_KEY_TYPE_MISMATCH);
+
+	slen = RSA_size(pubkey->rsa);
+	if (slen <= 0 || slen > SSHBUF_MAX_BIGNUM)
+		return (SSH_ERR_INVALID_ARGUMENT);
+	if (slen != siglen)
+		return (SSH_ERR_INVALID_ARGUMENT);
 
 	if ((r = sshbuf_put_cstring(buf, algid)) != 0 ||
 	    (r = sshbuf_put_string(buf, sig, siglen)) != 0) {

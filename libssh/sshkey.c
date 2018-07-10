@@ -2133,18 +2133,18 @@ sshkey_sign(const struct sshkey *key,
 }
 
 int
-sshkey_sig_from_asn1(enum sshkey_types ktype, enum sshdigest_types dtype,
+sshkey_sig_from_asn1(const struct sshkey *key, enum sshdigest_types dtype,
     const uint8_t *sig, size_t siglen, struct sshbuf *buf)
 {
 	if (siglen == 0)
 		return SSH_ERR_INVALID_ARGUMENT;
-	switch (ktype) {
+	switch (key->type) {
 	case KEY_ECDSA_CERT:
 	case KEY_ECDSA:
 		return ssh_ecdsa_sig_from_asn1(dtype, sig, siglen, buf);
 	case KEY_RSA_CERT:
 	case KEY_RSA:
-		return ssh_rsa_sig_from_asn1(dtype, sig, siglen, buf);
+		return ssh_rsa_sig_from_asn1(key, dtype, sig, siglen, buf);
 	case KEY_ED25519:
 	case KEY_ED25519_CERT:
 		return ssh_ed25519_sig_from_asn1(dtype, sig, siglen, buf);
