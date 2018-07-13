@@ -511,6 +511,90 @@ sshbuf_get_string(struct sshbuf *buf, u_char **valp, size_t *lenp)
 }
 
 int
+sshbuf_get_string8(struct sshbuf *buf, u_char **valp, size_t *lenp)
+{
+	const u_char *val;
+	size_t len;
+	int r;
+
+	if (valp != NULL)
+		*valp = NULL;
+	if (lenp != NULL)
+		*lenp = 0;
+	if ((r = sshbuf_get_string8_direct(buf, &val, &len)) < 0)
+		return r;
+	if (valp != NULL) {
+		if ((*valp = malloc(len + 1)) == NULL) {
+			SSHBUF_DBG(("SSH_ERR_ALLOC_FAIL"));
+			return SSH_ERR_ALLOC_FAIL;
+		}
+		if (len != 0)
+			memcpy(*valp, val, len);
+		(*valp)[len] = '\0';
+	}
+	if (lenp != NULL)
+		*lenp = len;
+	return 0;
+}
+
+int
+sshbuf_get_string8_direct(struct sshbuf *buf, const u_char **valp, size_t *lenp)
+{
+	size_t len;
+	const u_char *p;
+	int r;
+
+	if (valp != NULL)
+		*valp = NULL;
+	if (lenp != NULL)
+		*lenp = 0;
+	if ((r = sshbuf_peek_string8_direct(buf, &p, &len)) < 0)
+		return r;
+	if (valp != NULL)
+		*valp = p;
+	if (lenp != NULL)
+		*lenp = len;
+	if (sshbuf_consume(buf, len + 1) != 0) {
+		/* Shouldn't happen */
+		SSHBUF_DBG(("SSH_ERR_INTERNAL_ERROR"));
+		SSHBUF_ABORT();
+		return SSH_ERR_INTERNAL_ERROR;
+	}
+	return 0;
+}
+
+int
+sshbuf_peek_string8_direct(const struct sshbuf *buf, const u_char **valp,
+    size_t *lenp)
+{
+	uint32_t len;
+	const u_char *p = sshbuf_ptr(buf);
+
+	if (valp != NULL)
+		*valp = NULL;
+	if (lenp != NULL)
+		*lenp = 0;
+	if (sshbuf_len(buf) < 1) {
+		SSHBUF_DBG(("SSH_ERR_MESSAGE_INCOMPLETE"));
+		return SSH_ERR_MESSAGE_INCOMPLETE;
+	}
+	len = p[0];
+	if (len > SSHBUF_SIZE_MAX - 1) {
+		SSHBUF_DBG(("SSH_ERR_STRING_TOO_LARGE"));
+		return SSH_ERR_STRING_TOO_LARGE;
+	}
+	if (sshbuf_len(buf) - 1 < len) {
+		SSHBUF_DBG(("SSH_ERR_MESSAGE_INCOMPLETE"));
+		return SSH_ERR_MESSAGE_INCOMPLETE;
+	}
+	if (valp != NULL)
+		*valp = p + 1;
+	if (lenp != NULL)
+		*lenp = len;
+	return 0;
+}
+
+int
 sshbuf_get_string_direct(struct sshbuf *buf, const u_char **valp, size_t *lenp)
 {
 	size_t len;
@@ -603,6 +687,41 @@ sshbuf_get_cstring(struct sshbuf *buf, char **valp, size_t *lenp)
 }
 
 int
+sshbuf_get_cstring8(struct sshbuf *buf, char **valp, size_t *lenp)
+{
+	size_t len;
+	const u_char *p, *z;
+	int r;
+
+	if (valp != NULL)
+		*valp = NULL;
+	if (lenp != NULL)
+		*lenp = 0;
+	if ((r = sshbuf_peek_string8_direct(buf, &p, &len)) != 0)
+		return r;
+	/* Allow a \0 only at the end of the string */
+	if (len > 0 &&
+	    (z = memchr(p , '\0', len)) != NULL && z < p + len - 1) {
+		SSHBUF_DBG(("SSH_ERR_INVALID_FORMAT"));
+		return SSH_ERR_INVALID_FORMAT;
+	}
+	if ((r = sshbuf_skip_string8(buf)) != 0)
+		return -1;
+	if (valp != NULL) {
+		if ((*valp = malloc(len + 1)) == NULL) {
+			SSHBUF_DBG(("SSH_ERR_ALLOC_FAIL"));
+			return SSH_ERR_ALLOC_FAIL;
+		}
+		if (len != 0)
+			memcpy(*valp, p, len);
+		(*valp)[len] = '\0';
+	}
+	if (lenp != NULL)
+		*lenp = (size_t)len;
+	return 0;
+}
+
+int
 sshbuf_get_stringb(struct sshbuf *buf, struct sshbuf *v)
 {
 	uint32_t len;
@@ -616,6 +735,26 @@ sshbuf_get_stringb(struct sshbuf *buf, struct sshbuf *v)
 	 */
 	if ((r = sshbuf_peek_string_direct(buf, NULL, NULL)) != 0 ||
 	    (r = sshbuf_get_u32(buf, &len)) != 0 ||
+	    (r = sshbuf_reserve(v, len, &p)) != 0 ||
+	    (r = sshbuf_get(buf, p, len)) != 0)
+		return r;
+	return 0;
+}
+
+int
+sshbuf_get_stringb8(struct sshbuf *buf, struct sshbuf *v)
+{
+	uint8_t len;
+	u_char *p;
+	int r;
+
+	/*
+	 * Use sshbuf_peek_string_direct() to figure out if there is
+	 * a complete string in 'buf' and copy the string directly
+	 * into 'v'.
+	 */
+	if ((r = sshbuf_peek_string8_direct(buf, NULL, NULL)) != 0 ||
+	    (r = sshbuf_get_u8(buf, &len)) != 0 ||
 	    (r = sshbuf_reserve(v, len, &p)) != 0 ||
 	    (r = sshbuf_get(buf, p, len)) != 0)
 		return r;
@@ -753,15 +892,45 @@ sshbuf_put_string(struct sshbuf *buf, const void *v, size_t len)
 }
 
 int
+sshbuf_put_string8(struct sshbuf *buf, const void *v, size_t len)
+{
+	u_char *d;
+	int r;
+
+	if (len > 0xFF - 1) {
+		SSHBUF_DBG(("SSH_ERR_NO_BUFFER_SPACE"));
+		return SSH_ERR_NO_BUFFER_SPACE;
+	}
+	if ((r = sshbuf_reserve(buf, len + 1, &d)) < 0)
+		return r;
+	d[0] = len;
+	if (len != 0)
+		memcpy(d + 1, v, len);
+	return 0;
+}
+
+int
 sshbuf_put_cstring(struct sshbuf *buf, const char *v)
 {
 	return sshbuf_put_string(buf, (u_char *)v, v == NULL ? 0 : strlen(v));
 }
 
 int
+sshbuf_put_cstring8(struct sshbuf *buf, const char *v)
+{
+	return sshbuf_put_string8(buf, (u_char *)v, v == NULL ? 0 : strlen(v));
+}
+
+int
 sshbuf_put_stringb(struct sshbuf *buf, const struct sshbuf *v)
 {
 	return sshbuf_put_string(buf, sshbuf_ptr(v), sshbuf_len(v));
+}
+
+int
+sshbuf_put_stringb8(struct sshbuf *buf, const struct sshbuf *v)
+{
+	return sshbuf_put_string8(buf, sshbuf_ptr(v), sshbuf_len(v));
 }
 
 int
