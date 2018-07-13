@@ -40,6 +40,8 @@
 #include "libssh/sshbuf.h"
 #include "libssh/digest.h"
 
+#include "sss/hazmat.h"
+
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -58,9 +60,11 @@
 
 static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
-static int min_retries = 2;
+static int min_retries = 1;
 
 static libzfs_handle_t *zfshdl = NULL;
+
+static SCARDCONTEXT ctx;
 
 const char *optstring = "d";
 
@@ -121,7 +125,8 @@ assert_pin(struct piv_token *pk)
 	do {
 		pin = getpass(prompt);
 	} while (pin == NULL && errno == EINTR);
-	if (pin == NULL && errno == ENXIO) {
+	if (pin == NULL && errno == ENXIO ||
+	    (pin != NULL && strlen(pin) == 0)) {
 		piv_txn_end(pk);
 		fprintf(stderr, "error: a PIN code is required to "
 		    "unlock token %s\n", guid);
@@ -175,6 +180,7 @@ struct challenge {
 	struct piv_ecdh_box *c_infobox;
 
 	/* These are kept in the infobox */
+	uint8_t c_id;
 	char *c_description;
 	char *c_hostname;
 	uint64_t c_ctime;
@@ -182,7 +188,43 @@ struct challenge {
 	struct sshkey *c_destkey;
 };
 
+enum intent {
+	INTENT_UNUSED,
+	INTENT_CHALRESP,
+	INTENT_DIRECT
+};
+
+struct partstate {
+	struct partstate *ps_next;
+	uint8_t ps_id;
+	char *ps_name;
+	char *ps_shortid;
+	uint8_t *ps_guid;
+	struct piv_ecdh_box *ps_box;
+	struct piv_ecdh_box *ps_respbox;
+	struct challenge *ps_challenge;
+	enum intent ps_intent;
+	uint8_t *ps_share;
+	size_t ps_len;
+};
+
 static void
+free_challenge(struct challenge *chal)
+{
+	if (chal->c_keybox != NULL)
+		piv_box_free(chal->c_keybox);
+	if (chal->c_infobox != NULL)
+		piv_box_free(chal->c_infobox);
+	if (chal->c_description)
+		free(chal->c_description);
+	if (chal->c_hostname)
+		free(chal->c_hostname);
+	if (chal->c_destkey)
+		sshkey_free(chal->c_destkey);
+	free(chal);
+}
+
+static int
 sshbuf_get_challenge(struct sshbuf *buf, struct challenge **outchal)
 {
 	struct challenge *chal;
@@ -191,17 +233,21 @@ sshbuf_get_challenge(struct sshbuf *buf, struct challenge **outchal)
 	size_t len;
 	struct sshkey *k;
 	char *tname;
+	int rc;
 
 	chal = calloc(1, sizeof (struct challenge));
 	VERIFY(chal != NULL);
 
-	VERIFY0(sshbuf_get_u8(buf, &chal->c_version));
+	if ((rc = sshbuf_get_u8(buf, &chal->c_version)))
+		goto out;
 	if (chal->c_version != 1) {
 		fprintf(stderr, "error: invalid challenge version: v%d "
 		    "(only v1 is supported)\n", (int)chal->c_version);
-		exit(1);
+		rc = ENOTSUP;
+		goto out;
 	}
-	VERIFY0(sshbuf_get_u8(buf, &temp8));
+	if ((rc = sshbuf_get_u8(buf, &temp8)))
+		goto out;
 	chal->c_type = (enum chaltype)temp8;
 
 	chal->c_keybox = piv_box_new();
@@ -209,68 +255,141 @@ sshbuf_get_challenge(struct sshbuf *buf, struct challenge **outchal)
 	chal->c_infobox = piv_box_new();
 	VERIFY(chal->c_infobox != NULL);
 
-	VERIFY0(sshbuf_get_string8(buf, &tmpbuf, &len));
+	if ((rc = sshbuf_get_string8(buf, &tmpbuf, &len)))
+		goto out;
 	VERIFY3U(len, ==, sizeof (chal->c_keybox->pdb_guid));
 	bcopy(tmpbuf, chal->c_keybox->pdb_guid, len);
 	bcopy(tmpbuf, chal->c_infobox->pdb_guid, len);
 	free(tmpbuf);
-	VERIFY0(sshbuf_get_u8(buf, &chal->c_keybox->pdb_slot));
+	if ((rc = sshbuf_get_u8(buf, &chal->c_keybox->pdb_slot)))
+		goto out;
 	chal->c_infobox->pdb_slot = chal->c_keybox->pdb_slot;
 
-	VERIFY0(sshbuf_get_cstring8(buf, &tname));
+	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL)))
+		goto out;
 	k = sshkey_new(KEY_ECDSA);
-	k->ecdsa_nid = sshkey_ecdsa_nid_from_name(tname);
+	k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+	VERIFY(k->ecdsa_nid != -1);
 	free(tname);
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY0(sshbuf_get_eckey(buf, k->ecdsa));
-	VERIFY0(sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa)));
+	VERIFY(k->ecdsa != NULL);
+	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa))))
+		goto out;
 	chal->c_keybox->pdb_pub = k;
 	VERIFY0(sshkey_demote(k, &chal->c_infobox->pdb_pub));
 
-	VERIFY0(sshkey_get_cstring8(buf, &chal->c_keybox->pdb_cipher));
-	VERIFY0(sshkey_get_cstring8(buf, &chal->c_keybox->pdb_kdf));
+	if ((rc = sshbuf_get_cstring8(buf, &chal->c_keybox->pdb_cipher, NULL)) ||
+	    (rc = sshbuf_get_cstring8(buf, &chal->c_keybox->pdb_kdf, NULL)))
+		goto out;
 	chal->c_keybox->pdb_free_str = B_TRUE;
 
 	chal->c_infobox->pdb_cipher = strdup(chal->c_keybox->pdb_cipher);
 	chal->c_infobox->pdb_kdf = strdup(chal->c_keybox->pdb_kdf);
 	chal->c_infobox->pdb_free_str = B_TRUE;
 
-	VERIFY0(sshbuf_get_cstring8(buf, &tname));
+	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL)))
+		goto out;
 	k = sshkey_new(KEY_ECDSA);
-	k->ecdsa_nid = sshkey_ecdsa_nid_from_name(tname);
+	k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+	VERIFY(k->ecdsa_nid != -1);
 	free(tname);
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY0(sshbuf_get_eckey(buf, k->ecdsa));
-	VERIFY0(sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa)));
+	VERIFY(k->ecdsa != NULL);
+	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa))))
+		goto out;
 	chal->c_keybox->pdb_ephem_pub = k;
 
-	VERIFY0(sshbuf_get_string8(buf, &chal->c_keybox->pdb_iv.b_data,
-	    &chal->c_keybox->pdb_iv.b_size));
+	if ((rc = sshbuf_get_string8(buf, &chal->c_keybox->pdb_iv.b_data,
+	    &chal->c_keybox->pdb_iv.b_size)))
+		goto out;
 	chal->c_keybox->pdb_iv.b_len = chal->c_keybox->pdb_iv.b_size;
-	VERIFY0(sshbuf_get_string(buf, &chal->c_keybox->pdb_enc.b_data,
-	    &chal->c_keybox->pdb_enc.b_size));
+	if ((rc = sshbuf_get_string(buf, &chal->c_keybox->pdb_enc.b_data,
+	    &chal->c_keybox->pdb_enc.b_size)))
+		goto out;
 	chal->c_keybox->pdb_enc.b_len = chal->c_keybox->pdb_enc.b_size;
 
-	VERIFY0(sshbuf_get_cstring8(buf, &tname));
+	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL)))
+		goto out;
 	k = sshkey_new(KEY_ECDSA);
-	k->ecdsa_nid = sshkey_ecdsa_nid_from_name(tname);
+	k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+	VERIFY(k->ecdsa_nid != -1);
 	free(tname);
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY0(sshbuf_get_eckey(buf, k->ecdsa));
-	VERIFY0(sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa)));
+	VERIFY(k->ecdsa != NULL);
+	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa))))
+		goto out;
 	chal->c_infobox->pdb_ephem_pub = k;
 
-	VERIFY0(sshbuf_get_string8(buf, &chal->c_infobox->pdb_iv.b_data,
-	    &chal->c_infobox->pdb_iv.b_size));
+	if ((rc = sshbuf_get_string8(buf, &chal->c_infobox->pdb_iv.b_data,
+	    &chal->c_infobox->pdb_iv.b_size)))
+		goto out;
 	chal->c_infobox->pdb_iv.b_len = chal->c_infobox->pdb_iv.b_size;
-	VERIFY0(sshbuf_get_string(buf, &chal->c_infobox->pdb_enc.b_data,
-	    &chal->c_infobox->pdb_enc.b_size));
+	if ((rc = sshbuf_get_string(buf, &chal->c_infobox->pdb_enc.b_data,
+	    &chal->c_infobox->pdb_enc.b_size)))
+		goto out;
 	chal->c_infobox->pdb_enc.b_len = chal->c_infobox->pdb_enc.b_size;
 
 	*outchal = chal;
+	chal = NULL;
+out:
+	if (chal != NULL)
+		free_challenge(chal);
+	return (rc);
+}
+
+static int
+challenge_parse_infobox(struct challenge *chal)
+{
+	uint8_t *data = NULL;
+	size_t len;
+	struct sshbuf *buf;
+	int rc;
+	struct sshkey *k = NULL;
+	char *tname = NULL;
+
+	VERIFY0(piv_box_take_data(chal->c_infobox, &data, &len));
+	buf = sshbuf_from(data, len);
+	VERIFY(buf != NULL);
+
+	if ((rc = sshbuf_get_u8(buf, &chal->c_id)) ||
+	    (rc = sshbuf_get_cstring8(buf, &chal->c_hostname, NULL)) ||
+	    (rc = sshbuf_get_u64(buf, &chal->c_ctime)) ||
+	    (rc = sshbuf_get_cstring8(buf, &chal->c_description, NULL)) ||
+	    (rc = sshbuf_get_u8(buf, &chal->c_words[0])) ||
+	    (rc = sshbuf_get_u8(buf, &chal->c_words[1])) ||
+	    (rc = sshbuf_get_u8(buf, &chal->c_words[2])) ||
+	    (rc = sshbuf_get_u8(buf, &chal->c_words[3])))
+		goto out;
+
+	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL)))
+		goto out;
+	k = sshkey_new(KEY_ECDSA);
+	k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+	VERIFY(k->ecdsa_nid != -1);
+	free(tname);
+	tname = NULL;
+	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(k->ecdsa != NULL);
+	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa))))
+		goto out;
+	chal->c_destkey = k;
+	k = NULL;
+
+out:
+	free(tname);
+	if (k != NULL)
+		sshkey_free(k);
+	sshbuf_free(buf);
+	free(data);
+	return (rc);
 }
 
 static void
@@ -286,6 +405,7 @@ sshbuf_put_challenge(struct sshbuf *buf, struct challenge *chal)
 		chal->c_infobox = piv_box_new();
 		VERIFY(chal->c_infobox != NULL);
 
+		VERIFY0(sshbuf_put_u8(ibuf, chal->c_id));
 		VERIFY0(sshbuf_put_cstring8(ibuf, chal->c_hostname));
 		VERIFY0(sshbuf_put_u64(ibuf, chal->c_ctime));
 		VERIFY0(sshbuf_put_cstring8(ibuf, chal->c_description));
@@ -361,13 +481,150 @@ sshbuf_put_challenge(struct sshbuf *buf, struct challenge *chal)
 }
 
 static void
-unlock_generic(nvlist_t *config,
+intent_prompt(int n, struct partstate *pstates)
+{
+	struct partstate *pstate;
+	char *p;
+	char *linebuf;
+	size_t len = 1024, pos = 0;
+	uint8_t set;
+
+	linebuf = malloc(len);
+
+prompt:
+	fprintf(stderr, "Parts:\n");
+	for (pstate = pstates; pstate != NULL; pstate = pstate->ps_next) {
+		const char *intent;
+		set = 0;
+		switch (pstate->ps_intent) {
+		case INTENT_UNUSED:
+			intent = "do not use";
+			break;
+		case INTENT_DIRECT:
+			++set;
+			intent = "insert directly";
+			break;
+		case INTENT_CHALRESP:
+			++set;
+			intent = "challenge-response";
+			break;
+		}
+		fprintf(stderr, "  [%d] %s (%s): %s\n", pstate->ps_id,
+		    pstate->ps_name, pstate->ps_shortid, intent);
+	}
+	if (set < n) {
+		fprintf(stderr, "\nChosen: %d out of %d required\n", set, n);
+		fprintf(stderr, "Commands:\n  +0 -- set [0] to insert "
+		    "directly\n  =1 -- set [1] to challenge-response\n"
+		    "  -2 -- do not use [2]\n  q -- cancel and quit\n");
+		fprintf(stderr, "> ");
+	} else {
+		fprintf(stderr, "\nReady to execute.\n"
+		    "Press return to begin.\n");
+	}
+
+	p = fgets(&linebuf[pos], len - pos, stdin);
+	if (p == NULL || strlen(linebuf) == 0)
+		exit(1);
+	if (set >= n && linebuf[0] == '\n' && linebuf[1] == 0) {
+		free(linebuf);
+		return;
+	}
+	linebuf[strlen(linebuf) - 1] = 0;
+	if (strcmp("q", linebuf) == 0)
+		exit(1);
+	if (strlen(linebuf) < 2)
+		goto prompt;
+	int sel = atoi(&linebuf[1]);
+	for (pstate = pstates; pstate != NULL; pstate = pstate->ps_next) {
+		if (sel == pstate->ps_id)
+			break;
+	}
+	if (pstate == NULL || sel != pstate->ps_id) {
+		fprintf(stderr, "Invalid command: '%s'\n", linebuf);
+		goto prompt;
+	}
+	switch (linebuf[0]) {
+	case '+':
+		pstate->ps_intent = INTENT_DIRECT;
+		break;
+	case '=':
+		pstate->ps_intent = INTENT_CHALRESP;
+		break;
+	case '-':
+		pstate->ps_intent = INTENT_UNUSED;
+		break;
+	default:
+		fprintf(stderr, "Unknown command: '%s'\n", linebuf);
+	}
+
+	goto prompt;
+}
+
+static void
+open_box_with_cak(const char *name, const char *guidhex,
+    struct sshkey *cak, struct piv_ecdh_box *box)
+{
+	struct piv_slot *slot;
+	int rc;
+
+	VERIFY0(piv_txn_begin(selk));
+	VERIFY0(piv_select(selk));
+
+	VERIFY0(piv_read_cert(selk, PIV_SLOT_CARD_AUTH));
+	slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
+	VERIFY(slot != NULL);
+
+	if (piv_auth_key(selk, slot, cak) != 0) {
+		piv_txn_end(selk);
+		fprintf(stderr, "error: found a token with "
+		    "GUID match for %s (%s), but CAK auth "
+		    "failed!\n", name, guidhex);
+		exit(3);
+	}
+	fprintf(stderr, "Using '%s' (%s)\n", name, guidhex);
+
+	VERIFY0(piv_read_cert(selk, PIV_SLOT_KEY_MGMT));
+	slot = piv_get_slot(selk, PIV_SLOT_KEY_MGMT);
+	VERIFY(slot != NULL);
+
+again:
+	rc = piv_box_open(selk, slot, box);
+	if (rc == EPERM) {
+		assert_pin(selk);
+		goto again;
+	} else if (rc != 0) {
+		fprintf(stderr, "error: failed to open "
+		    "PIV box: %d (%s)\n", rc, strerror(rc));
+		piv_txn_end(selk);
+		exit(3);
+	}
+
+	piv_txn_end(selk);
+}
+
+static void
+unlock_generic(nvlist_t *config, const char *thing,
     void (*usekey)(const uint8_t *, size_t, void *), void *cookie)
 {
 	nvlist_t *opts, *opt;
 	uint32_t nopts;
-	int32_t ver, i;
+	int32_t ver, i, j;
 	int rc;
+	char nbuf[8];
+	int32_t n, m;
+	nvlist_t *parts, *part;
+	uint32_t nparts;
+
+	struct piv_token *t;
+	struct piv_slot *slot;
+	struct piv_ecdh_box *box;
+	struct sshbuf *buf;
+
+	char *guidhex, *name, *cakenc, *boxenc;
+	uint8_t *guid;
+	uint guidlen;
+	struct sshkey *cak;
 
 	VERIFY0(nvlist_lookup_int32(config, "v", &ver));
 	if (ver != 1) {
@@ -384,30 +641,8 @@ unlock_generic(nvlist_t *config,
 		exit(2);
 	}
 
-	/*
-	 * To prepare for the second pass (recovery), generate an in-memory
-	 * EC key. We will use this as the recipient of challenge-response
-	 * boxes.
-	 */
-	struct sshkey *ephem = NULL, *ephempub = NULL;
-	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &ephem));
-	VERIFY0(sshkey_demote(ephem, &ephempub));
-
 	/* First pass: try all n=m=1 options. */
 	for (i = 0; i < nopts; ++i) {
-		char nbuf[8];
-		int32_t n, m;
-		nvlist_t *parts, *part;
-		uint32_t nparts;
-		struct piv_token *t;
-		struct piv_slot *slot;
-		struct piv_ecdh_box *box;
-		struct sshbuf *buf;
-
-		char *guidhex, *name, *cakenc, *boxenc;
-		uint8_t *guid;
-		uint guidlen;
-		struct sshkey *cak;
 		char *ptr;
 
 		snprintf(nbuf, sizeof (nbuf), "%d", i);
@@ -455,51 +690,7 @@ unlock_generic(nvlist_t *config,
 		VERIFY0(piv_box_from_binary(sshbuf_ptr(buf),
 		    sshbuf_len(buf), &box));
 
-		struct challenge *ch = calloc(1, sizeof (struct challenge));
-		ch->c_version = 1;
-		ch->c_type = CHAL_RECOVERY;
-		ch->c_keybox = box;
-		ch->c_description = "test description";
-		ch->c_hostname = "test";
-		ch->c_ctime = time(NULL);
-		ch->c_destkey = ephempub;
-		struct sshbuf *chalbuf = sshbuf_new();
-		sshbuf_put_challenge(chalbuf, ch);
-		fprintf(stderr, "challenge: %s\n", sshbuf_dtob64(chalbuf));
-
-		VERIFY0(piv_txn_begin(selk));
-		VERIFY0(piv_select(selk));
-
-		VERIFY0(piv_read_cert(selk, PIV_SLOT_CARD_AUTH));
-		slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
-		VERIFY(slot != NULL);
-
-		if (piv_auth_key(selk, slot, cak) != 0) {
-			piv_txn_end(selk);
-			fprintf(stderr, "error: found a token with "
-			    "GUID match for %s (%s), but CAK auth "
-			    "failed!\n", name, guidhex);
-			exit(3);
-		}
-		fprintf(stderr, "Using '%s' (%s)\n", name, guidhex);
-
-		VERIFY0(piv_read_cert(selk, PIV_SLOT_KEY_MGMT));
-		slot = piv_get_slot(selk, PIV_SLOT_KEY_MGMT);
-		VERIFY(slot != NULL);
-
-again:
-		rc = piv_box_open(selk, slot, box);
-		if (rc == EPERM) {
-			assert_pin(selk);
-			goto again;
-		} else if (rc != 0) {
-			fprintf(stderr, "error: failed to open "
-			    "PIV box: %d (%s)\n", rc, strerror(rc));
-			piv_txn_end(selk);
-			exit(3);
-		}
-
-		piv_txn_end(selk);
+		open_box_with_cak(name, guidhex, cak, box);
 
 		uint8_t *key;
 		size_t keylen;
@@ -509,13 +700,26 @@ again:
 		return;
 	}
 
+	/*
+	 * To prepare for the second pass (recovery), generate an in-memory
+	 * EC key. We will use this as the recipient of challenge-response
+	 * boxes.
+	 */
+	struct sshkey *ephem = NULL, *ephempub = NULL;
+	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &ephem));
+	VERIFY0(sshkey_demote(ephem, &ephempub));
+
+	char *linebuf, *p;
+	size_t len = 1024, pos = 0;
+	linebuf = malloc(len);
+
+config_again:
+	fprintf(stderr, "No PIV tokens on the system matched a primary "
+	    "configuration.\n\n");
+
+	fprintf(stderr, "The following configurations are available:\n");
 
 	for (i = 0; i < nopts; ++i) {
-		char nbuf[8];
-		int32_t n, m;
-		nvlist_t *parts, *part;
-		uint32_t nparts;
-
 		snprintf(nbuf, sizeof (nbuf), "%d", i);
 		VERIFY0(nvlist_lookup_nvlist(opts, nbuf, &opt));
 
@@ -524,7 +728,237 @@ again:
 
 		VERIFY0(nvlist_lookup_nvlist(opt, "p", &parts));
 		VERIFY0(nvlist_lookup_uint32(parts, "length", &nparts));
+
+		if (n == 1 && m == 1) {
+			fprintf(stderr, "  [%d] ", i);
+		} else {
+			fprintf(stderr, "  [%d] %d out of %d from: ", i, n, m);
+		}
+
+		for (j = 0; j < nparts; ++j) {
+			snprintf(nbuf, sizeof (nbuf), "%d", j);
+			VERIFY0(nvlist_lookup_nvlist(parts, nbuf, &part));
+
+			VERIFY0(nvlist_lookup_string(part, "n", &name));
+			VERIFY0(nvlist_lookup_string(part, "g", &guidhex));
+			guidhex = strdup(guidhex);
+			guidhex[8] = 0;
+
+			if (j > 0)
+				fprintf(stderr, ", ");
+			fprintf(stderr, "%s (%s)", name, guidhex);
+		}
+		fprintf(stderr, "\n");
 	}
+
+	fprintf(stderr, "\nUse which configuration? (or q to exit) ");
+	p = fgets(&linebuf[pos], len - pos, stdin);
+	if (p == NULL || linebuf[strlen(linebuf) - 1] != '\n')
+		exit(1);
+	if (strcmp("\n", p) == 0)
+		goto config_again;
+	if (strcmp("q\n", p) == 0)
+		exit(1);
+	linebuf[strlen(linebuf) - 1] = 0;
+
+	if (nvlist_lookup_nvlist(opts, linebuf, &opt))
+		goto config_again;
+
+	VERIFY0(nvlist_lookup_int32(opt, "n", &n));
+	VERIFY0(nvlist_lookup_int32(opt, "m", &m));
+
+	VERIFY0(nvlist_lookup_nvlist(opt, "p", &parts));
+	VERIFY0(nvlist_lookup_uint32(parts, "length", &nparts));
+
+	struct partstate *pstates = NULL;
+	struct partstate *pstate;
+
+	for (j = 0; j < nparts; ++j) {
+		snprintf(nbuf, sizeof (nbuf), "%d", j);
+		VERIFY0(nvlist_lookup_nvlist(parts, nbuf, &part));
+
+		pstate = calloc(1, sizeof (struct partstate));
+		pstate->ps_next = pstates;
+		pstates = pstate;
+		pstate->ps_id = j;
+
+		VERIFY0(nvlist_lookup_string(part, "n", &name));
+		pstate->ps_name = name;
+		VERIFY0(nvlist_lookup_string(part, "g", &guidhex));
+		guid = parse_hex(guidhex, &guidlen);
+		VERIFY(guid != NULL);
+		VERIFY3U(guidlen, ==, 16);
+		pstate->ps_guid = guid;
+		pstate->ps_shortid = strdup(guidhex);
+		pstate->ps_shortid[8] = 0;
+
+		VERIFY0(nvlist_lookup_string(part, "b", &boxenc));
+		buf = sshbuf_new();
+		VERIFY(buf != NULL);
+		VERIFY0(sshbuf_b64tod(buf, boxenc));
+		VERIFY0(piv_box_from_binary(sshbuf_ptr(buf),
+		    sshbuf_len(buf), &box));
+		pstate->ps_box = box;
+
+		pstate->ps_intent = INTENT_UNUSED;
+	}
+
+	fprintf(stderr, "\nBelow is a list of all the available parts for "
+	    "this configuration. You need to\nacquire %d parts to recover the "
+	    "key, which can either be using a token\ninserted directly into "
+	    "this system, or acquired through a challenge-response\nprocess "
+	    "with a remote system.\n\n");
+
+	intent_prompt(n, pstates);
+
+	sss_Keyshare *shares;
+	uint8_t *share;
+	size_t slen;
+	shares = calloc(n, sizeof (sss_Keyshare));
+	int nshare = 0;
+
+	for (pstate = pstates; pstate != NULL; pstate = pstate->ps_next) {
+		char tbuf[128];
+		struct sshbuf *cbuf;
+		uint8_t id;
+		struct piv_ecdh_box *respbox = NULL;
+redo_ps:
+		switch (pstate->ps_intent) {
+		case INTENT_CHALRESP:
+			fprintf(stderr, "Challenging token '%s' (%s)...\n",
+			    pstate->ps_name, pstate->ps_shortid);
+
+			pstate->ps_challenge = calloc(1,
+			    sizeof (struct challenge));
+			pstate->ps_challenge->c_version = 1;
+			pstate->ps_challenge->c_type = CHAL_RECOVERY;
+			pstate->ps_challenge->c_id = pstate->ps_id;
+			pstate->ps_challenge->c_description = thing;
+			VERIFY0(gethostname(tbuf, sizeof (tbuf)));
+			pstate->ps_challenge->c_hostname = strdup(tbuf);
+			pstate->ps_challenge->c_ctime = time(NULL);
+			arc4random_buf(&pstate->ps_challenge->c_words,
+			    sizeof (pstate->ps_challenge->c_words));
+			pstate->ps_challenge->c_destkey = ephempub;
+			pstate->ps_challenge->c_keybox = pstate->ps_box;
+
+			cbuf = sshbuf_new();
+			VERIFY(cbuf != NULL);
+
+			sshbuf_put_challenge(cbuf, pstate->ps_challenge);
+
+			fprintf(stderr, "CHALLENGE\n--\n%s\n",
+			    sshbuf_dtob64(cbuf));
+
+			fprintf(stderr, "\n\n[enter response followed "
+			    "by newline]\n");
+			sshbuf_reset(cbuf);
+			pos = 0;
+			do {
+				p = fgets(&linebuf[pos], len - pos, stdin);
+				if (p == NULL)
+					exit(1);
+				if (sshbuf_b64tod(cbuf, linebuf)) {
+					pos += strlen(&linebuf[pos]);
+				} else {
+					pos = 0;
+					rc = piv_box_from_binary(
+					    sshbuf_ptr(cbuf), sshbuf_len(cbuf),
+					    &respbox);
+					if (rc != 0)
+						respbox = NULL;
+				}
+			} while (respbox == NULL);
+
+			rc = piv_box_open_offline(ephem, respbox);
+			if (rc != 0) {
+				fprintf(stderr, "Response invalid.\n");
+				fprintf(stderr, "Retry? [Y/n] ");
+				p = fgets(&linebuf[pos], len - pos, stdin);
+				if (p == NULL || strlen(linebuf) == 0)
+					exit(1);
+				if (strcmp(linebuf, "\n") == 0 ||
+				    strcmp(linebuf, "y\n") == 0 ||
+				    strcmp(linebuf, "Y\n") == 0)
+					goto redo_ps;
+				exit(1);
+			}
+
+			VERIFY0(piv_box_take_data(respbox, &share, &slen));
+			sshbuf_free(cbuf);
+			cbuf = sshbuf_from(share, slen);
+			VERIFY0(sshbuf_get_u8(cbuf, &id));
+			VERIFY0(sshbuf_get_string8(cbuf, &share, &slen));
+
+			if (m > 1) {
+				VERIFY3U(slen, ==, sizeof (sss_Keyshare));
+				bcopy(share, shares[nshare++], slen);
+				free(share);
+				share = NULL;
+			}
+			break;
+		case INTENT_DIRECT:
+			fprintf(stderr, "Using token '%s' (%s) directly...\n",
+			    pstate->ps_name, pstate->ps_shortid);
+			piv_release(ks);
+			ks = piv_enumerate(ctx);
+
+			if ((rc = piv_box_find_token(ks, pstate->ps_box,
+			    &t, &slot))) {
+				fprintf(stderr, "Failed to find token %s\n",
+				    pstate->ps_shortid);
+				fprintf(stderr, "Retry? [Y/n] ");
+				p = fgets(&linebuf[pos], len - pos, stdin);
+				if (p == NULL || strlen(linebuf) == 0)
+					exit(1);
+				if (strcmp(linebuf, "\n") == 0 ||
+				    strcmp(linebuf, "y\n") == 0 ||
+				    strcmp(linebuf, "Y\n") == 0)
+					goto redo_ps;
+				exit(1);
+			}
+
+			VERIFY0(piv_txn_begin(t));
+			VERIFY0(piv_select(t));
+redo_ps_open:
+			rc = piv_box_open(t, slot, pstate->ps_box);
+			if (rc == EPERM) {
+				assert_pin(t);
+				goto redo_ps_open;
+			} else if (rc != 0) {
+				fprintf(stderr, "error: failed to open "
+				    "PIV box: %d (%s)\n", rc, strerror(rc));
+				piv_txn_end(t);
+				exit(3);
+			}
+			piv_txn_end(t);
+
+			VERIFY0(piv_box_take_data(pstate->ps_box,
+			    &share, &slen));
+			if (m > 1) {
+				VERIFY3U(slen, ==, sizeof (sss_Keyshare));
+				bcopy(share, shares[nshare++], slen);
+				free(share);
+				share = NULL;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	fprintf(stderr, "\nKey recovery process complete.\n");
+
+	if (n == 1 && m == 1) {
+		usekey(share, slen, cookie);
+		return;
+	}
+
+	VERIFY3U(nshares, ==, n);
+
+	key = calloc(1, 32);
+	sss_combine_keyshares(key, shares, n);
+	usekey(key, 32, cookie);
 }
 
 static void
@@ -550,6 +984,12 @@ cmd_unlock(const char *fsname)
 	nvlist_t *props, *prop, *config;
 	uint64_t kstatus;
 	char *json;
+	char *thing;
+	size_t tlen;
+
+	tlen = strlen(fsname) + 128;
+	thing = calloc(1, tlen);
+	snprintf(thing, tlen, "Unlock ZFS filesystem %s", fsname);
 
 	ds = zfs_open(zfshdl, fsname, ZFS_TYPE_DATASET);
 	if (ds == NULL) {
@@ -588,16 +1028,160 @@ cmd_unlock(const char *fsname)
 		    "property on dataset %s\n", fsname);
 		exit(2);
 	}
+
 	VERIFY(config != NULL);
 
 	fprintf(stderr, "Attempting to unlock ZFS '%s'...\n", fsname);
-	unlock_generic(config, do_zfs_unlock, fsname);
+	unlock_generic(config, thing, do_zfs_unlock, fsname);
 }
 
 static void
 cmd_respond(void)
 {
-	
+	char *linebuf, *p;
+	size_t len = 2048, pos = 0;
+	struct challenge *chal = NULL;
+	struct sshbuf *buf;
+	struct piv_token *t;
+	struct piv_slot *slot;
+	int rc;
+
+	fprintf(stderr, "[enter challenge followed by newline]\n");
+
+	linebuf = malloc(len);
+
+	buf = sshbuf_new();
+	do {
+		p = fgets(&linebuf[pos], len - pos, stdin);
+		if (p == NULL)
+			exit(1);
+		if (sshbuf_b64tod(buf, linebuf)) {
+			pos += strlen(&linebuf[pos]);
+		} else {
+			pos = 0;
+			if (sshbuf_get_challenge(buf, &chal)) {
+				struct sshbuf *nbuf;
+				nbuf = sshbuf_new();
+				VERIFY0(sshbuf_put(nbuf, sshbuf_ptr(buf),
+				    sshbuf_len(buf)));
+				sshbuf_free(buf);
+				buf = nbuf;
+			}
+		}
+	} while (chal == NULL);
+
+	if ((rc = piv_box_find_token(ks, chal->c_infobox, &t, &slot))) {
+		fprintf(stderr, "error: failed to find token to match "
+		    "challenge\n");
+		exit(1);
+	}
+
+	fprintf(stderr, "Decrypting challenge...\n");
+	VERIFY0(piv_txn_begin(t));
+	VERIFY0(piv_select(t));
+again:
+	rc = piv_box_open(t, slot, chal->c_infobox);
+	if (rc == EPERM) {
+		assert_pin(t);
+		goto again;
+	} else if (rc != 0) {
+		fprintf(stderr, "error: failed to open "
+		    "PIV box: %d (%s)\n", rc, strerror(rc));
+		piv_txn_end(t);
+		exit(3);
+	}
+	piv_txn_end(t);
+
+	if (challenge_parse_infobox(chal)) {
+		fprintf(stderr, "error: failed to parse infobox\n");
+		exit(3);
+	}
+
+	fprintf(stderr, "\nCHALLENGE\n---\n");
+	const char *purpose;
+	switch (chal->c_type) {
+	case CHAL_RECOVERY:
+		purpose = "recovery of at-rest encryption keys";
+		break;
+	case CHAL_VERIFY_AUDIT:
+		purpose = "verification of hash-chain audit trail";
+		break;
+	default:
+		exit(1);
+	}
+	fprintf(stderr, "%-20s   %s\n", "Purpose", purpose);
+	fprintf(stderr, "%-20s   %s\n", "Description", chal->c_description);
+	fprintf(stderr, "%-20s   %s\n", "Hostname", chal->c_hostname);
+
+	struct tm tmctime;
+	time_t ctime;
+	char tbuf[128];
+
+	bzero(&tmctime, sizeof (tmctime));
+	ctime = (time_t)chal->c_ctime;
+	localtime_r(&ctime, &tmctime);
+	strftime(tbuf, sizeof (tbuf), "%Y-%m-%d %H:%M:%S", &tmctime);
+	fprintf(stderr, "%-20s   %s (local time)\n", "Generated at", tbuf);
+
+	fprintf(stderr, "\n%-20s   %s %s %s %s\n\n", "VERIFICATION WORDS",
+	    wordlist[chal->c_words[0]], wordlist[chal->c_words[1]],
+	    wordlist[chal->c_words[2]], wordlist[chal->c_words[3]]);
+	fprintf(stderr, "Please check that these verification words match the "
+	    "original source via a\nseparate communications channel to the "
+	    "one used to transport the challenge\nitself.\n\n");
+
+	fprintf(stderr, "If these details are correct and you wish to "
+	    "respond, type 'YES': ");
+	p = fgets(linebuf, len, stdin);
+	if (p == NULL)
+		exit(1);
+	if (strcmp(linebuf, "YES\n") != 0)
+		exit(1);
+
+	fprintf(stderr, "Decrypting payload...\n");
+	VERIFY0(piv_txn_begin(t));
+	VERIFY0(piv_select(t));
+again2:
+	rc = piv_box_open(t, slot, chal->c_keybox);
+	if (rc == EPERM) {
+		assert_pin(t);
+		goto again2;
+	} else if (rc != 0) {
+		fprintf(stderr, "error: failed to open "
+		    "PIV box: %d (%s)\n", rc, strerror(rc));
+		piv_txn_end(t);
+		exit(3);
+	}
+	piv_txn_end(t);
+
+	struct piv_ecdh_box *respbox;
+	struct sshbuf *resp;
+	char *kdata;
+	size_t klen;
+
+	VERIFY0(piv_box_take_data(chal->c_keybox, &kdata, &klen));
+
+	resp = sshbuf_new();
+	VERIFY(resp != NULL);
+	VERIFY0(sshbuf_put_u8(resp, chal->c_id));
+	VERIFY0(sshbuf_put_string8(resp, kdata, klen));
+	free(kdata);
+
+	respbox = piv_box_new();
+	VERIFY(respbox != NULL);
+
+	VERIFY0(piv_box_set_data(respbox, sshbuf_ptr(resp), sshbuf_len(resp)));
+	VERIFY0(piv_box_seal_offline(chal->c_destkey, respbox));
+	VERIFY0(piv_box_to_binary(respbox, &kdata, &klen));
+
+	sshbuf_reset(resp);
+	VERIFY0(sshbuf_put(resp, kdata, klen));
+	fprintf(stderr, "\nRESPONSE\n---\n%s\n", sshbuf_dtob64(resp));
+	sshbuf_free(resp);
+	free(kdata);
+	piv_box_free(respbox);
+
+	exit(0);
 }
 
 void
@@ -612,7 +1196,6 @@ int
 main(int argc, char *argv[])
 {
 	LONG rv;
-	SCARDCONTEXT ctx;
 	extern char *optarg;
 	extern int optind;
 	int c, rc;

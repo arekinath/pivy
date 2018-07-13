@@ -69,6 +69,7 @@ assfail(const char *assertion, const char *filename, int line_num)
 	pid_t self;
 	volatile int rc;
 
+	buf[0] = 0;
 	self = getpid();
 	ultos((uint64_t)(uintptr_t)self, 16, buf + strlen(buf));
 	(void) strcat(buf, ": ");
@@ -93,6 +94,7 @@ assfail3(const char *assertion, uintmax_t lv, const char *op, uintmax_t rv,
     const char *filename, int line_num)
 {
 	char buf[1000];
+	buf[0] = 0;
 	(void) strcpy(buf, assertion);
 	(void) strcat(buf, " (");
 	ultos((uint64_t)lv, 16, buf + strlen(buf));

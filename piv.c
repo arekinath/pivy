@@ -2014,7 +2014,8 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	VERIFY3P(box->pdb_kdf, !=, NULL);
 
 	cipher = cipher_by_name(box->pdb_cipher);
-	VERIFY3P(cipher, !=, NULL);
+	if (cipher == NULL)
+		return (EINVAL);
 	ivlen = cipher_ivlen(cipher);
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
