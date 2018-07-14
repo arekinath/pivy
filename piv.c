@@ -2278,12 +2278,9 @@ out:
 }
 
 int
-piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len)
+sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 {
-	struct sshbuf *buf, *kbuf;
-
-	buf = sshbuf_new();
-	VERIFY3P(buf, !=, NULL);
+	struct sshbuf *kbuf;
 
 	VERIFY0(sshbuf_put_u8(buf, 1));
 	VERIFY0(sshbuf_put_string(buf, box->pdb_guid, sizeof (box->pdb_guid)));
@@ -2304,6 +2301,23 @@ piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len)
 	VERIFY0(sshbuf_put_string(buf, box->pdb_iv.b_data, box->pdb_iv.b_len));
 	VERIFY0(sshbuf_put_string(buf, box->pdb_enc.b_data,
 	    box->pdb_enc.b_len));
+
+	return (0);
+}
+
+int
+piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len)
+{
+	struct sshbuf *buf;
+	int rc;
+
+	buf = sshbuf_new();
+	VERIFY3P(buf, !=, NULL);
+
+	if ((rc = sshbuf_put_piv_box(buf, box))) {
+		sshbuf_free(buf);
+		return (rc);
+	}
 
 	*len = sshbuf_len(buf);
 	*output = calloc(1, *len);
