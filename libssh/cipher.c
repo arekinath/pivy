@@ -46,6 +46,7 @@
 #include "sshbuf.h"
 #include "ssherr.h"
 #include "digest.h"
+#include "sshkey.h"
 
 /*#include "openbsd-compat/openssl-compat.h"*/
 

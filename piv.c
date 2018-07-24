@@ -82,7 +82,7 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 	b = sshbuf_new();
 	VERIFY3P(b, !=, NULL);
 
-	rv = sshkey_sig_from_asn1(pubkey->type, hashalg, sig, siglen, b);
+	rv = sshkey_sig_from_asn1(pubkey, hashalg, sig, siglen, b);
 	if (rv != 0) {
 		rv = ENOTSUP;
 		goto out;
@@ -1083,7 +1083,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	struct tlv_state *tlv;
 	uint tag;
 	uint8_t *ptr, *buf = NULL;
-	size_t len;
+	size_t len = 0;
 	X509 *cert;
 	struct piv_slot *pc;
 	EVP_PKEY *pkey;
@@ -1604,6 +1604,7 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 			break;
 		default:
 			VERIFY(0);
+			nid = -1;
 		}
 		bcopy(buf, tmp, dglen);
 		digestInfo.algor = &algor;

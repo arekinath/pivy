@@ -14,6 +14,10 @@
 typedef int32_t crypto_int32;
 typedef uint32_t crypto_uint32;
 
+uint32_t arc4random(void);
+void arc4random_buf(void *_buf, size_t n);
+uint32_t arc4random_uniform(uint32_t upper_bound);
+
 #define randombytes(buf, buf_len) arc4random_buf((buf), (buf_len))
 
 #define crypto_hashblocks_sha512_STATEBYTES 64U

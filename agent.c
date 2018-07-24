@@ -108,6 +108,8 @@
 #include "libssh/cipher.h"
 #include "libssh/ssherr.h"
 
+#define	MINIMUM(a,b) (((a) < (b)) ? (a) : (b))
+
 /*
  * Name of the environment variable containing the process ID of the
  * authentication agent.
@@ -161,7 +163,7 @@ time_t parent_alive_interval = 0;
 pid_t cleanup_pid = 0;
 
 /* pathname and directory for AUTH_SOCKET */
-char socket_name[PATH_MAX];
+char socket_name[PATH_MAX + 20];
 char socket_dir[PATH_MAX];
 
 
@@ -176,7 +178,7 @@ u_char lock_salt[LOCK_SALT_SIZE];
 extern char *__progname;
 
 /* Default lifetime in seconds (0 == forever) */
-static long lifetime = 0;
+//static long lifetime = 0;
 
 static int fingerprint_hash = SSH_FP_HASH_DEFAULT;
 
@@ -283,6 +285,7 @@ agent_piv_open(void)
 			piv_txn_end(selk);
 			return (rc);
 		}
+		return (0);
 	} else {
 		if ((rc = piv_select(selk)) != 0) {
 			piv_txn_end(selk);
@@ -303,7 +306,8 @@ agent_piv_open(void)
 static int
 agent_piv_try_pin(void)
 {
-	int r, retries = 1;
+	int r;
+	uint retries = 1;
 	if (pin != NULL) {
 		r = piv_verify_pin(selk, pin, &retries);
 		if (r == EACCES) {
@@ -427,7 +431,6 @@ static void
 process_request_identities(SocketEntry *e)
 {
 	struct sshbuf *msg;
-	struct sshkey *k;
 	struct piv_slot *slot;
 	char comment[256];
 	struct timespec now;
@@ -487,14 +490,13 @@ process_sign_request2(SocketEntry *e)
 	u_char *signature = NULL;
 	u_char *rawsig = NULL;
 	size_t dlen, rslen = 0, slen = 0;
-	u_int compat = 0, flags;
+	u_int flags;
 	int r, ok = -1;
 	struct sshbuf *msg;
 	struct sshbuf *buf;
 	struct sshkey *key = NULL;
 	struct piv_slot *slot;
 	int found = 0;
-	int retries = 1;
 	int i;
 	enum sshdigest_types hashalg, ohashalg;
 
@@ -803,8 +805,8 @@ done:
 static void
 process_ext_x509_certs(SocketEntry *e, struct sshbuf *buf)
 {
-	int r;
-	struct sshbuf *msg;
+	/*int r;
+	struct sshbuf *msg;*/
 	send_extfail(e);
 }
 
@@ -863,11 +865,11 @@ process_extension(SocketEntry *e)
 			break;
 		}
 	}
-	if (h == NULL) {
+	if (hdlr == NULL) {
 		send_status(e, 0);
 		return;
 	}
-	h->eh_handler(e, inner);
+	hdlr->eh_handler(e, inner);
 
 	sshbuf_free(inner);
 }
@@ -875,10 +877,10 @@ process_extension(SocketEntry *e)
 static void
 process_lock_agent(SocketEntry *e, int lock)
 {
-	int r, success = 0, delay;
+	int r;
 	char *passwd;
 	size_t pwlen;
-	int retries = 1;
+	uint retries = 1;
 
 	/*
 	 * This is deliberately fatal: the user has requested that we lock,
@@ -1440,20 +1442,19 @@ main(int ac, char **av)
 	extern char *optarg;
 	pid_t pid;
 	char pidstrbuf[1 + 3 * sizeof pid];
-	size_t len = 0;
+	uint len = 0;
 	mode_t prev_mask;
 	int timeout = -1; /* INFTIM */
 	struct pollfd *pfd = NULL;
 	size_t npfd = 0;
-	uint i;
 	int r;
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
 	sanitise_stdfd();
 
 	/* drop */
-	setegid(getgid());
-	setgid(getgid());
+	VERIFY0(setegid(getgid()));
+	VERIFY0(setgid(getgid()));
 
 	OpenSSL_add_all_algorithms();
 
@@ -1648,7 +1649,7 @@ main(int ac, char **av)
 		cleanup_exit(1);
 	}
 
-	(void)chdir("/");
+	VERIFY0(chdir("/"));
 	if ((fd = open(_PATH_DEVNULL, O_RDWR, 0)) != -1) {
 		/* XXX might close listen socket */
 		(void)dup2(fd, STDIN_FILENO);

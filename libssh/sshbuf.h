@@ -348,4 +348,9 @@ u_int	sshbuf_refcount(const struct sshbuf *buf);
 
 void * recallocarray(void *ptr, size_t oldnmemb, size_t newnmemb, size_t size);
 
+#undef b64_ntop
+#undef b64_pton
+extern int b64_ntop(u_char const *src, size_t srclength, char *target, size_t targsize);
+extern int b64_pton(char const *src, u_char *target, size_t targsize);
+
 #endif /* _SSHBUF_H */

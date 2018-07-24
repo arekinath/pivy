@@ -67,6 +67,7 @@ assfail(const char *assertion, const char *filename, int line_num)
 {
 	char buf[800];
 	pid_t self;
+	volatile int rc;
 
 	self = getpid();
 	ultos((uint64_t)(uintptr_t)self, 16, buf + strlen(buf));
@@ -81,7 +82,8 @@ assfail(const char *assertion, const char *filename, int line_num)
 	}
 
 	(void) strcat(buf, "\n");
-	(void) write(2, buf, strlen(buf));
+	rc = write(2, buf, strlen(buf));
+	(void)rc;
 	abort();
 	return (0);
 }

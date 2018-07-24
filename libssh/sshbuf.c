@@ -22,6 +22,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+
+#if defined(__linux)
+#include <ctype.h>
+#endif
 
 #include "ssherr.h"
 #include "sshbuf.h"
@@ -1067,7 +1072,7 @@ sshbuf_dump_data(const void *s, size_t len, FILE *f)
 void
 sshbuf_dump(struct sshbuf *buf, FILE *f)
 {
-	fprintf(f, "buffer %p len = %zu\n", buf, sshbuf_len(buf));
+	fprintf(f, "buffer %p len = %zu\n", (void *)buf, sshbuf_len(buf));
 	sshbuf_dump_data(sshbuf_ptr(buf), sshbuf_len(buf), f);
 }
 

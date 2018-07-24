@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "tlv.h"
 #include "libssh/sshbuf.h"
@@ -217,7 +218,6 @@ void
 tlv_skip(struct tlv_state *ts)
 {
 	struct tlv_stack_frame *sf = ts->ts_stack;
-	uint lvl;
 	if (ts->ts_debug) {
 		fprintf(stderr, "%*sskip tag from +%lu (%lu bytes left)\n",
 		    ts->ts_stklvl + 1, "", ts->ts_ptr, ts->ts_len);

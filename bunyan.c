@@ -23,7 +23,6 @@
 #include "debug.h"
 
 static const char *bunyan_name = NULL;
-static const char *bunyan_hostname = NULL;
 static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
 static enum bunyan_log_level bunyan_min_level = INFO;
@@ -204,7 +203,6 @@ bny_timer_print(struct bunyan_timers *tms)
 	struct timer_block *b;
 	size_t idx;
 	uint64_t usec;
-	int rv;
 
 	for (b = tms->bt_first; b != NULL; b = b->tb_next) {
 		for (idx = 0; idx < b->tb_pos; ++idx) {
@@ -225,11 +223,6 @@ void
 bunyan_set_name(const char *name)
 {
 	bunyan_name = name;
-}
-
-static void
-bunyan_get_hostname(void)
-{
 }
 
 void

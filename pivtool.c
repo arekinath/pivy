@@ -44,6 +44,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include "ed25519/crypto_api.h"
+
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"
@@ -65,7 +67,7 @@ static const uint8_t *admin_key = DEFAULT_ADMIN_KEY;
 
 static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
-static struct piv_token *sysk = NULL;
+//static struct piv_token *sysk = NULL;
 static struct piv_slot *override = NULL;
 
 extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
@@ -525,6 +527,7 @@ cmd_init(void)
 	exit(0);
 }
 
+#if 0
 static void
 cmd_set_system(void)
 {
@@ -579,6 +582,7 @@ cmd_set_system(void)
 
 	exit(0);
 }
+#endif
 
 static void
 cmd_change_pin(void)
@@ -1021,7 +1025,7 @@ again:
 static void
 cmd_box(uint slotid)
 {
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	struct piv_ecdh_box *box;
 	int rv;
 	size_t len;

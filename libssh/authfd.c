@@ -90,18 +90,6 @@ put_u32(void *vp, uint32_t v)
 	p[3] = (u_char)v & 0xff;
 }
 
-/* Convert success/failure response from agent to a err.h status */
-static int
-decode_reply(u_char type)
-{
-	if (agent_failed(type))
-		return SSH_ERR_AGENT_FAILURE;
-	else if (type == SSH_AGENT_SUCCESS)
-		return 0;
-	else
-		return SSH_ERR_INVALID_FORMAT;
-}
-
 /* Communicate with agent: send request and read reply */
 static int
 ssh_request_reply(int sock, struct sshbuf *request, struct sshbuf *reply)

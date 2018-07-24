@@ -225,4 +225,6 @@ int ssh_ed25519_sig_from_asn1(enum sshdigest_types dtype, const uint8_t *sig,
     size_t siglen, struct sshbuf *buf);
 #endif
 
+int timingsafe_bcmp(const void *b1, const void *b2, size_t n);
+
 #endif /* SSHKEY_H */

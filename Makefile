@@ -14,8 +14,8 @@ ifeq ($(SYSTEM), Linux)
 	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a -pthread
 	ZLIB_CFLAGS	= $(shell pkg-config --cflags zlib)
 	ZLIB_LIBS	= $(shell pkg-config --libs zlib)
-	SYSTEM_CFLAGS	=
-	SYSTEM_LIBS	= -lbsd
+	SYSTEM_CFLAGS	= $(shell pkg-config --cflags libbsd-overlay)
+	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
@@ -79,7 +79,9 @@ PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O2 -g -m64
+			-O2 -g -m64 -fwrapv -fwrapv-pointer \
+			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
+			-Wall -Werror
 PIVTOOL_LDFLAGS=	-m64
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
@@ -112,7 +114,9 @@ AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O2 -g -m64
+			-O2 -g -m64 -fwrapv -fwrapv-pointer \
+			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
+			-Wall -Werror
 AGENT_LDFLAGS=		-m64
 AGENT_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \

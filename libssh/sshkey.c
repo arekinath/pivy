@@ -33,6 +33,7 @@
 #include <openssl/pem.h>
 
 #include "../ed25519/crypto_api.h"
+#include "blf.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -44,7 +45,7 @@
 #define MINIMUM(a, b)	(((a) < (b)) ? (a) : (b))
 #define MAXIMUM(a, b)	(((a) > (b)) ? (a) : (b))
 
-/*#include "rsa.h"*/
+#include "rsa.h"
 #include "ssh2.h"
 #include "cipher.h"
 #include "ssherr.h"
@@ -876,8 +877,6 @@ sshkey_fingerprint_raw(const struct sshkey *k, int dgst_alg,
 	}
 	return r;
 }
-
-#undef b64_ntop
 
 static char *
 fingerprint_b64(const char *alg, u_char *dgst_raw, size_t dgst_raw_len)
@@ -2490,7 +2489,7 @@ sshkey_cert_check_authority(const struct sshkey *k,
 size_t
 sshkey_format_cert_validity(const struct sshkey_cert *cert, char *s, size_t l)
 {
-	char from[32], to[32], ret[64];
+	char from[32], to[32], ret[72];
 	time_t tt;
 	struct tm *tm;
 
