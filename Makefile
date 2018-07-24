@@ -140,7 +140,7 @@ $(LIBRESSL_INC):
 	curl $(LIBRESSL_URL) | tar -zxf - && \
 	    mv libressl-$(LIBRESSL_VER) libressl
 
-$(LIBRESSL_LIB)/libcrypto.a:
+$(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	cd libressl && \
 	    ./configure --enable-static && \
 	    $(MAKE)
