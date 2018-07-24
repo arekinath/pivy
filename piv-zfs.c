@@ -30,7 +30,6 @@
 
 #include <sys/types.h>
 #include <sys/errno.h>
-#include "debug.h"
 #if defined(__sun)
 #include <sys/fork.h>
 #endif
@@ -55,6 +54,7 @@
 #include "piv.h"
 #include "bunyan.h"
 #include "json.h"
+#include "debug.h"
 
 #include "words.h"
 

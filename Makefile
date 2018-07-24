@@ -139,8 +139,9 @@ PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
 			$(LIBZFS_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O0 -g -m64 \
-			-D_GNU_SOURCE
+			-O2 -g -m64 -fwrapv -fwrapv-pointer \
+			-fPIC -D_FORTIFY_SOURCE=2 \
+			-Wall -Werror -D_GNU_SOURCE -std=gnu99
 PIVZFS_LDFLAGS=		-m64
 PIVZFS_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \

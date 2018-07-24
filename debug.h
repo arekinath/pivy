@@ -11,6 +11,9 @@ extern "C" {
 typedef uint64_t uintmax_t;
 #endif
 
+#undef VERIFY
+#undef ASSERT
+
 /*
  * ASSERT(ex) causes a panic or debugger entry if expression ex is not
  * true.  ASSERT() is included only for debugging, and is a no-op in
@@ -37,6 +40,9 @@ extern int assfail(const char *, const char *, int);
 #define ASSERT32(x)     ASSERT(x)
 #endif
 
+#undef IMPLY
+#undef EQUIV
+
 /*
  * IMPLY and EQUIV are assertions of the form:
  *
@@ -55,6 +61,19 @@ extern int assfail(const char *, const char *, int);
 #define IMPLY(A, B) ((void)0)
 #define EQUIV(A, B) ((void)0)
 #endif
+
+#undef VERIFY3_IMPL
+#undef VERIFY3B
+#undef VERIFY3S
+#undef VERIFY3U
+#undef VERIFY3P
+#undef VERIFY0
+
+#undef ASSERT3B
+#undef ASSERT3S
+#undef ASSERT3U
+#undef ASSERT3P
+#undef ASSERT0
 
 /*
  * ASSERT3() behaves like ASSERT() except that it is an explicit conditional,
@@ -94,6 +113,10 @@ extern void assfail3(const char *, uintmax_t, const char *, uintmax_t,
 #define ASSERT3P(x, y, z)       ((void)0)
 #define ASSERT0(x)              ((void)0)
 #endif
+
+#undef CTASSERT
+#undef _CTASSERT
+#undef __CTASSERT
 
 /*
  * Compile-time assertion. The condition 'x' must be constant.
