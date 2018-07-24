@@ -374,9 +374,9 @@ piv_get_slot(struct piv_token *tk, enum piv_slotid slotid)
 	struct piv_slot *s;
 	for (s = tk->pt_slots; s != NULL; s = s->ps_next) {
 		if (s->ps_slot == slotid)
-			break;
+			return (s);
 	}
-	return (s);
+	return (NULL);
 }
 
 struct apdu *

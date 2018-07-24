@@ -507,6 +507,9 @@ process_sign_request2(SocketEntry *e)
 		goto send;
 	}
 
+	if (agent_piv_open() != 0)
+		goto send;
+
 	for (i = 0x9A; i < 0x9F; ++i) {
 		slot = piv_get_slot(selk, i);
 		if (slot == NULL)
@@ -516,15 +519,16 @@ process_sign_request2(SocketEntry *e)
 			break;
 		}
 	}
-	if (!found) {
+	if (!found || slot == NULL) {
+		piv_txn_end(selk);
 		verbose("%s: %s key not found", __func__, sshkey_type(key));
 		goto send;
 	}
 
-	if (agent_piv_open() != 0)
+	if (agent_piv_try_pin() != 0) {
+		piv_txn_end(selk);
 		goto send;
-	if (agent_piv_try_pin() != 0)
-		goto send;
+	}
 	if (key->type == KEY_RSA) {
 		hashalg = SSH_DIGEST_SHA1;
 		if (flags & SSH_AGENT_RSA_SHA2_256)
@@ -647,6 +651,9 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	if (flags != 0)
 		goto fail;
 
+	if (agent_piv_open() != 0)
+		goto fail;
+
 	for (i = 0x9A; i < 0x9F; ++i) {
 		slot = piv_get_slot(selk, i);
 		if (slot == NULL)
@@ -657,18 +664,18 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 		}
 	}
 	if (!found) {
+		piv_txn_end(selk);
 		verbose("%s: %s key not found", __func__, sshkey_type(key));
 		goto fail;
 	}
 
 	if (key->type != KEY_ECDSA || partner->type != KEY_ECDSA) {
+		piv_txn_end(selk);
 		verbose("%s: keys are not both EC keys (%s and %s)", __func__,
 		    sshkey_type(key), sshkey_type(partner));
 		goto fail;
 	}
 
-	if (agent_piv_open() != 0)
-		goto fail;
 	if (agent_piv_try_pin() != 0) {
 		piv_txn_end(selk);
 		goto fail;
