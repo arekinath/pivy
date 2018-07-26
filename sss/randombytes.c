@@ -9,6 +9,7 @@
 
 #if defined(__linux__)
 /* Linux */
+# undef _GNU_SOURCE
 # define _GNU_SOURCE
 # include <assert.h>
 # include <errno.h>

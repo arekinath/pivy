@@ -125,7 +125,7 @@ assert_pin(struct piv_token *pk)
 	do {
 		pin = getpass(prompt);
 	} while (pin == NULL && errno == EINTR);
-	if (pin == NULL && errno == ENXIO ||
+	if ((pin == NULL && errno == ENXIO) ||
 	    (pin != NULL && strlen(pin) == 0)) {
 		piv_txn_end(pk);
 		fprintf(stderr, "error: a PIN code is required to "
@@ -265,6 +265,7 @@ sshbuf_get_minibox(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	uint8_t *tmpbuf = NULL;
 	struct sshkey *k = NULL;
 	size_t len;
+	uint8_t temp;
 	char *tname = NULL;
 
 	box = piv_box_new();
@@ -288,12 +289,13 @@ sshbuf_get_minibox(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	bcopy(tmpbuf, box->pdb_guid, len);
 	free(tmpbuf);
 	tmpbuf = NULL;
-	if ((rc = sshbuf_get_u8(buf, &box->pdb_slot)))
+	if ((rc = sshbuf_get_u8(buf, &temp)))
 		goto out;
+	box->pdb_slot = temp;
 
 	box->pdb_free_str = B_TRUE;
-	if ((rc = sshbuf_get_cstring8(buf, &box->pdb_cipher, NULL)) ||
-	    (rc = sshbuf_get_cstring8(buf, &box->pdb_kdf, NULL)))
+	if ((rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_cipher, NULL)) ||
+	    (rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_kdf, NULL)))
 		goto out;
 
 	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL)))
@@ -353,7 +355,6 @@ chalbox_make(struct challenge *chal, struct piv_ecdh_box **outbox)
 	struct piv_ecdh_box *box = NULL;
 	struct sshbuf *buf;
 	uint8_t *data = NULL;
-	size_t len;
 	struct piv_ecdh_box *kb = chal->c_keybox;
 	struct apdubuf *iv = &kb->pdb_iv;
 	struct apdubuf *enc = &kb->pdb_enc;
@@ -512,7 +513,7 @@ intent_prompt(int n, struct partstate *pstates)
 	char *p;
 	char *linebuf;
 	size_t len = 1024, pos = 0;
-	uint8_t set;
+	uint8_t set = 0;
 
 	linebuf = malloc(len);
 
@@ -694,18 +695,21 @@ ynprompt(const char *prompt)
 again:
 	fprintf(stderr, "%s ", prompt);
 	p = fgets(buf, sizeof (buf), stdin);
-	if (p == NULL || strlen(linebuf) == 0)
+	if (p == NULL || strlen(buf) == 0)
 		exit(1);
-	if (strcmp(linebuf, "\n") == 0)
+	if (strcmp(buf, "\n") == 0)
 		return (0);
-	if (strcmp(linebuf, "y\n") == 0 ||
-	    strcmp(linebuf, "Y\n") == 0)
+	if (strcmp(buf, "y\n") == 0 ||
+	    strcmp(buf, "Y\n") == 0)
 		return (1);
-	if (strcmp(linebuf, "n\n") == 0 ||
-	    strcmp(linebuf, "N\n") == 0)
+	if (strcmp(buf, "n\n") == 0 ||
+	    strcmp(buf, "N\n") == 0)
 		return (-1);
 	goto again;
 }
+
+static void unlock_recovery(nvlist_t *, const char *, void (*)(const uint8_t *,
+    size_t, boolean_t, void *), void *cookie);
 
 static void
 unlock_generic(nvlist_t *config, const char *thing,
@@ -713,7 +717,7 @@ unlock_generic(nvlist_t *config, const char *thing,
 {
 	nvlist_t *opts, *opt;
 	uint32_t nopts;
-	int32_t ver, i, j;
+	int32_t ver, i;
 	int rc;
 	char nbuf[8];
 	int32_t n, m;
@@ -721,7 +725,6 @@ unlock_generic(nvlist_t *config, const char *thing,
 	uint32_t nparts;
 
 	struct piv_token *t;
-	struct piv_slot *slot;
 	struct piv_ecdh_box *box;
 	struct sshbuf *buf;
 
@@ -801,7 +804,7 @@ pass1:
 		size_t keylen;
 		VERIFY0(piv_box_take_data(box, &key, &keylen));
 
-		usekey(key, keylen, cookie);
+		usekey(key, keylen, B_FALSE, cookie);
 		return;
 	}
 
@@ -835,10 +838,9 @@ unlock_recovery(nvlist_t *config, const char *thing,
 	struct piv_ecdh_box *box;
 	struct sshbuf *buf;
 
-	char *guidhex, *name, *cakenc, *boxenc;
+	char *guidhex, *name, *boxenc;
 	uint8_t *guid;
 	uint guidlen;
-	struct sshkey *cak;
 
 	char *linebuf, *p;
 	size_t len = 1024, pos = 0;
@@ -962,7 +964,7 @@ config_again:
 	    "this configuration. You need to\nacquire %d parts to recover the "
 	    "key, which can either be using a token\ninserted directly into "
 	    "this system, or acquired through a challenge-response\nprocess "
-	    "with a remote system.\n\n");
+	    "with a remote system.\n\n", n);
 
 	intent_prompt(n, pstates);
 
@@ -989,7 +991,7 @@ redo_ps:
 			chal->c_version = 1;
 			chal->c_type = CHAL_RECOVERY;
 			chal->c_id = pstate->ps_id;
-			chal->c_description = thing;
+			chal->c_description = strdup(thing);
 			VERIFY0(gethostname(tbuf, sizeof (tbuf)));
 			chal->c_hostname = strdup(tbuf);
 			chal->c_ctime = time(NULL);
@@ -1088,7 +1090,7 @@ redo_ps_open:
 	}
 
 	if (n == 1 && m == 1) {
-		usekey(share, slen, cookie);
+		usekey(share, slen, B_TRUE, cookie);
 		return;
 	}
 
@@ -1096,7 +1098,7 @@ redo_ps_open:
 
 	uint8_t *key = calloc(1, 32);
 	sss_combine_keyshares(key, shares, n);
-	usekey(key, 32, cookie);
+	usekey(key, 32, B_TRUE, cookie);
 }
 
 static void
@@ -1105,7 +1107,7 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 	int rc;
 	const char *fsname = (const char *)cookie;
 
-	rc = lzc_load_key(fsname, B_FALSE, key, keylen);
+	rc = lzc_load_key(fsname, B_FALSE, (uint8_t *)key, keylen);
 	if (rc != 0) {
 		fprintf(stderr, "error: failed to load key "
 		    "material into ZFS: %d (%s)\n",
@@ -1120,6 +1122,7 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 	exit(0);
 }
 
+#if 0
 static void
 make_primary_config(struct piv_token *t, const char *name, const uint8_t *key,
     size_t keylen, nvlist_t **out)
@@ -1192,7 +1195,7 @@ config_replace_primary(nvlist_t *json, nvlist_t *nprim, nvlist_t **out)
 	nvlist_t *part;
 
 	nvlist_t *oldopts, *oldparts;
-	size_t noldopts, noldparts;
+	uint32_t noldopts, noldparts;
 
 	nvlist_t **opts, **parts;
 	size_t nopts, nparts;
@@ -1225,6 +1228,7 @@ config_replace_primary(nvlist_t *json, nvlist_t *nprim, nvlist_t **out)
 
 	VERIFY0(nvlist_alloc(&config, NV_UNIQUE_NAME, 0));
 }
+#endif
 
 static void
 cmd_unlock(const char *fsname)
@@ -1281,7 +1285,7 @@ cmd_unlock(const char *fsname)
 	VERIFY(config != NULL);
 
 	fprintf(stderr, "Attempting to unlock ZFS '%s'...\n", fsname);
-	unlock_generic(config, thing, do_zfs_unlock, fsname);
+	unlock_generic(config, thing, do_zfs_unlock, (void *)fsname);
 }
 
 static void
@@ -1289,7 +1293,6 @@ cmd_respond(void)
 {
 	struct piv_ecdh_box *chalbox;
 	struct challenge *chal;
-	struct sshbuf *buf;
 	struct piv_token *t;
 	struct piv_slot *slot;
 	char *p;
@@ -1386,7 +1389,7 @@ again2:
 
 	struct piv_ecdh_box *respbox;
 	struct sshbuf *resp;
-	char *kdata;
+	uint8_t *kdata;
 	size_t klen;
 
 	VERIFY0(piv_box_take_data(chal->c_keybox, &kdata, &klen));
@@ -1431,7 +1434,7 @@ main(int argc, char *argv[])
 	LONG rv;
 	extern char *optarg;
 	extern int optind;
-	int c, rc;
+	int c;
 
 	bunyan_init();
 	bunyan_set_name("piv-zfs");

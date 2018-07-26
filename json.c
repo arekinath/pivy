@@ -89,7 +89,7 @@ static void
 movestate(state_t *s, parse_state_t ps)
 {
 	if (s->s_flags & NVJSON_DEBUG) {
-		(void) fprintf(stderr, "nvjson: move state %d -> %d @%d\n",
+		(void) fprintf(stderr, "nvjson: move state %d -> %d @%lu\n",
 		    s->s_top->pf_ps, ps, s->s_pos);
 	}
 	s->s_top->pf_ps = ps;
@@ -127,7 +127,7 @@ pushstate(state_t *s, parse_state_t ps, parse_state_t retps)
 
 	if (s->s_flags & NVJSON_DEBUG) {
 		(void) fprintf(stderr, "nvjson: push state %d -> %d "
-		    "(ret %d) @%d\n", s->s_top->pf_ps, ps, retps, s->s_pos);
+		    "(ret %d) @%lu\n", s->s_top->pf_ps, ps, retps, s->s_pos);
 	}
 
 	if ((n = calloc(1, sizeof (*n))) == NULL) {
