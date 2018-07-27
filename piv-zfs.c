@@ -92,7 +92,7 @@ parse_hex(const char *str, uint *outlen)
 			skip = B_TRUE;
 		} else {
 			fprintf(stderr, "error: invalid hex digit: '%c'\n", c);
-			exit(1);
+			return (NULL);
 		}
 		if (skip == B_FALSE) {
 			if (shift == 4) {
@@ -106,7 +106,7 @@ parse_hex(const char *str, uint *outlen)
 	if (shift == 0) {
 		fprintf(stderr, "error: odd number of hex digits "
 		    "(incomplete)\n");
-		exit(1);
+		return (NULL);
 	}
 	*outlen = idx;
 	return (data);
@@ -513,15 +513,15 @@ intent_prompt(int n, struct partstate *pstates)
 	char *p;
 	char *linebuf;
 	size_t len = 1024, pos = 0;
-	uint8_t set = 0;
+	uint set = 0;
 
 	linebuf = malloc(len);
 
 prompt:
 	fprintf(stderr, "Parts:\n");
+	set = 0;
 	for (pstate = pstates; pstate != NULL; pstate = pstate->ps_next) {
 		const char *intent;
-		set = 0;
 		switch (pstate->ps_intent) {
 		case INTENT_UNUSED:
 			intent = "do not use";
@@ -1194,23 +1194,22 @@ struct part {
 };
 
 static void
-make_backup_config(const struct part *parts, size_t n, const uint8_t *key,
+make_backup_config(const struct part *ps, size_t n, const uint8_t *key,
     size_t keylen, nvlist_t **out)
 {
 	size_t m = 0, i = 0;
-	struct part *p;
+	const struct part *p;
 	struct sshbuf *buf;
 	nvlist_t *config;
 	nvlist_t *part;
 	nvlist_t **parts;
 	char *guidhex = NULL, *b64;
-	char tmpbuf[1024];
 	struct piv_ecdh_box *box;
 	sss_Keyshare *share, *shares;
 
 	VERIFY3U(keylen, ==, 32);
 
-	for (p = parts; p != NULL; p = p->p_next)
+	for (p = ps; p != NULL; p = p->p_next)
 		++m;
 	VERIFY3U(m, >, 1);
 	VERIFY3U(n, <=, m);
@@ -1228,9 +1227,9 @@ make_backup_config(const struct part *parts, size_t n, const uint8_t *key,
 	VERIFY0(nvlist_add_int32(config, "n", n));
 	VERIFY0(nvlist_add_int32(config, "m", m));
 
-	for (p = parts; p != NULL; p = p->p_next) {
+	for (p = ps; p != NULL; p = p->p_next) {
 		VERIFY0(nvlist_alloc(&part, NV_UNIQUE_NAME, 0));
-		share = shares[i];
+		share = &shares[i];
 		parts[i++] = part;
 
 		VERIFY0(nvlist_add_string(part, "n", p->p_name));
@@ -1247,8 +1246,9 @@ make_backup_config(const struct part *parts, size_t n, const uint8_t *key,
 		box = piv_box_new();
 		VERIFY(box != NULL);
 		bcopy(p->p_guid, box->pdb_guid, sizeof (box->pdb_guid));
-		p->p_slot = PIV_SLOT_KEY_MGMT;
-		VERIFY0(piv_box_set_data(box, share, sizeof (sss_Keyshare)));
+		box->pdb_slot = PIV_SLOT_KEY_MGMT;
+		VERIFY0(piv_box_set_data(box, (uint8_t *)share,
+		    sizeof (sss_Keyshare)));
 		explicit_bzero(share, sizeof (sss_Keyshare));
 		VERIFY0(piv_box_seal_offline(p->p_pubkey, box));
 
@@ -1321,16 +1321,21 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	nvlist_t **options;
 	struct part *part = NULL, *parts = NULL;
 	size_t len = 1024, pos = 0;
-	char *linebuf, *p;
+	char *linebuf, *p, *json;
 	struct piv_token *token;
 	struct piv_slot *slot;
 	struct sshbuf *buf;
 	char *guidhex;
-	uint8_t *key;
-	size_t keylen;
-	uint i, sel, n, m;
+	uint8_t *key, *guid;
+	size_t keylen, jsonlen;
+	uint i, sel, n, m, glen;
+	int rc;
 	const char **newargv;
 	size_t newargc, maxargc;
+	FILE *file;
+	pid_t kid, rkid;
+	int inpipe[2];
+	ssize_t done;
 
 	key = calloc(1, 32);
 	keylen = 32;
@@ -1358,23 +1363,21 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	buf = sshbuf_new();
 	VERIFY(buf != NULL);
 
-	fprintf(stderr, "Beginning interactive setup\n\n")
+	fprintf(stderr, "Beginning interactive setup\n\n");
 
 	fprintf(stderr, "Please select a primary PIV token to use for "
 	    "unlocking in the normal\n");
 	fprintf(stderr, "(non-recovery) case.\n\n");
 primary:
-	fprintf("Available PIV tokens:\n");
+	fprintf(stderr, "Available PIV tokens:\n");
 	piv_release(ks);
 	ks = piv_enumerate(ctx);
-	i = 0;
-	for (token = ks; token != NULL; token -> token->pt_next) {
-		++i;
+	for (i = 1, token = ks; token != NULL; token = token->pt_next, ++i) {
 		VERIFY0(piv_txn_begin(token));
 		VERIFY0(piv_select(token));
 		(void) piv_read_all_certs(token);
 
-		VERIFY0(sshbuf_put(buf, t->pt_guid, 4));
+		VERIFY0(sshbuf_put(buf, token->pt_guid, 4));
 		guidhex = sshbuf_dtob16(buf);
 		sshbuf_reset(buf);
 
@@ -1391,29 +1394,31 @@ primary:
 	linebuf[strlen(linebuf) - 1] = 0;
 	if (strcmp("q", linebuf) == 0)
 		exit(1);
-	if (strlen(linebuf) < 2)
+	if (strlen(linebuf) < 1)
 		goto primary;
-	sel = atoi(&linebuf[1]);
-	for (i = 0, token = ks; token != NULL; token -> token->pt_next) {
-		if (++i == sel)
+	sel = atoi(linebuf);
+	for (i = 1, token = ks; token != NULL; token = token->pt_next, ++i) {
+		if (i == sel)
 			break;
 	}
-	if (token == NULL)
+	if (token == NULL) {
+		fprintf(stderr, "Unknown token %d\n", sel);
 		goto primary;
+	}
 
 	if (token->pt_nochuid) {
 		fprintf(stderr, "error: this token has no CHUID file. "
 		    "Please generate one with `piv-tool init'.\n");
 		exit(1);
 	}
-	slot = piv_get_slot(t, PIV_SLOT_CARD_AUTH);
+	slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
 	if (slot == NULL || !slot->ps_pubkey) {
 		fprintf(stderr, "error: this token does not have a CARD_AUTH "
 		    "key generated. Please generate one with "
 		    "`piv-tool generate 9a'.\n");
 		exit(1);
 	}
-	slot = piv_get_slot(t, PIV_SLOT_KEY_MGMT);
+	slot = piv_get_slot(token, PIV_SLOT_KEY_MGMT);
 	if (slot == NULL || !slot->ps_pubkey) {
 		fprintf(stderr, "error: this token does not have a KEY_MGMT "
 		    "key generated. Please generate one with "
@@ -1451,18 +1456,136 @@ primary:
 backup:
 	fprintf(stderr, "Backup configuration:\n");
 	fprintf(stderr, "  %d out of %d from:\n", n, m);
-	for (i = 0, part = parts; part != NULL; part = part->p_next, ++i) {
-		VERIFY0(sshbuf_put(buf, t->pt_guid, 4));
+	for (i = 1, part = parts; part != NULL; part = part->p_next, ++i) {
+		VERIFY0(sshbuf_put(buf, part->p_guid, 4));
 		guidhex = sshbuf_dtob16(buf);
 		sshbuf_reset(buf);
-		fprintf(stderr, "  * [%d] %s (%s)\n", i + 1, part->p_name,
-		    guidhex);
+		fprintf(stderr, "  * [%d] %s (%s)\n", i, part->p_name, guidhex);
 		free(guidhex);
 	}
 	if (parts == NULL)
 		fprintf(stderr, "  * No tokens configured yet\n");
 
-	
+	fprintf(stderr, "\nCommands:\n  +\tadd new key\n  =N\tset N value\n"
+	    "  .\tfinish configuration\n");
+	fprintf(stderr, "> ");
+	p = fgets(&linebuf[pos], len - pos, stdin);
+	if (p == NULL || strlen(linebuf) == 0)
+		exit(1);
+	linebuf[strlen(linebuf) - 1] = 0;
+	if (strcmp("+", linebuf) == 0) {
+		part = calloc(1, sizeof (struct part));
+		VERIFY(part != NULL);
+readguid:
+		fprintf(stderr, "Token GUID (hex): ");
+		p = fgets(&linebuf[pos], len - pos, stdin);
+		if (p == NULL || strlen(linebuf) == 0)
+			exit(1);
+		linebuf[strlen(linebuf) - 1] = 0;
+		guid = parse_hex(linebuf, &glen);
+		if (guid == NULL || glen != sizeof (part->p_guid)) {
+			free(guid);
+			goto readguid;
+		}
+		bcopy(guid, part->p_guid, glen);
+		free(guid);
+
+		fprintf(stderr, "Friendly name for this token: ");
+		p = fgets(&linebuf[pos], len - pos, stdin);
+		if (p == NULL || strlen(linebuf) == 0)
+			exit(1);
+		linebuf[strlen(linebuf) - 1] = 0;
+		part->p_name = strdup(linebuf);
+		VERIFY(part->p_name != NULL);
+
+readpubkey:
+		fprintf(stderr, "Public key: ");
+		p = fgets(&linebuf[pos], len - pos, stdin);
+		if (p == NULL || strlen(linebuf) == 0)
+			exit(1);
+		linebuf[strlen(linebuf) - 1] = 0;
+
+		p = linebuf;
+		part->p_pubkey = sshkey_new(KEY_ECDSA);
+		VERIFY(part->p_pubkey != NULL);
+		rc = sshkey_read(part->p_pubkey, &p);
+		if (rc != 0) {
+			fprintf(stderr, "Bad public key\n");
+			sshkey_free(part->p_pubkey);
+			goto readpubkey;
+		}
+
+		part->p_next = parts;
+		parts = part;
+		++m;
+		goto backup;
+	} else if (linebuf[0] == '=') {
+		n = atoi(&linebuf[1]);
+		if (n < 1 || n > m) {
+			n = 0;
+			fprintf(stderr, "Invalid N value\n");
+		}
+		goto backup;
+	} else if (strcmp(".", linebuf) == 0) {
+		if (n < 1 || n > m) {
+			fprintf(stderr, "Invalid N value, please set it\n");
+			goto backup;
+		}
+		/* FALLTHROUGH */
+	} else {
+		fprintf(stderr, "Invalid command\n");
+		goto backup;
+	}
+
+	make_backup_config(parts, n, key, keylen, &options[1]);
+
+	VERIFY0(nvlist_add_nvlist_array(config, "o", options, 2));
+
+	jsonlen = 4096;
+	json = malloc(jsonlen);
+	VERIFY(json != NULL);
+	json[0] = 0;
+
+	file = fmemopen(json, jsonlen, "w");
+	fprintf(file, "rfd77:config=");
+	VERIFY0(nvlist_print_json(file, config));
+	fclose(file);
+
+	newargv[newargc++] = opt;
+	newargv[newargc++] = json;
+
+	for (i = 0; i < argc; ++i)
+		newargv[newargc++] = argv[i];
+
+	newargv[newargc++] = 0;
+
+	fprintf(stderr, "Executing \"%s %s\"...\n", cmd, subcmd);
+
+	VERIFY0(pipe(inpipe));
+
+	kid = fork();
+	if (kid == -1) {
+		perror("fork");
+		exit(1);
+	} else if (kid == 0) {
+		VERIFY0(close(inpipe[1]));
+		VERIFY0(dup2(inpipe[0], STDIN_FILENO));
+		VERIFY0(close(inpipe[0]));
+		VERIFY0(execvp(cmd, (char * const *)newargv));
+	} else {
+		VERIFY0(close(inpipe[0]));
+		done = write(inpipe[1], key, keylen);
+		VERIFY3S(done, ==, keylen);
+		VERIFY0(close(inpipe[1]));
+
+		rkid = waitpid(kid, &rc, 0);
+		VERIFY3S(rkid, ==, kid);
+		if (!WIFEXITED(rc)) {
+			fprintf(stderr, "error: child did not exit\n");
+			exit(1);
+		}
+		exit(WEXITSTATUS(rc));
+	}
 }
 
 static void
@@ -1730,16 +1853,16 @@ main(int argc, char *argv[])
 			fprintf(stderr, "error: zfs create args required\n");
 			usage();
 		}
-		cmd_genopts("zfs", "create", "-o",
-		    &argv[optind], argc - optind);
+		cmd_genopt("zfs", "create", "-o",
+		    (const char **)&argv[optind], argc - optind);
 
 	} else if (strcmp(op, "zpool-create") == 0) {
 		if (optind >= argc) {
 			fprintf(stderr, "error: zpool create args required\n");
 			usage();
 		}
-		cmd_genopts("zpool", "create", "-O",
-		    &argv[optind], argc - optind);
+		cmd_genopt("zpool", "create", "-O",
+		    (const char **)&argv[optind], argc - optind);
 
 	} else {
 		fprintf(stderr, "error: invalid operation '%s'\n", op);
