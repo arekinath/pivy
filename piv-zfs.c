@@ -1319,7 +1319,7 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 {
 	nvlist_t *config;
 	nvlist_t **options;
-	struct part *p = NULL;
+	struct part *part = NULL, *parts = NULL;
 	size_t len = 1024, pos = 0;
 	char *linebuf, *p;
 	struct piv_token *token;
@@ -1328,7 +1328,7 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	char *guidhex;
 	uint8_t *key;
 	size_t keylen;
-	uint i, sel;
+	uint i, sel, n, m;
 	const char **newargv;
 	size_t newargc, maxargc;
 
@@ -1360,8 +1360,9 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 
 	fprintf(stderr, "Beginning interactive setup\n\n")
 
-	fprintf(stderr, "Please select a primary PIV token to use for unlocking\n");
-	fprintf(stderr, "in the normal (non-recovery) case.\n\n");
+	fprintf(stderr, "Please select a primary PIV token to use for "
+	    "unlocking in the normal\n");
+	fprintf(stderr, "(non-recovery) case.\n\n");
 primary:
 	fprintf("Available PIV tokens:\n");
 	piv_release(ks);
@@ -1383,6 +1384,7 @@ primary:
 
 		piv_txn_end(token);
 	}
+	fprintf(stderr, "\nUse which token? ");
 	p = fgets(&linebuf[pos], len - pos, stdin);
 	if (p == NULL || strlen(linebuf) == 0)
 		exit(1);
@@ -1432,8 +1434,35 @@ primary:
 
 	make_primary_config(token, linebuf, key, keylen, &options[0]);
 
+	fprintf(stderr, "\nIf the primary token has been destroyed or is no "
+	    "longer available, then a\nbackup configuration will be needed.\n"
+	    "\nA backup configuration is composed of an N-out-of-M scheme, "
+	    "where there are\nM registered tokens and N of them are required "
+	    "to perform the recovery.\n\nThe backup tokens do not need to be "
+	    "physically present on this machine,\neither during this setup "
+	    "process or during recovery. Only the Key Management\npublic keys "
+	    "from each token and that token's GUID are required now (these\n"
+	    "can be obtained from the output of `piv-tool list' and "
+	    "`piv-tool pubkey 9d')\n\n");
 
+	n = 0;
+	m = 0;
 
+backup:
+	fprintf(stderr, "Backup configuration:\n");
+	fprintf(stderr, "  %d out of %d from:\n", n, m);
+	for (i = 0, part = parts; part != NULL; part = part->p_next, ++i) {
+		VERIFY0(sshbuf_put(buf, t->pt_guid, 4));
+		guidhex = sshbuf_dtob16(buf);
+		sshbuf_reset(buf);
+		fprintf(stderr, "  * [%d] %s (%s)\n", i + 1, part->p_name,
+		    guidhex);
+		free(guidhex);
+	}
+	if (parts == NULL)
+		fprintf(stderr, "  * No tokens configured yet\n");
+
+	
 }
 
 static void
