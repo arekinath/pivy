@@ -79,9 +79,9 @@ PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O2 -g -m64 -fwrapv -fwrapv-pointer \
+			-O2 -g -m64 -fwrapv \
 			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall -Werror
+			-Wall
 PIVTOOL_LDFLAGS=	-m64
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
@@ -114,9 +114,9 @@ AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O2 -g -m64 -fwrapv -fwrapv-pointer \
+			-O2 -g -m64 -fwrapv \
 			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall -Werror
+			-Wall
 AGENT_LDFLAGS=		-m64
 AGENT_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
