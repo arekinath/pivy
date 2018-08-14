@@ -2147,7 +2147,18 @@ void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: piv-zfs [options] operation\n");
+	    "usage: piv-zfs [options] operation\n"
+	    "Available operations:\n"
+	    "  unlock <zfs>            Unlock an encrypted ZFS filesystem\n"
+	    "  zfs-create -- <args>    Run 'zfs create' with arguments and\n"
+	    "                          input transformed to provide keys for\n"
+	    "                          encryption.\n"
+	    "  zpool-create -- <args>  Like zfs-create but used to create a\n"
+	    "                          new pool\n"
+	    "  respond                 Respond to a recovery challenge using a\n"
+	    "                          locally inserted PIV token/card\n"
+	    "  rekey <zfs>             Change key configuration for an already\n"
+	    "                          created ZFS filesystem\n");
 	exit(3);
 }
 
