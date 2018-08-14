@@ -709,6 +709,76 @@ again:
 }
 
 static void
+config_convert_arrays(nvlist_t *json, nvlist_t **out)
+{
+	nvlist_t *config;
+	nvlist_t *oldopt, *opt;
+	nvlist_t *part;
+
+	nvlist_t *oldopts, *oldparts;
+	uint32_t noldopts, noldparts;
+
+	nvlist_t **opts, **parts;
+	size_t nopts, nparts;
+	nvpair_t *pair;
+
+	char nbuf[8];
+	int32_t i, j;
+
+	VERIFY0(nvlist_lookup_nvlist(json, "o", &oldopts));
+	VERIFY0(nvlist_lookup_uint32(oldopts, "length", &noldopts));
+	VERIFY3U(noldopts, >=, 1);
+
+	opts = calloc(sizeof (nvlist_t *), noldopts + 1);
+	nopts = 0;
+
+	for (i = 0; i < noldopts; ++i) {
+		snprintf(nbuf, sizeof (nbuf), "%d", i);
+		VERIFY0(nvlist_lookup_nvlist(oldopts, nbuf, &oldopt));
+
+		VERIFY0(nvlist_alloc(&opt, NV_UNIQUE_NAME, 0));
+
+		pair = nvlist_next_nvpair(oldopt, NULL);
+		for (; pair != NULL; pair = nvlist_next_nvpair(oldopt, pair)) {
+			if (strcmp("p", nvpair_name(pair)) == 0)
+				continue;
+			VERIFY0(nvlist_add_nvpair(opt, pair));
+		}
+
+		VERIFY0(nvlist_lookup_nvlist(oldopt, "p", &oldparts));
+		VERIFY0(nvlist_lookup_uint32(oldparts, "length", &noldparts));
+
+		parts = calloc(sizeof (nvlist_t *), noldparts);
+		nparts = 0;
+
+		for (j = 0; j < noldparts; ++j) {
+			snprintf(nbuf, sizeof (nbuf), "%d", j);
+			VERIFY0(nvlist_lookup_nvlist(oldparts, nbuf, &part));
+			parts[nparts++] = part;
+		}
+
+		VERIFY0(nvlist_add_nvlist_array(opt, "p", parts, nparts));
+		free(parts);
+
+		opts[nopts++] = opt;
+	}
+
+	VERIFY0(nvlist_alloc(&config, NV_UNIQUE_NAME, 0));
+
+	pair = nvlist_next_nvpair(json, NULL);
+	for (; pair != NULL; pair = nvlist_next_nvpair(json, pair)) {
+		if (strcmp("o", nvpair_name(pair)) == 0)
+			continue;
+		VERIFY0(nvlist_add_nvpair(config, pair));
+	}
+
+	VERIFY0(nvlist_add_nvlist_array(config, "o", opts, nopts));
+	free(opts);
+
+	*out = config;
+}
+
+static void
 config_replace_primary(nvlist_t *json, nvlist_t *nprim, nvlist_t **out)
 {
 	nvlist_t *config;
@@ -848,6 +918,200 @@ make_primary_config(struct piv_token *t, const char *name, const uint8_t *key,
 	VERIFY0(nvlist_add_nvlist_array(config, "p", &part, 1));
 
 	*out = config;
+}
+
+struct part {
+	struct part *p_next;
+	const char *p_name;
+	char p_guid[16];
+	struct sshkey *p_pubkey;
+};
+
+static void
+make_backup_config(const struct part *ps, size_t n, const uint8_t *key,
+    size_t keylen, nvlist_t **out)
+{
+	size_t m = 0, i = 0;
+	const struct part *p;
+	struct sshbuf *buf;
+	nvlist_t *config;
+	nvlist_t *part;
+	nvlist_t **parts;
+	char *guidhex = NULL, *b64;
+	struct piv_ecdh_box *box;
+	sss_Keyshare *share, *shares;
+
+	VERIFY3U(keylen, ==, 32);
+
+	for (p = ps; p != NULL; p = p->p_next)
+		++m;
+	VERIFY3U(m, >, 1);
+	VERIFY3U(n, <=, m);
+	VERIFY3U(n, >, 0);
+
+	shares = calloc(sizeof (sss_Keyshare), m);
+	VERIFY(shares != NULL);
+	sss_create_keyshares(shares, key, m, n);
+
+	parts = calloc(sizeof (nvlist_t *), m);
+	VERIFY(parts != NULL);
+
+	VERIFY0(nvlist_alloc(&config, NV_UNIQUE_NAME, 0));
+
+	VERIFY0(nvlist_add_int32(config, "n", n));
+	VERIFY0(nvlist_add_int32(config, "m", m));
+
+	for (p = ps; p != NULL; p = p->p_next) {
+		VERIFY0(nvlist_alloc(&part, NV_UNIQUE_NAME, 0));
+		share = &shares[i];
+		parts[i++] = part;
+
+		VERIFY0(nvlist_add_string(part, "n", p->p_name));
+
+		buf = sshbuf_new();
+		VERIFY(buf != NULL);
+		VERIFY0(sshbuf_put(buf, p->p_guid, sizeof (p->p_guid)));
+		guidhex = sshbuf_dtob16(buf);
+		sshbuf_reset(buf);
+
+		VERIFY0(nvlist_add_string(part, "g", guidhex));
+		free(guidhex);
+
+		box = piv_box_new();
+		VERIFY(box != NULL);
+		bcopy(p->p_guid, box->pdb_guid, sizeof (box->pdb_guid));
+		box->pdb_slot = PIV_SLOT_KEY_MGMT;
+		VERIFY0(piv_box_set_data(box, (uint8_t *)share,
+		    sizeof (sss_Keyshare)));
+		explicit_bzero(share, sizeof (sss_Keyshare));
+		VERIFY0(piv_box_seal_offline(p->p_pubkey, box));
+
+		VERIFY0(sshbuf_put_piv_box(buf, box));
+		b64 = sshbuf_dtob64(buf);
+		VERIFY0(nvlist_add_string(part, "b", b64));
+		free(b64);
+
+		sshbuf_reset(buf);
+		piv_box_free(box);
+	}
+
+	free(shares);
+
+	VERIFY0(nvlist_add_nvlist_array(config, "p", parts, i));
+	free(parts);
+
+	*out = config;
+}
+
+static nvlist_t *
+prompt_new_backup(const uint8_t *key, size_t keylen)
+{
+	size_t len = 1024, pos = 0;
+	char *linebuf, *p;
+	nvlist_t *bk;
+	struct sshbuf *buf;
+	char *guidhex;
+	uint8_t *guid;
+	int rc;
+	uint i, n, m, glen;
+	struct part *part = NULL, *parts = NULL;
+
+	linebuf = malloc(len);
+	VERIFY(linebuf != NULL);
+
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+
+	n = 0;
+	m = 0;
+
+backup:
+	fprintf(stderr, "Backup configuration:\n");
+	fprintf(stderr, "  %d out of %d from:\n", n, m);
+	for (i = 1, part = parts; part != NULL; part = part->p_next, ++i) {
+		VERIFY0(sshbuf_put(buf, part->p_guid, 4));
+		guidhex = sshbuf_dtob16(buf);
+		sshbuf_reset(buf);
+		fprintf(stderr, "  * [%d] %s (%s)\n", i, part->p_name, guidhex);
+		free(guidhex);
+	}
+	if (parts == NULL)
+		fprintf(stderr, "  * No tokens configured yet\n");
+
+	fprintf(stderr, "\nCommands:\n  +\tadd new key\n  =N\tset N value\n"
+	    "  .\tfinish configuration\n");
+	fprintf(stderr, "> ");
+	p = fgets(&linebuf[pos], len - pos, stdin);
+	if (p == NULL || strlen(linebuf) == 0)
+		exit(1);
+	linebuf[strlen(linebuf) - 1] = 0;
+	if (strcmp("+", linebuf) == 0) {
+		part = calloc(1, sizeof (struct part));
+		VERIFY(part != NULL);
+readguid:
+		fprintf(stderr, "Token GUID (hex): ");
+		p = fgets(&linebuf[pos], len - pos, stdin);
+		if (p == NULL || strlen(linebuf) == 0)
+			exit(1);
+		linebuf[strlen(linebuf) - 1] = 0;
+		guid = parse_hex(linebuf, &glen);
+		if (guid == NULL || glen != sizeof (part->p_guid)) {
+			free(guid);
+			goto readguid;
+		}
+		bcopy(guid, part->p_guid, glen);
+		free(guid);
+
+		fprintf(stderr, "Friendly name for this token: ");
+		p = fgets(&linebuf[pos], len - pos, stdin);
+		if (p == NULL || strlen(linebuf) == 0)
+			exit(1);
+		linebuf[strlen(linebuf) - 1] = 0;
+		part->p_name = strdup(linebuf);
+		VERIFY(part->p_name != NULL);
+
+readpubkey:
+		fprintf(stderr, "Public key: ");
+		p = fgets(&linebuf[pos], len - pos, stdin);
+		if (p == NULL || strlen(linebuf) == 0)
+			exit(1);
+		linebuf[strlen(linebuf) - 1] = 0;
+
+		p = linebuf;
+		part->p_pubkey = sshkey_new(KEY_ECDSA);
+		VERIFY(part->p_pubkey != NULL);
+		rc = sshkey_read(part->p_pubkey, &p);
+		if (rc != 0) {
+			fprintf(stderr, "Bad public key\n");
+			sshkey_free(part->p_pubkey);
+			goto readpubkey;
+		}
+
+		part->p_next = parts;
+		parts = part;
+		++m;
+		goto backup;
+	} else if (linebuf[0] == '=') {
+		n = atoi(&linebuf[1]);
+		if (n < 1 || n > m) {
+			n = 0;
+			fprintf(stderr, "Invalid N value\n");
+		}
+		goto backup;
+	} else if (strcmp(".", linebuf) == 0) {
+		if (n < 1 || n > m) {
+			fprintf(stderr, "Invalid N value, please set it\n");
+			goto backup;
+		}
+		/* FALLTHROUGH */
+	} else {
+		fprintf(stderr, "Invalid command\n");
+		goto backup;
+	}
+
+	make_backup_config(parts, n, key, keylen, &bk);
+
+	return (bk);
 }
 
 static nvlist_t *
@@ -1345,6 +1609,129 @@ redo_ps_open:
 }
 
 static void
+do_zfs_rekey(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
+{
+	int rc;
+	struct zfs_unlock_state *state;
+	nvlist_t *config;
+	nvlist_t **opts, *opt;
+	nvlist_t **parts, *part;
+	nvlist_t **nvarr;
+	uint nopts, nparts;
+	FILE *file;
+	char *json;
+	size_t jsonlen;
+	size_t len = 1024, pos = 0;
+	char *linebuf, *p;
+	char *guidhex, *name;
+	int32_t n, m;
+	uint sel, i, j;
+	boolean_t changed = B_FALSE;
+
+	linebuf = malloc(len);
+	VERIFY(linebuf != NULL);
+
+	state = (struct zfs_unlock_state *)cookie;
+
+	config_convert_arrays(state->zus_config, &config);
+
+config_again:
+	fprintf(stderr, "The following configurations are available:\n");
+
+	VERIFY0(nvlist_lookup_nvlist_array(config, "o", &opts, &nopts));
+	for (i = 0; i < nopts; ++i) {
+		opt = opts[i];
+
+		VERIFY0(nvlist_lookup_int32(opt, "n", &n));
+		VERIFY0(nvlist_lookup_int32(opt, "m", &m));
+
+		VERIFY0(nvlist_lookup_nvlist_array(opt, "p", &parts, &nparts));
+
+		if (n == 1 && m == 1) {
+			fprintf(stderr, "  [%d] ", i);
+		} else {
+			fprintf(stderr, "  [%d] %d out of %d from: ", i, n, m);
+		}
+
+		for (j = 0; j < nparts; ++j) {
+			part = parts[j];
+
+			VERIFY0(nvlist_lookup_string(part, "n", &name));
+			VERIFY0(nvlist_lookup_string(part, "g", &guidhex));
+			guidhex = strdup(guidhex);
+			guidhex[8] = 0;
+
+			if (j > 0)
+				fprintf(stderr, ", ");
+			fprintf(stderr, "%s (%s)", name, guidhex);
+		}
+		fprintf(stderr, "\n");
+	}
+
+	fprintf(stderr, "\nReplace which configuration? (or q to exit) ");
+	p = fgets(&linebuf[pos], len - pos, stdin);
+	if (p == NULL || linebuf[strlen(linebuf) - 1] != '\n')
+		exit(1);
+	if (strcmp("\n", p) == 0)
+		goto config_again;
+	if (strcmp("q\n", p) == 0) {
+		goto save;
+	}
+	linebuf[strlen(linebuf) - 1] = 0;
+	sel = atoi(linebuf);
+	if (sel >= nopts)
+		goto config_again;
+	opt = opts[sel];
+
+	VERIFY0(nvlist_lookup_int32(opt, "n", &n));
+	VERIFY0(nvlist_lookup_int32(opt, "m", &m));
+
+	nvarr = malloc(sizeof (nvlist_t *) * nopts);
+	bcopy(opts, nvarr, sizeof (nvlist_t *) * nopts);
+
+	if (n == 1 && m == 1) {
+		fprintf(stderr, "Please select a new primary PIV token to use "
+		    "for unlocking this filesystem\nin the future.\n\n");
+		nvarr[sel] = prompt_new_primary(key, keylen);
+	} else {
+		fprintf(stderr, "Please add tokens to construct a new backup "
+		    "configuration. At least 2 tokens\nmust be used, in an "
+		    "N-out-of-M scheme for recovery.\n\nEach token's full GUID "
+		    "and Key Management public key is required (these can\nbe "
+		    "obtained from the output of `piv-tool list' and `piv-tool "
+		    "pubkey 9d').\n\n");
+		nvarr[sel] = prompt_new_backup(key, keylen);
+	}
+	VERIFY0(nvlist_add_nvlist_array(config, "o", nvarr, nopts));
+	changed = B_TRUE;
+	goto config_again;
+
+save:
+	if (!changed)
+		exit(0);
+
+	jsonlen = 4096;
+	json = malloc(jsonlen);
+	VERIFY(json != NULL);
+	json[0] = 0;
+
+	file = fmemopen(json, jsonlen, "w");
+	VERIFY0(nvlist_print_json(file, config));
+	fclose(file);
+
+	rc = zfs_prop_set(state->zus_zfs_handle, "rfd77:config", json);
+	if (rc != 0) {
+		fprintf(stderr, "error: failed to set ZFS property "
+		    "for new configuration: %d (%s)\n",
+		    rc, strerror(rc));
+		exit(4);
+	}
+
+	free(json);
+	nvlist_free(config);
+}
+
+static void
 do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 {
 	int rc;
@@ -1397,103 +1784,16 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 	exit(0);
 }
 
-struct part {
-	struct part *p_next;
-	const char *p_name;
-	char p_guid[16];
-	struct sshkey *p_pubkey;
-};
-
-static void
-make_backup_config(const struct part *ps, size_t n, const uint8_t *key,
-    size_t keylen, nvlist_t **out)
-{
-	size_t m = 0, i = 0;
-	const struct part *p;
-	struct sshbuf *buf;
-	nvlist_t *config;
-	nvlist_t *part;
-	nvlist_t **parts;
-	char *guidhex = NULL, *b64;
-	struct piv_ecdh_box *box;
-	sss_Keyshare *share, *shares;
-
-	VERIFY3U(keylen, ==, 32);
-
-	for (p = ps; p != NULL; p = p->p_next)
-		++m;
-	VERIFY3U(m, >, 1);
-	VERIFY3U(n, <=, m);
-	VERIFY3U(n, >, 0);
-
-	shares = calloc(sizeof (sss_Keyshare), m);
-	VERIFY(shares != NULL);
-	sss_create_keyshares(shares, key, m, n);
-
-	parts = calloc(sizeof (nvlist_t *), m);
-	VERIFY(parts != NULL);
-
-	VERIFY0(nvlist_alloc(&config, NV_UNIQUE_NAME, 0));
-
-	VERIFY0(nvlist_add_int32(config, "n", n));
-	VERIFY0(nvlist_add_int32(config, "m", m));
-
-	for (p = ps; p != NULL; p = p->p_next) {
-		VERIFY0(nvlist_alloc(&part, NV_UNIQUE_NAME, 0));
-		share = &shares[i];
-		parts[i++] = part;
-
-		VERIFY0(nvlist_add_string(part, "n", p->p_name));
-
-		buf = sshbuf_new();
-		VERIFY(buf != NULL);
-		VERIFY0(sshbuf_put(buf, p->p_guid, sizeof (p->p_guid)));
-		guidhex = sshbuf_dtob16(buf);
-		sshbuf_reset(buf);
-
-		VERIFY0(nvlist_add_string(part, "g", guidhex));
-		free(guidhex);
-
-		box = piv_box_new();
-		VERIFY(box != NULL);
-		bcopy(p->p_guid, box->pdb_guid, sizeof (box->pdb_guid));
-		box->pdb_slot = PIV_SLOT_KEY_MGMT;
-		VERIFY0(piv_box_set_data(box, (uint8_t *)share,
-		    sizeof (sss_Keyshare)));
-		explicit_bzero(share, sizeof (sss_Keyshare));
-		VERIFY0(piv_box_seal_offline(p->p_pubkey, box));
-
-		VERIFY0(sshbuf_put_piv_box(buf, box));
-		b64 = sshbuf_dtob64(buf);
-		VERIFY0(nvlist_add_string(part, "b", b64));
-		free(b64);
-
-		sshbuf_reset(buf);
-		piv_box_free(box);
-	}
-
-	free(shares);
-
-	VERIFY0(nvlist_add_nvlist_array(config, "p", parts, i));
-	free(parts);
-
-	*out = config;
-}
-
 static void
 cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
     const char *argv[], int argc)
 {
 	nvlist_t *config;
 	nvlist_t **options;
-	struct part *part = NULL, *parts = NULL;
-	size_t len = 1024, pos = 0;
-	char *linebuf, *p, *json;
-	struct sshbuf *buf;
-	char *guidhex;
-	uint8_t *key, *guid;
+	char *json;
+	uint8_t *key;
 	size_t keylen, jsonlen;
-	uint i, n, m, glen;
+	uint i;
 	int rc;
 	const char **newargv;
 	size_t newargc, maxargc;
@@ -1523,11 +1823,6 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 
 	options = calloc(2, sizeof (nvlist_t *));
 
-	linebuf = malloc(len);
-	VERIFY(linebuf != NULL);
-	buf = sshbuf_new();
-	VERIFY(buf != NULL);
-
 	fprintf(stderr, "Beginning interactive setup\n\n");
 
 	fprintf(stderr, "Please select a primary PIV token to use for "
@@ -1547,94 +1842,7 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	    "can be obtained from the output of `piv-tool list' and "
 	    "`piv-tool pubkey 9d')\n\n");
 
-	n = 0;
-	m = 0;
-
-backup:
-	fprintf(stderr, "Backup configuration:\n");
-	fprintf(stderr, "  %d out of %d from:\n", n, m);
-	for (i = 1, part = parts; part != NULL; part = part->p_next, ++i) {
-		VERIFY0(sshbuf_put(buf, part->p_guid, 4));
-		guidhex = sshbuf_dtob16(buf);
-		sshbuf_reset(buf);
-		fprintf(stderr, "  * [%d] %s (%s)\n", i, part->p_name, guidhex);
-		free(guidhex);
-	}
-	if (parts == NULL)
-		fprintf(stderr, "  * No tokens configured yet\n");
-
-	fprintf(stderr, "\nCommands:\n  +\tadd new key\n  =N\tset N value\n"
-	    "  .\tfinish configuration\n");
-	fprintf(stderr, "> ");
-	p = fgets(&linebuf[pos], len - pos, stdin);
-	if (p == NULL || strlen(linebuf) == 0)
-		exit(1);
-	linebuf[strlen(linebuf) - 1] = 0;
-	if (strcmp("+", linebuf) == 0) {
-		part = calloc(1, sizeof (struct part));
-		VERIFY(part != NULL);
-readguid:
-		fprintf(stderr, "Token GUID (hex): ");
-		p = fgets(&linebuf[pos], len - pos, stdin);
-		if (p == NULL || strlen(linebuf) == 0)
-			exit(1);
-		linebuf[strlen(linebuf) - 1] = 0;
-		guid = parse_hex(linebuf, &glen);
-		if (guid == NULL || glen != sizeof (part->p_guid)) {
-			free(guid);
-			goto readguid;
-		}
-		bcopy(guid, part->p_guid, glen);
-		free(guid);
-
-		fprintf(stderr, "Friendly name for this token: ");
-		p = fgets(&linebuf[pos], len - pos, stdin);
-		if (p == NULL || strlen(linebuf) == 0)
-			exit(1);
-		linebuf[strlen(linebuf) - 1] = 0;
-		part->p_name = strdup(linebuf);
-		VERIFY(part->p_name != NULL);
-
-readpubkey:
-		fprintf(stderr, "Public key: ");
-		p = fgets(&linebuf[pos], len - pos, stdin);
-		if (p == NULL || strlen(linebuf) == 0)
-			exit(1);
-		linebuf[strlen(linebuf) - 1] = 0;
-
-		p = linebuf;
-		part->p_pubkey = sshkey_new(KEY_ECDSA);
-		VERIFY(part->p_pubkey != NULL);
-		rc = sshkey_read(part->p_pubkey, &p);
-		if (rc != 0) {
-			fprintf(stderr, "Bad public key\n");
-			sshkey_free(part->p_pubkey);
-			goto readpubkey;
-		}
-
-		part->p_next = parts;
-		parts = part;
-		++m;
-		goto backup;
-	} else if (linebuf[0] == '=') {
-		n = atoi(&linebuf[1]);
-		if (n < 1 || n > m) {
-			n = 0;
-			fprintf(stderr, "Invalid N value\n");
-		}
-		goto backup;
-	} else if (strcmp(".", linebuf) == 0) {
-		if (n < 1 || n > m) {
-			fprintf(stderr, "Invalid N value, please set it\n");
-			goto backup;
-		}
-		/* FALLTHROUGH */
-	} else {
-		fprintf(stderr, "Invalid command\n");
-		goto backup;
-	}
-
-	make_backup_config(parts, n, key, keylen, &options[1]);
+	options[1] = prompt_new_backup(key, keylen);
 
 	VERIFY0(nvlist_add_nvlist_array(config, "o", options, 2));
 
@@ -1686,6 +1894,58 @@ readpubkey:
 }
 
 static void
+cmd_rekey(const char *fsname)
+{
+	zfs_handle_t *ds;
+	nvlist_t *props, *prop, *config;
+	char *json;
+	char *thing;
+	size_t tlen;
+	struct zfs_unlock_state state;
+
+	tlen = strlen(fsname) + 128;
+	thing = calloc(1, tlen);
+	snprintf(thing, tlen, "Unlock ZFS filesystem %s", fsname);
+
+	ds = zfs_open(zfshdl, fsname, ZFS_TYPE_DATASET);
+	if (ds == NULL) {
+		fprintf(stderr, "error: failed to open dataset %s\n",
+		    fsname);
+		exit(1);
+	}
+
+	props = zfs_get_all_props(ds);
+	VERIFY(props != NULL);
+
+	if (nvlist_lookup_nvlist(props, "rfd77:config", &prop)) {
+		fprintf(stderr, "error: no rfd77:config property "
+		    "could be read on dataset %s\n", fsname);
+		exit(1);
+	}
+
+	VERIFY0(nvlist_lookup_string(prop, "value", &json));
+
+	if (nvlist_parse_json(json, strlen(json), &config,
+	    NVJSON_FORCE_INTEGER | NVJSON_ERRORS_TO_STDERR, NULL)) {
+		fprintf(stderr, "error: failed to parse rfd77:config "
+		    "property on dataset %s\n", fsname);
+		exit(2);
+	}
+
+	VERIFY(config != NULL);
+
+	bzero(&state, sizeof (state));
+	state.zus_fsname = fsname;
+	state.zus_config = config;
+	state.zus_zfs_handle = ds;
+
+	fprintf(stderr, "Attempting to unlock ZFS '%s'...\n", fsname);
+	unlock_generic(config, thing, do_zfs_rekey, (void *)&state);
+
+	zfs_close(ds);
+}
+
+static void
 cmd_unlock(const char *fsname)
 {
 	zfs_handle_t *ds;
@@ -1717,11 +1977,11 @@ cmd_unlock(const char *fsname)
 	}
 	VERIFY0(nvlist_lookup_uint64(prop, "value", &kstatus));
 
-	/*if (kstatus == ZFS_KEYSTATUS_AVAILABLE) {
+	if (kstatus == ZFS_KEYSTATUS_AVAILABLE) {
 		fprintf(stderr, "error: key already loaded for %s\n",
 		    fsname);
 		exit(1);
-	}*/
+	}
 
 	if (nvlist_lookup_nvlist(props, "rfd77:config", &prop)) {
 		fprintf(stderr, "error: no rfd77:config property "
@@ -1943,6 +2203,22 @@ main(int argc, char *argv[])
 		}
 
 		cmd_unlock(fsname);
+
+	} else if (strcmp(op, "rekey") == 0) {
+		const char *fsname;
+
+		if (optind >= argc) {
+			fprintf(stderr, "error: target zfs required\n");
+			usage();
+		}
+		fsname = argv[optind++];
+
+		if (optind < argc) {
+			fprintf(stderr, "error: too many arguments\n");
+			usage();
+		}
+
+		cmd_rekey(fsname);
 
 	} else if (strcmp(op, "respond") == 0) {
 
