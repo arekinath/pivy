@@ -16,6 +16,8 @@ ifeq ($(SYSTEM), Linux)
 	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a -pthread
 	ZLIB_CFLAGS	= $(shell pkg-config --cflags zlib)
 	ZLIB_LIBS	= $(shell pkg-config --libs zlib)
+	RDLINE_CFLAGS	= $(shell pkg-config --cflags libedit)
+	RDLINE_LIBS	= $(shell pkg-config --libs libedit)
 	SYSTEM_CFLAGS	= $(shell pkg-config --cflags libbsd-overlay)
 	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
 	LIBZFS_VER	= $(shell pkg-config --modversion libzfs)
@@ -36,6 +38,8 @@ ifeq ($(SYSTEM), Darwin)
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
 	SYSTEM_LIBS	=
+	RDLINE_CFLAGS	=
+	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
 endif
 
@@ -137,6 +141,7 @@ PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(LIBZFS_CFLAGS) \
+			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
 			-O2 -g -m64 -fwrapv -fwrapv-pointer \
@@ -147,6 +152,7 @@ PIVZFS_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
 			$(LIBZFS_LIBS) \
+			$(RDLINE_LIBS) \
 			$(SYSTEM_LIBS)
 
 piv-zfs :		CFLAGS=		$(PIVZFS_CFLAGS)

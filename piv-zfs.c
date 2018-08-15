@@ -45,6 +45,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <editline/readline.h>
+
 #include <libzfs.h>
 #include <libzfs_core.h>
 #include <libnvpair.h>
@@ -510,12 +512,8 @@ static void
 intent_prompt(int n, struct partstate *pstates)
 {
 	struct partstate *pstate;
-	char *p;
-	char *linebuf;
-	size_t len = 1024, pos = 0;
+	char *line;
 	uint set = 0;
-
-	linebuf = malloc(len);
 
 prompt:
 	fprintf(stderr, "Parts:\n");
@@ -540,37 +538,36 @@ prompt:
 	}
 	if (set < n) {
 		fprintf(stderr, "\nChosen: %d out of %d required\n", set, n);
-		fprintf(stderr, "Commands:\n  +0 -- set [0] to insert "
-		    "directly\n  =1 -- set [1] to challenge-response\n"
-		    "  -2 -- do not use [2]\n  q -- cancel and quit\n");
-		fprintf(stderr, "> ");
+		fprintf(stderr, "Commands:\n  +1 -- set [1] to insert "
+		    "directly\n  =2 -- set [2] to challenge-response\n"
+		    "  -3 -- do not use [3]\n  q -- cancel and quit\n");
+		line = readline("> ");
 	} else {
 		fprintf(stderr, "\nReady to execute.\n"
 		    "Press return to begin.\n");
+		line = readline("");
 	}
 
-	p = fgets(&linebuf[pos], len - pos, stdin);
-	if (p == NULL || strlen(linebuf) == 0)
+	if (line == NULL)
 		exit(1);
-	if (set >= n && linebuf[0] == '\n' && linebuf[1] == 0) {
-		free(linebuf);
+	if (set >= n && strlen(line) == 0) {
+		free(line);
 		return;
 	}
-	linebuf[strlen(linebuf) - 1] = 0;
-	if (strcmp("q", linebuf) == 0)
+	if (strcmp("q", line) == 0)
 		exit(1);
-	if (strlen(linebuf) < 2)
+	if (strlen(line) < 2)
 		goto prompt;
-	int sel = atoi(&linebuf[1]);
+	int sel = atoi(&line[1]);
 	for (pstate = pstates; pstate != NULL; pstate = pstate->ps_next) {
 		if (sel == pstate->ps_id)
 			break;
 	}
 	if (pstate == NULL || sel != pstate->ps_id) {
-		fprintf(stderr, "Invalid command: '%s'\n", linebuf);
+		fprintf(stderr, "Invalid command: '%s'\n", line);
 		goto prompt;
 	}
-	switch (linebuf[0]) {
+	switch (line[0]) {
 	case '+':
 		pstate->ps_intent = INTENT_DIRECT;
 		break;
@@ -581,7 +578,7 @@ prompt:
 		pstate->ps_intent = INTENT_UNUSED;
 		break;
 	default:
-		fprintf(stderr, "Unknown command: '%s'\n", linebuf);
+		fprintf(stderr, "Unknown command: '%s'\n", line);
 	}
 
 	goto prompt;
@@ -690,22 +687,36 @@ read_b64_minibox(struct piv_ecdh_box **outbox)
 static int
 ynprompt(const char *prompt)
 {
-	char buf[16];
-	char *p;
+	char *p = NULL, *pr;
+	int rc;
+
+	pr = malloc(strlen(prompt) + 2);
+	VERIFY(pr != NULL);
+	pr[0] = 0;
+	strcat(pr, prompt);
+	strcat(pr, " ");
 again:
-	fprintf(stderr, "%s ", prompt);
-	p = fgets(buf, sizeof (buf), stdin);
-	if (p == NULL || strlen(buf) == 0)
+	free(p);
+	p = readline(pr);
+	if (p == NULL)
 		exit(1);
-	if (strcmp(buf, "\n") == 0)
-		return (0);
-	if (strcmp(buf, "y\n") == 0 ||
-	    strcmp(buf, "Y\n") == 0)
-		return (1);
-	if (strcmp(buf, "n\n") == 0 ||
-	    strcmp(buf, "N\n") == 0)
-		return (-1);
+	if (strlen(p) == 0) {
+		rc = 0;
+		goto out;
+	}
+	if (strcmp(p, "y") == 0 || strcmp(p, "Y") == 0) {
+		rc = 1;
+		goto out;
+	}
+	if (strcmp(p, "n") == 0 || strcmp(p, "N") == 0) {
+		rc = -1;
+		goto out;
+	}
 	goto again;
+out:
+	free(p);
+	free(pr);
+	return (rc);
 }
 
 static void
@@ -1006,18 +1017,14 @@ make_backup_config(const struct part *ps, size_t n, const uint8_t *key,
 static nvlist_t *
 prompt_new_backup(const uint8_t *key, size_t keylen)
 {
-	size_t len = 1024, pos = 0;
-	char *linebuf, *p;
+	char *line = NULL, *p;
 	nvlist_t *bk;
 	struct sshbuf *buf;
 	char *guidhex;
 	uint8_t *guid;
 	int rc;
 	uint i, n, m, glen;
-	struct part *part = NULL, *parts = NULL;
-
-	linebuf = malloc(len);
-	VERIFY(linebuf != NULL);
+	struct part *part = NULL, *parts = NULL, *lastpart = NULL;
 
 	buf = sshbuf_new();
 	VERIFY(buf != NULL);
@@ -1040,21 +1047,20 @@ backup:
 
 	fprintf(stderr, "\nCommands:\n  +\tadd new key\n  =N\tset N value\n"
 	    "  .\tfinish configuration\n");
-	fprintf(stderr, "> ");
-	p = fgets(&linebuf[pos], len - pos, stdin);
-	if (p == NULL || strlen(linebuf) == 0)
+	free(line);
+	line = readline("> ");
+	if (line == NULL)
 		exit(1);
-	linebuf[strlen(linebuf) - 1] = 0;
-	if (strcmp("+", linebuf) == 0) {
+
+	if (strcmp("+", line) == 0) {
 		part = calloc(1, sizeof (struct part));
 		VERIFY(part != NULL);
 readguid:
-		fprintf(stderr, "Token GUID (hex): ");
-		p = fgets(&linebuf[pos], len - pos, stdin);
-		if (p == NULL || strlen(linebuf) == 0)
+		free(line);
+		line = readline("Token GUID (hex): ");
+		if (line == NULL)
 			exit(1);
-		linebuf[strlen(linebuf) - 1] = 0;
-		guid = parse_hex(linebuf, &glen);
+		guid = parse_hex(line, &glen);
 		if (guid == NULL || glen != sizeof (part->p_guid)) {
 			free(guid);
 			goto readguid;
@@ -1062,22 +1068,20 @@ readguid:
 		bcopy(guid, part->p_guid, glen);
 		free(guid);
 
-		fprintf(stderr, "Friendly name for this token: ");
-		p = fgets(&linebuf[pos], len - pos, stdin);
-		if (p == NULL || strlen(linebuf) == 0)
+		free(line);
+		line = readline("Friendly name for this token: ");
+		if (line == NULL)
 			exit(1);
-		linebuf[strlen(linebuf) - 1] = 0;
-		part->p_name = strdup(linebuf);
+		part->p_name = line;
+		line = NULL;
 		VERIFY(part->p_name != NULL);
 
 readpubkey:
-		fprintf(stderr, "Public key: ");
-		p = fgets(&linebuf[pos], len - pos, stdin);
-		if (p == NULL || strlen(linebuf) == 0)
+		free(line);
+		line = readline("Public key: ");
+		if (line == NULL)
 			exit(1);
-		linebuf[strlen(linebuf) - 1] = 0;
-
-		p = linebuf;
+		p = line;
 		part->p_pubkey = sshkey_new(KEY_ECDSA);
 		VERIFY(part->p_pubkey != NULL);
 		rc = sshkey_read(part->p_pubkey, &p);
@@ -1087,18 +1091,23 @@ readpubkey:
 			goto readpubkey;
 		}
 
-		part->p_next = parts;
-		parts = part;
+		if (lastpart == NULL) {
+			lastpart = part;
+			parts = part;
+		} else {
+			lastpart->p_next = part;
+			lastpart = part;
+		}
 		++m;
 		goto backup;
-	} else if (linebuf[0] == '=') {
-		n = atoi(&linebuf[1]);
+	} else if (line[0] == '=') {
+		n = atoi(&line[1]);
 		if (n < 1 || n > m) {
 			n = 0;
 			fprintf(stderr, "Invalid N value\n");
 		}
 		goto backup;
-	} else if (strcmp(".", linebuf) == 0) {
+	} else if (strcmp(".", line) == 0) {
 		if (n < 1 || n > m) {
 			fprintf(stderr, "Invalid N value, please set it\n");
 			goto backup;
@@ -1110,6 +1119,7 @@ readpubkey:
 	}
 
 	make_backup_config(parts, n, key, keylen, &bk);
+	free(line);
 
 	return (bk);
 }
@@ -1117,17 +1127,13 @@ readpubkey:
 static nvlist_t *
 prompt_new_primary(const uint8_t *key, size_t keylen)
 {
-	size_t len = 1024, pos = 0;
-	char *linebuf, *p;
+	char *line = NULL;
 	nvlist_t *prim;
 	struct piv_token *token;
 	struct piv_slot *slot;
 	struct sshbuf *buf;
 	char *guidhex;
 	uint i, sel;
-
-	linebuf = malloc(len);
-	VERIFY(linebuf != NULL);
 
 	buf = sshbuf_new();
 	VERIFY(buf != NULL);
@@ -1151,16 +1157,16 @@ primary:
 
 		piv_txn_end(token);
 	}
-	fprintf(stderr, "\nUse which token? ");
-	p = fgets(&linebuf[pos], len - pos, stdin);
-	if (p == NULL || strlen(linebuf) == 0)
+	fprintf(stderr, "\n");
+	free(line);
+	line = readline("Use which token? ");
+	if (line == NULL)
 		exit(1);
-	linebuf[strlen(linebuf) - 1] = 0;
-	if (strcmp("q", linebuf) == 0)
+	if (strcmp("q", line) == 0)
 		exit(1);
-	if (strlen(linebuf) < 1)
+	if (strlen(line) < 1)
 		goto primary;
-	sel = atoi(linebuf);
+	sel = atoi(line);
 	for (i = 1, token = ks; token != NULL; token = token->pt_next, ++i) {
 		if (i == sel)
 			break;
@@ -1195,15 +1201,14 @@ primary:
 		exit(2);
 	}
 
-	fprintf(stderr, "Enter a friendly name for this token: ");
-	p = fgets(&linebuf[pos], len - pos, stdin);
-	if (p == NULL || strlen(linebuf) == 0)
+	free(line);
+	line = readline("Enter a friendly name for this token: ");
+	if (line == NULL)
 		exit(1);
-	linebuf[strlen(linebuf) - 1] = 0;
 
-	make_primary_config(token, linebuf, key, keylen, &prim);
+	make_primary_config(token, line, key, keylen, &prim);
 
-	free(linebuf);
+	free(line);
 	sshbuf_free(buf);
 
 	return (prim);
@@ -1348,13 +1353,12 @@ unlock_recovery(nvlist_t *config, const char *thing,
 	char *guidhex, *name, *boxenc;
 	uint8_t *guid;
 	uint guidlen;
-
-	char *linebuf, *p;
-	size_t len = 1024, pos = 0;
+	char *line = NULL;
+	uint sel;
 
 	struct sshkey *ephem = NULL, *ephempub = NULL;
 
-	struct partstate *pstates = NULL;
+	struct partstate *pstates = NULL, *lpstate = NULL;
 	struct partstate *pstate;
 
 	fprintf(stderr, "\nEntering recovery mode.\n");
@@ -1381,8 +1385,6 @@ unlock_recovery(nvlist_t *config, const char *thing,
 	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &ephem));
 	VERIFY0(sshkey_demote(ephem, &ephempub));
 
-	linebuf = malloc(len);
-
 config_again:
 	fprintf(stderr, "The following configurations are available:\n");
 
@@ -1397,9 +1399,10 @@ config_again:
 		VERIFY0(nvlist_lookup_uint32(parts, "length", &nparts));
 
 		if (n == 1 && m == 1) {
-			fprintf(stderr, "  [%d] ", i);
+			fprintf(stderr, "  [%d] ", i + 1);
 		} else {
-			fprintf(stderr, "  [%d] %d out of %d from: ", i, n, m);
+			fprintf(stderr, "  [%d] %d out of %d from: ",
+			    i + 1, n, m);
 		}
 
 		for (j = 0; j < nparts; ++j) {
@@ -1418,17 +1421,21 @@ config_again:
 		fprintf(stderr, "\n");
 	}
 
-	fprintf(stderr, "\nUse which configuration? (or q to exit) ");
-	p = fgets(&linebuf[pos], len - pos, stdin);
-	if (p == NULL || linebuf[strlen(linebuf) - 1] != '\n')
+	fprintf(stderr, "\n");
+	free(line);
+	line = readline("Use which configuration? (or q to exit) ");
+	if (line == NULL)
 		exit(1);
-	if (strcmp("\n", p) == 0)
+	if (strcmp("", line) == 0)
 		goto config_again;
-	if (strcmp("q\n", p) == 0)
+	if (strcmp("q", line) == 0)
 		exit(1);
-	linebuf[strlen(linebuf) - 1] = 0;
 
-	if (nvlist_lookup_nvlist(opts, linebuf, &opt))
+	sel = atoi(line) - 1;
+	if (sel >= nopts)
+		goto config_again;
+	snprintf(nbuf, sizeof (nbuf), "%d", sel);
+	if (nvlist_lookup_nvlist(opts, nbuf, &opt))
 		goto config_again;
 
 	VERIFY0(nvlist_lookup_int32(opt, "n", &n));
@@ -1442,9 +1449,14 @@ config_again:
 		VERIFY0(nvlist_lookup_nvlist(parts, nbuf, &part));
 
 		pstate = calloc(1, sizeof (struct partstate));
-		pstate->ps_next = pstates;
-		pstates = pstate;
-		pstate->ps_id = j;
+		if (lpstate == NULL) {
+			pstates = pstate;
+			lpstate = pstate;
+		} else {
+			lpstate->ps_next = pstate;
+			lpstate = pstate;
+		}
+		pstate->ps_id = j + 1;
 
 		VERIFY0(nvlist_lookup_string(part, "n", &name));
 		pstate->ps_name = name;
@@ -1621,15 +1633,11 @@ do_zfs_rekey(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 	FILE *file;
 	char *json;
 	size_t jsonlen;
-	size_t len = 1024, pos = 0;
-	char *linebuf, *p;
+	char *line;
 	char *guidhex, *name;
 	int32_t n, m;
 	uint sel, i, j;
 	boolean_t changed = B_FALSE;
-
-	linebuf = malloc(len);
-	VERIFY(linebuf != NULL);
 
 	state = (struct zfs_unlock_state *)cookie;
 
@@ -1639,8 +1647,8 @@ config_again:
 	fprintf(stderr, "The following configurations are available:\n");
 
 	VERIFY0(nvlist_lookup_nvlist_array(config, "o", &opts, &nopts));
-	for (i = 0; i < nopts; ++i) {
-		opt = opts[i];
+	for (i = 1; i <= nopts; ++i) {
+		opt = opts[i - 1];
 
 		VERIFY0(nvlist_lookup_int32(opt, "n", &n));
 		VERIFY0(nvlist_lookup_int32(opt, "m", &m));
@@ -1667,19 +1675,22 @@ config_again:
 		}
 		fprintf(stderr, "\n");
 	}
-	fprintf(stderr, "  [%d] new backup configuration\n", i);
+	fprintf(stderr, "  [%d] + new backup configuration\n", i);
 
-	fprintf(stderr, "\nReplace which configuration? (or q to exit) ");
-	p = fgets(&linebuf[pos], len - pos, stdin);
-	if (p == NULL || linebuf[strlen(linebuf) - 1] != '\n')
+	fprintf(stderr, "\n");
+	line = readline("Replace which configuration? (or q to finish) ");
+	if (line == NULL)
 		exit(1);
-	if (strcmp("\n", p) == 0)
+	if (strcmp("", line) == 0) {
+		free(line);
 		goto config_again;
-	if (strcmp("q\n", p) == 0) {
+	}
+	if (strcmp("q", line) == 0) {
+		free(line);
 		goto save;
 	}
-	linebuf[strlen(linebuf) - 1] = 0;
-	sel = atoi(linebuf);
+	sel = atoi(line) - 1;
+	free(line);
 	if (sel > nopts)
 		goto config_again;
 
@@ -2025,8 +2036,7 @@ cmd_respond(void)
 	struct challenge *chal;
 	struct piv_token *t;
 	struct piv_slot *slot;
-	char *p;
-	char linebuf[128];
+	char *line;
 	int rc;
 
 	fprintf(stderr, "[enter challenge followed by newline]\n");
@@ -2093,13 +2103,13 @@ again:
 	    "original source via a\nseparate communications channel to the "
 	    "one used to transport the challenge\nitself.\n\n");
 
-	fprintf(stderr, "If these details are correct and you wish to "
+	line = readline("If these details are correct and you wish to "
 	    "respond, type 'YES': ");
-	p = fgets(linebuf, sizeof (linebuf), stdin);
-	if (p == NULL)
+	if (line == NULL)
 		exit(1);
-	if (strcmp(linebuf, "YES\n") != 0)
+	if (strcmp(line, "YES") != 0)
 		exit(1);
+	free(line);
 
 	fprintf(stderr, "Decrypting payload...\n");
 	VERIFY0(piv_txn_begin(t));
