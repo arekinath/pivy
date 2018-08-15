@@ -1667,6 +1667,7 @@ config_again:
 		}
 		fprintf(stderr, "\n");
 	}
+	fprintf(stderr, "  [%d] new backup configuration\n", i);
 
 	fprintf(stderr, "\nReplace which configuration? (or q to exit) ");
 	p = fgets(&linebuf[pos], len - pos, stdin);
@@ -1679,15 +1680,21 @@ config_again:
 	}
 	linebuf[strlen(linebuf) - 1] = 0;
 	sel = atoi(linebuf);
-	if (sel >= nopts)
+	if (sel > nopts)
 		goto config_again;
-	opt = opts[sel];
 
-	VERIFY0(nvlist_lookup_int32(opt, "n", &n));
-	VERIFY0(nvlist_lookup_int32(opt, "m", &m));
-
-	nvarr = malloc(sizeof (nvlist_t *) * nopts);
-	bcopy(opts, nvarr, sizeof (nvlist_t *) * nopts);
+	if (sel < nopts) {
+		opt = opts[sel];
+		VERIFY0(nvlist_lookup_int32(opt, "n", &n));
+		VERIFY0(nvlist_lookup_int32(opt, "m", &m));
+		nvarr = malloc(sizeof (nvlist_t *) * nopts);
+		bcopy(opts, nvarr, sizeof (nvlist_t *) * nopts);
+	} else {
+		n = 0;
+		nvarr = malloc(sizeof (nvlist_t *) * (nopts + 1));
+		bcopy(opts, nvarr, sizeof (nvlist_t *) * nopts);
+		++nopts;
+	}
 
 	if (n == 1 && m == 1) {
 		fprintf(stderr, "Please select a new primary PIV token to use "
