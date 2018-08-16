@@ -236,6 +236,10 @@ int	sshbuf_get_eckey(struct sshbuf *buf, EC_KEY *v);
 int	sshbuf_put_ec(struct sshbuf *buf, const EC_POINT *v, const EC_GROUP *g);
 int	sshbuf_put_eckey(struct sshbuf *buf, const EC_KEY *v);
 
+int	sshbuf_get_eckey8(struct sshbuf *buf, EC_KEY *v);
+int	sshbuf_put_ec8(struct sshbuf *buf, const EC_POINT *v, const EC_GROUP *g);
+int	sshbuf_put_eckey8(struct sshbuf *buf, const EC_KEY *v);
+
 /* Dump the contents of the buffer in a human-readable format */
 void	sshbuf_dump(struct sshbuf *buf, FILE *f);
 

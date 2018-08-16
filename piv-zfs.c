@@ -250,8 +250,8 @@ sshbuf_put_minibox(struct sshbuf *buf, struct piv_ecdh_box *box)
 	tname = sshkey_curve_nid_to_name(box->pdb_pub->ecdsa_nid);
 	VERIFY(tname != NULL);
 	if ((rc = sshbuf_put_cstring8(buf, tname)) ||
-	    (rc = sshbuf_put_eckey(buf, box->pdb_pub->ecdsa)) ||
-	    (rc = sshbuf_put_eckey(buf, box->pdb_ephem_pub->ecdsa)))
+	    (rc = sshbuf_put_eckey8(buf, box->pdb_pub->ecdsa)) ||
+	    (rc = sshbuf_put_eckey8(buf, box->pdb_ephem_pub->ecdsa)))
 		return (rc);
 
 	if ((rc = sshbuf_put_string8(buf, box->pdb_iv.b_data,
@@ -316,7 +316,7 @@ sshbuf_get_minibox(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
 	VERIFY(k->ecdsa != NULL);
 
-	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
 	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
 	    EC_KEY_get0_public_key(k->ecdsa))))
 		goto out;
@@ -329,7 +329,7 @@ sshbuf_get_minibox(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
 	VERIFY(k->ecdsa != NULL);
 
-	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
 	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
 	    EC_KEY_get0_public_key(k->ecdsa))))
 		goto out;
@@ -379,9 +379,9 @@ chalbox_make(struct challenge *chal, struct piv_ecdh_box **outbox)
 	    (rc = sshbuf_put_u8(buf, chal->c_type)) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_id)))
 		goto out;
-	if ((rc = sshbuf_put_eckey(buf, chal->c_destkey->ecdsa)))
+	if ((rc = sshbuf_put_eckey8(buf, chal->c_destkey->ecdsa)))
 		goto out;
-	if ((rc = sshbuf_put_eckey(buf, kb->pdb_ephem_pub->ecdsa)) ||
+	if ((rc = sshbuf_put_eckey8(buf, kb->pdb_ephem_pub->ecdsa)) ||
 	    (rc = sshbuf_put_string8(buf, iv->b_data, iv->b_len)) ||
 	    (rc = sshbuf_put_string8(buf, enc->b_data, enc->b_len)))
 		goto out;
@@ -471,7 +471,7 @@ chalbox_get_challenge(struct piv_ecdh_box *box, struct challenge **outchal)
 	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
 	VERIFY(k->ecdsa != NULL);
-	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
 	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
 	    EC_KEY_get0_public_key(k->ecdsa))))
 		goto out;
@@ -489,7 +489,7 @@ chalbox_get_challenge(struct piv_ecdh_box *box, struct challenge **outchal)
 	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
 	VERIFY(k->ecdsa != NULL);
-	if ((rc = sshbuf_get_eckey(buf, k->ecdsa)) ||
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
 	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
 	    EC_KEY_get0_public_key(k->ecdsa))))
 		goto out;

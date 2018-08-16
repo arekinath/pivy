@@ -1134,6 +1134,41 @@ sshbuf_get_eckey(struct sshbuf *buf, EC_KEY *v)
 }
 
 int
+sshbuf_get_eckey8(struct sshbuf *buf, EC_KEY *v)
+{
+	EC_POINT *pt = EC_POINT_new(EC_KEY_get0_group(v));
+	int r;
+	const u_char *d;
+	size_t len;
+
+	if (pt == NULL) {
+		SSHBUF_DBG(("SSH_ERR_ALLOC_FAIL"));
+		return SSH_ERR_ALLOC_FAIL;
+	}
+	if ((r = sshbuf_peek_string8_direct(buf, &d, &len)) < 0) {
+		EC_POINT_free(pt);
+		return r;
+	}
+	if ((r = get_ec(d, len, pt, EC_KEY_get0_group(v))) != 0) {
+		EC_POINT_free(pt);
+		return r;
+	}
+	if (EC_KEY_set_public_key(v, pt) != 1) {
+		EC_POINT_free(pt);
+		return SSH_ERR_ALLOC_FAIL; /* XXX assumption */
+	}
+	EC_POINT_free(pt);
+	/* Skip string */
+	if (sshbuf_get_string8_direct(buf, NULL, NULL) != 0) {
+		/* Shouldn't happen */
+		SSHBUF_DBG(("SSH_ERR_INTERNAL_ERROR"));
+		SSHBUF_ABORT();
+		return SSH_ERR_INTERNAL_ERROR;
+	}
+	return 0;
+}
+
+int
 sshbuf_put_bignum2(struct sshbuf *buf, const BIGNUM *v)
 {
 	u_char d[SSHBUF_MAX_BIGNUM + 1];
@@ -1204,9 +1239,42 @@ sshbuf_put_ec(struct sshbuf *buf, const EC_POINT *v, const EC_GROUP *g)
 }
 
 int
+sshbuf_put_ec8(struct sshbuf *buf, const EC_POINT *v, const EC_GROUP *g)
+{
+	u_char d[SSHBUF_MAX_ECPOINT];
+	BN_CTX *bn_ctx;
+	size_t len;
+	int ret;
+
+	if ((bn_ctx = BN_CTX_new()) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
+	if ((len = EC_POINT_point2oct(g, v, POINT_CONVERSION_UNCOMPRESSED,
+	    NULL, 0, bn_ctx)) > SSHBUF_MAX_ECPOINT) {
+		BN_CTX_free(bn_ctx);
+		return SSH_ERR_INVALID_ARGUMENT;
+	}
+	if (EC_POINT_point2oct(g, v, POINT_CONVERSION_UNCOMPRESSED,
+	    d, len, bn_ctx) != len) {
+		BN_CTX_free(bn_ctx);
+		return SSH_ERR_INTERNAL_ERROR; /* Shouldn't happen */
+	}
+	BN_CTX_free(bn_ctx);
+	ret = sshbuf_put_string8(buf, d, len);
+	explicit_bzero(d, len);
+	return ret;
+}
+
+int
 sshbuf_put_eckey(struct sshbuf *buf, const EC_KEY *v)
 {
 	return sshbuf_put_ec(buf, EC_KEY_get0_public_key(v),
+	    EC_KEY_get0_group(v));
+}
+
+int
+sshbuf_put_eckey8(struct sshbuf *buf, const EC_KEY *v)
+{
+	return sshbuf_put_ec8(buf, EC_KEY_get0_public_key(v),
 	    EC_KEY_get0_group(v));
 }
 
