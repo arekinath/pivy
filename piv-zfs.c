@@ -175,6 +175,13 @@ enum chaltype {
 	CHAL_VERIFY_AUDIT = 2,
 };
 
+enum chaltag {
+	CTAG_HOSTNAME = 1,
+	CTAG_CTIME = 2,
+	CTAG_DESCRIPTION = 3,
+	CTAG_WORDS = 4,
+};
+
 struct challenge {
 	uint8_t c_version;
 	enum chaltype c_type;
@@ -370,21 +377,27 @@ chalbox_make(struct challenge *chal, struct piv_ecdh_box **outbox)
 
 	if ((rc = sshbuf_put_u8(buf, chal->c_version)) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_type)) ||
-	    (rc = sshbuf_put_u8(buf, chal->c_id)) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_id)))
+		goto out;
+	if ((rc = sshbuf_put_eckey(buf, chal->c_destkey->ecdsa)))
+		goto out;
+	if ((rc = sshbuf_put_eckey(buf, kb->pdb_ephem_pub->ecdsa)) ||
+	    (rc = sshbuf_put_string8(buf, iv->b_data, iv->b_len)) ||
+	    (rc = sshbuf_put_string8(buf, enc->b_data, enc->b_len)))
+		goto out;
+	if ((rc = sshbuf_put_u8(buf, CTAG_HOSTNAME)) ||
 	    (rc = sshbuf_put_cstring8(buf, chal->c_hostname)) ||
+	    (rc = sshbuf_put_u8(buf, CTAG_CTIME)) ||
+	    (rc = sshbuf_put_u8(buf, 8)) ||
 	    (rc = sshbuf_put_u64(buf, chal->c_ctime)) ||
+	    (rc = sshbuf_put_u8(buf, CTAG_DESCRIPTION)) ||
 	    (rc = sshbuf_put_cstring8(buf, chal->c_description)) ||
+	    (rc = sshbuf_put_u8(buf, CTAG_WORDS)) ||
+	    (rc = sshbuf_put_u8(buf, 4)) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_words[0])) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_words[1])) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_words[2])) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_words[3])))
-		goto out;
-	if ((rc = sshbuf_put_eckey(buf, chal->c_destkey->ecdsa)))
-		goto out;
-
-	if ((rc = sshbuf_put_eckey(buf, kb->pdb_ephem_pub->ecdsa)) ||
-	    (rc = sshbuf_put_string8(buf, iv->b_data, iv->b_len)) ||
-	    (rc = sshbuf_put_string8(buf, enc->b_data, enc->b_len)))
 		goto out;
 
 	box->pdb_cipher = strdup(kb->pdb_cipher);
@@ -423,7 +436,7 @@ static int
 chalbox_get_challenge(struct piv_ecdh_box *box, struct challenge **outchal)
 {
 	struct challenge *chal;
-	struct sshbuf *buf;
+	struct sshbuf *buf, *kbuf;
 	uint8_t *data;
 	size_t len;
 	uint8_t type;
@@ -451,14 +464,7 @@ chalbox_get_challenge(struct piv_ecdh_box *box, struct challenge **outchal)
 		goto out;
 	chal->c_type = (enum chaltype)type;
 
-	if ((rc = sshbuf_get_u8(buf, &chal->c_id)) ||
-	    (rc = sshbuf_get_cstring8(buf, &chal->c_hostname, NULL)) ||
-	    (rc = sshbuf_get_u64(buf, &chal->c_ctime)) ||
-	    (rc = sshbuf_get_cstring8(buf, &chal->c_description, NULL)) ||
-	    (rc = sshbuf_get_u8(buf, &chal->c_words[0])) ||
-	    (rc = sshbuf_get_u8(buf, &chal->c_words[1])) ||
-	    (rc = sshbuf_get_u8(buf, &chal->c_words[2])) ||
-	    (rc = sshbuf_get_u8(buf, &chal->c_words[3])))
+	if ((rc = sshbuf_get_u8(buf, &chal->c_id)))
 		goto out;
 
 	chal->c_destkey = (k = sshkey_new(KEY_ECDSA));
@@ -496,6 +502,42 @@ chalbox_get_challenge(struct piv_ecdh_box *box, struct challenge **outchal)
 	    &chal->c_keybox->pdb_enc.b_size)))
 		goto out;
 	chal->c_keybox->pdb_enc.b_len = chal->c_keybox->pdb_enc.b_size;
+
+	kbuf = sshbuf_new();
+	VERIFY(kbuf != NULL);
+
+	while (sshbuf_len(buf) > 0) {
+		uint8_t tag;
+		sshbuf_reset(kbuf);
+		if ((rc = sshbuf_get_u8(buf, &tag)) ||
+		    (rc = sshbuf_get_stringb8(buf, kbuf)))
+			goto out;
+		len = sshbuf_len(kbuf);
+		switch (tag) {
+		case CTAG_HOSTNAME:
+			chal->c_hostname = sshbuf_dup_string(kbuf);
+			VERIFY(chal->c_hostname != NULL);
+			break;
+		case CTAG_CTIME:
+			if ((rc = sshbuf_get_u64(kbuf, &chal->c_ctime)))
+				goto out;
+			break;
+		case CTAG_DESCRIPTION:
+			chal->c_description = sshbuf_dup_string(kbuf);
+			VERIFY(chal->c_description != NULL);
+			break;
+		case CTAG_WORDS:
+			if ((rc = sshbuf_get_u8(kbuf, &chal->c_words[0])) ||
+			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[1])) ||
+			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[2])) ||
+			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[3])))
+				goto out;
+			break;
+		default:
+			/* do nothing */
+			break;
+		}
+	}
 
 	*outchal = chal;
 	chal = NULL;
