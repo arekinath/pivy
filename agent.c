@@ -279,8 +279,10 @@ agent_piv_open(void)
 	struct piv_slot *slot;
 	int rc;
 
-	if (txnopen)
+	if (txnopen) {
+		txntimeout = monotime() + 2000;
 		return (0);
+	}
 
 	if (selk == NULL || (rc = piv_txn_begin(selk)) != 0) {
 		selk = NULL;
