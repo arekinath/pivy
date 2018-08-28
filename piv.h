@@ -195,8 +195,10 @@ struct piv_token {
 };
 
 struct piv_ecdh_box {
+	boolean_t pdb_guidslot_valid;
 	uint8_t pdb_guid[16];
 	enum piv_slotid pdb_slot;
+
 	struct sshkey *pdb_ephem_pub;
 	struct sshkey *pdb_pub;
 
@@ -430,6 +432,7 @@ int piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
 void piv_box_free(struct piv_ecdh_box *box);
 
 int sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
+int sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 
 int piv_write_file(struct piv_token *pt, uint tag,
     const uint8_t *data, size_t len);

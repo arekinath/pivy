@@ -1069,9 +1069,12 @@ get_ec(const u_char *d, size_t len, EC_POINT *v, const EC_GROUP *g)
 	/* Refuse overlong bignums */
 	if (len == 0 || len > SSHBUF_MAX_ECPOINT)
 		return SSH_ERR_ECPOINT_TOO_LARGE;
-	/* Only handle uncompressed points */
-	if (*d != POINT_CONVERSION_UNCOMPRESSED)
+
+	if (*d != POINT_CONVERSION_UNCOMPRESSED &&
+	    (*d & ~0x1) != POINT_CONVERSION_COMPRESSED) {
 		return SSH_ERR_INVALID_FORMAT;
+	}
+
 	if (v != NULL && EC_POINT_oct2point(g, v, d, len, NULL) != 1)
 		return SSH_ERR_INVALID_FORMAT; /* XXX assumption */
 	return 0;
@@ -1248,12 +1251,12 @@ sshbuf_put_ec8(struct sshbuf *buf, const EC_POINT *v, const EC_GROUP *g)
 
 	if ((bn_ctx = BN_CTX_new()) == NULL)
 		return SSH_ERR_ALLOC_FAIL;
-	if ((len = EC_POINT_point2oct(g, v, POINT_CONVERSION_UNCOMPRESSED,
+	if ((len = EC_POINT_point2oct(g, v, POINT_CONVERSION_COMPRESSED,
 	    NULL, 0, bn_ctx)) > SSHBUF_MAX_ECPOINT) {
 		BN_CTX_free(bn_ctx);
 		return SSH_ERR_INVALID_ARGUMENT;
 	}
-	if (EC_POINT_point2oct(g, v, POINT_CONVERSION_UNCOMPRESSED,
+	if (EC_POINT_point2oct(g, v, POINT_CONVERSION_COMPRESSED,
 	    d, len, bn_ctx) != len) {
 		BN_CTX_free(bn_ctx);
 		return SSH_ERR_INTERNAL_ERROR; /* Shouldn't happen */

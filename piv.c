@@ -2230,6 +2230,7 @@ piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
 	if (rv != 0)
 		return (rv);
 
+	box->pdb_guidslot_valid = B_TRUE;
 	bcopy(tk->pt_guid, box->pdb_guid, sizeof (tk->pt_guid));
 	box->pdb_slot = slot->ps_slot;
 
@@ -2298,27 +2299,53 @@ out:
 int
 sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 {
-	struct sshbuf *kbuf;
+	int rc;
+	const char *tname;
 
-	VERIFY0(sshbuf_put_u8(buf, 1));
-	VERIFY0(sshbuf_put_string(buf, box->pdb_guid, sizeof (box->pdb_guid)));
-	VERIFY0(sshbuf_put_u8(buf, box->pdb_slot));
+	if (box->pdb_pub->type != KEY_ECDSA ||
+	    box->pdb_ephem_pub->type != KEY_ECDSA)
+		return (EINVAL);
+	if (box->pdb_pub->ecdsa_nid != box->pdb_ephem_pub->ecdsa_nid)
+		return (EINVAL);
 
-	kbuf = sshbuf_new();
-	VERIFY3P(kbuf, !=, NULL);
-	VERIFY0(sshkey_putb(box->pdb_ephem_pub, kbuf));
-	VERIFY0(sshbuf_put_stringb(buf, kbuf));
-	sshbuf_reset(kbuf);
+	if ((rc = sshbuf_put_u8(buf, 0xB0)) ||
+	    (rc = sshbuf_put_u8(buf, 0xC5)))
+		return (rc);
+	if ((rc = sshbuf_put_u8(buf, 0x01)))
+		return (rc);
+	if (!box->pdb_guidslot_valid) {
+		if ((rc = sshbuf_put_u8(buf, 0x00)) ||
+		    (rc = sshbuf_put_u8(buf, 0x00)) ||
+		    (rc = sshbuf_put_u8(buf, 0x00)))
+			return (rc);
+	} else {
+		if ((rc = sshbuf_put_u8(buf, 0x01)))
+			return (rc);
+		rc = sshbuf_put_string8(buf, box->pdb_guid,
+		    sizeof (box->pdb_guid));
+		if (rc)
+			return (rc);
+		if ((rc = sshbuf_put_u8(buf, box->pdb_slot)))
+			return (rc);
+	}
+	if ((rc = sshbuf_put_cstring8(buf, box->pdb_cipher)) ||
+	    (rc = sshbuf_put_cstring8(buf, box->pdb_kdf)))
+		return (rc);
 
-	VERIFY0(sshkey_putb(box->pdb_pub, kbuf));
-	VERIFY0(sshbuf_put_stringb(buf, kbuf));
-	sshbuf_free(kbuf);
+	tname = sshkey_curve_nid_to_name(box->pdb_pub->ecdsa_nid);
+	VERIFY(tname != NULL);
+	if ((rc = sshbuf_put_cstring8(buf, tname)) ||
+	    (rc = sshbuf_put_eckey8(buf, box->pdb_pub->ecdsa)) ||
+	    (rc = sshbuf_put_eckey8(buf, box->pdb_ephem_pub->ecdsa)))
+		return (rc);
 
-	VERIFY0(sshbuf_put_cstring(buf, box->pdb_cipher));
-	VERIFY0(sshbuf_put_cstring(buf, box->pdb_kdf));
-	VERIFY0(sshbuf_put_string(buf, box->pdb_iv.b_data, box->pdb_iv.b_len));
-	VERIFY0(sshbuf_put_string(buf, box->pdb_enc.b_data,
-	    box->pdb_enc.b_len));
+	if ((rc = sshbuf_put_string8(buf, box->pdb_iv.b_data,
+	    box->pdb_iv.b_len)))
+		return (rc);
+
+	if ((rc = sshbuf_put_string(buf, box->pdb_enc.b_data,
+	    box->pdb_enc.b_len)))
+		return (rc);
 
 	return (0);
 }
@@ -2347,21 +2374,149 @@ piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len)
 }
 
 int
+sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
+{
+	struct piv_ecdh_box *box = NULL;
+	uint8_t ver, magic[2];
+	int rc;
+	uint8_t *tmpbuf = NULL;
+	struct sshkey *k = NULL;
+	size_t len;
+	uint8_t temp;
+	char *tname = NULL;
+
+	box = piv_box_new();
+	VERIFY(box != NULL);
+
+	if ((rc = sshbuf_get_u8(buf, &magic[0])) ||
+	    (rc = sshbuf_get_u8(buf, &magic[1])))
+		goto out;
+	if (magic[0] != 0xB0 && magic[1] != 0xC5) {
+		bunyan_log(TRACE, "bad piv box magic",
+		    "magic[0]", BNY_UINT, (uint)magic[0],
+		    "magic[1]", BNY_UINT, (uint)magic[1], NULL);
+		rc = ENOTSUP;
+		goto out;
+	}
+	if ((rc = sshbuf_get_u8(buf, &ver)))
+		goto out;
+	if (ver != 0x01) {
+		bunyan_log(TRACE, "bad piv box version (supported = v1)",
+		    "version", BNY_UINT, (uint)ver, NULL);
+		rc = ENOTSUP;
+		goto out;
+	}
+
+	if ((rc = sshbuf_get_u8(buf, &temp)))
+		goto out;
+	box->pdb_guidslot_valid = (temp != 0x00);
+
+	if ((rc = sshbuf_get_string8(buf, &tmpbuf, &len)))
+		goto out;
+	if (box->pdb_guidslot_valid && len != sizeof (box->pdb_guid)) {
+		rc = EINVAL;
+		goto out;
+	} else if (box->pdb_guidslot_valid) {
+		bcopy(tmpbuf, box->pdb_guid, len);
+	}
+	free(tmpbuf);
+	tmpbuf = NULL;
+	if ((rc = sshbuf_get_u8(buf, &temp)))
+		goto out;
+	if (box->pdb_guidslot_valid)
+		box->pdb_slot = temp;
+
+	box->pdb_free_str = B_TRUE;
+	if ((rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_cipher, NULL)) ||
+	    (rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_kdf, NULL)))
+		goto out;
+
+	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL)))
+		goto out;
+	k = sshkey_new(KEY_ECDSA);
+	k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+	VERIFY(k->ecdsa_nid != -1);
+
+	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(k->ecdsa != NULL);
+
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa))))
+		goto out;
+	box->pdb_pub = k;
+	k = NULL;
+
+	k = sshkey_new(KEY_ECDSA);
+	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
+
+	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(k->ecdsa != NULL);
+
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa)))) {
+		goto out;
+	}
+	box->pdb_ephem_pub = k;
+	k = NULL;
+
+	if ((rc = sshbuf_get_string8(buf, &box->pdb_iv.b_data,
+	    &box->pdb_iv.b_size)))
+		goto out;
+	box->pdb_iv.b_len = box->pdb_iv.b_size;
+	if ((rc = sshbuf_get_string(buf, &box->pdb_enc.b_data,
+	    &box->pdb_enc.b_size)))
+		goto out;
+	box->pdb_enc.b_len = box->pdb_enc.b_size;
+
+	*outbox = box;
+	box = NULL;
+
+out:
+	if (box != NULL)
+		piv_box_free(box);
+	if (k != NULL)
+		sshkey_free(k);
+	free(tname);
+	free(tmpbuf);
+	return (rc);
+}
+
+static int piv_box_read_old_v1(struct sshbuf *buf, struct piv_ecdh_box **pbox);
+
+int
 piv_box_from_binary(const uint8_t *input, size_t inplen,
     struct piv_ecdh_box **pbox)
 {
 	int rv;
-	struct sshbuf *buf, *kbuf;
-	struct piv_ecdh_box *box;
-	uint8_t ver;
-	uint8_t *tmp;
-	size_t len;
-
-	box = calloc(1, sizeof (struct piv_ecdh_box));
-	VERIFY3P(box, !=, NULL);
+	struct sshbuf *buf;
 
 	buf = sshbuf_from(input, inplen);
 	VERIFY3P(buf, !=, NULL);
+
+	if (inplen > 1 && *input == 0x01)
+		return (piv_box_read_old_v1(buf, pbox));
+
+	rv = sshbuf_get_piv_box(buf, pbox);
+
+	sshbuf_free(buf);
+
+	return (rv);
+}
+
+static int
+piv_box_read_old_v1(struct sshbuf *buf, struct piv_ecdh_box **pbox)
+{
+	struct sshbuf *kbuf;
+	int rv;
+	uint8_t ver;
+	uint8_t *tmp;
+	size_t len;
+	struct piv_ecdh_box *box;
+
+	box = calloc(1, sizeof (struct piv_ecdh_box));
+	VERIFY3P(box, !=, NULL);
 
 	kbuf = sshbuf_new();
 	VERIFY3P(kbuf, !=, NULL);

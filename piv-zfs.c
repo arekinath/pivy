@@ -229,136 +229,6 @@ free_challenge(struct challenge *chal)
 }
 
 static int
-sshbuf_put_minibox(struct sshbuf *buf, struct piv_ecdh_box *box)
-{
-	int rc;
-	const char *tname;
-
-	if ((rc = sshbuf_put_u8(buf, 0xF0)))
-		return (rc);
-	rc = sshbuf_put_string8(buf, box->pdb_guid, sizeof (box->pdb_guid));
-	if (rc)
-		return (rc);
-	if ((rc = sshbuf_put_u8(buf, box->pdb_slot)) ||
-	    (rc = sshbuf_put_cstring8(buf, box->pdb_cipher)) ||
-	    (rc = sshbuf_put_cstring8(buf, box->pdb_kdf)))
-		return (rc);
-
-	if (box->pdb_pub->ecdsa_nid != box->pdb_ephem_pub->ecdsa_nid)
-		return (EINVAL);
-
-	tname = sshkey_curve_nid_to_name(box->pdb_pub->ecdsa_nid);
-	VERIFY(tname != NULL);
-	if ((rc = sshbuf_put_cstring8(buf, tname)) ||
-	    (rc = sshbuf_put_eckey8(buf, box->pdb_pub->ecdsa)) ||
-	    (rc = sshbuf_put_eckey8(buf, box->pdb_ephem_pub->ecdsa)))
-		return (rc);
-
-	if ((rc = sshbuf_put_string8(buf, box->pdb_iv.b_data,
-	    box->pdb_iv.b_len)))
-		return (rc);
-
-	if ((rc = sshbuf_put_string(buf, box->pdb_enc.b_data,
-	    box->pdb_enc.b_len)))
-		return (rc);
-
-	return (0);
-}
-
-static int
-sshbuf_get_minibox(struct sshbuf *buf, struct piv_ecdh_box **outbox)
-{
-	struct piv_ecdh_box *box = NULL;
-	uint8_t ver;
-	int rc;
-	uint8_t *tmpbuf = NULL;
-	struct sshkey *k = NULL;
-	size_t len;
-	uint8_t temp;
-	char *tname = NULL;
-
-	box = piv_box_new();
-	VERIFY(box != NULL);
-
-	if ((rc = sshbuf_get_u8(buf, &ver)))
-		goto out;
-	if (ver != 0xF0) {
-		fprintf(stderr, "error: invalid minibox version: v%d "
-		    "(only v1 is supported)\n", (int)ver);
-		rc = ENOTSUP;
-		goto out;
-	}
-
-	if ((rc = sshbuf_get_string8(buf, &tmpbuf, &len)))
-		goto out;
-	if (len != sizeof (box->pdb_guid)) {
-		rc = EINVAL;
-		goto out;
-	}
-	bcopy(tmpbuf, box->pdb_guid, len);
-	free(tmpbuf);
-	tmpbuf = NULL;
-	if ((rc = sshbuf_get_u8(buf, &temp)))
-		goto out;
-	box->pdb_slot = temp;
-
-	box->pdb_free_str = B_TRUE;
-	if ((rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_cipher, NULL)) ||
-	    (rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_kdf, NULL)))
-		goto out;
-
-	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL)))
-		goto out;
-	k = sshkey_new(KEY_ECDSA);
-	k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
-	VERIFY(k->ecdsa_nid != -1);
-
-	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY(k->ecdsa != NULL);
-
-	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
-	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa))))
-		goto out;
-	box->pdb_pub = k;
-	k = NULL;
-
-	k = sshkey_new(KEY_ECDSA);
-	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
-
-	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY(k->ecdsa != NULL);
-
-	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
-	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa))))
-		goto out;
-	box->pdb_ephem_pub = k;
-	k = NULL;
-
-	if ((rc = sshbuf_get_string8(buf, &box->pdb_iv.b_data,
-	    &box->pdb_iv.b_size)))
-		goto out;
-	box->pdb_iv.b_len = box->pdb_iv.b_size;
-	if ((rc = sshbuf_get_string(buf, &box->pdb_enc.b_data,
-	    &box->pdb_enc.b_size)))
-		goto out;
-	box->pdb_enc.b_len = box->pdb_enc.b_size;
-
-	*outbox = box;
-	box = NULL;
-
-out:
-	if (box != NULL)
-		piv_box_free(box);
-	if (k != NULL)
-		sshkey_free(k);
-	free(tname);
-	free(tmpbuf);
-	return (rc);
-}
-
-static int
 chalbox_make(struct challenge *chal, struct piv_ecdh_box **outbox)
 {
 	struct piv_ecdh_box *box = NULL;
@@ -404,6 +274,7 @@ chalbox_make(struct challenge *chal, struct piv_ecdh_box **outbox)
 	box->pdb_kdf = strdup(kb->pdb_kdf);
 	bcopy(kb->pdb_guid, box->pdb_guid, sizeof (box->pdb_guid));
 	box->pdb_slot = kb->pdb_slot;
+	box->pdb_guidslot_valid = kb->pdb_guidslot_valid;
 	if ((rc = piv_box_set_data(box, sshbuf_ptr(buf), sshbuf_len(buf))))
 		goto out;
 	if ((rc = piv_box_seal_offline(kb->pdb_pub, box)))
@@ -428,7 +299,7 @@ sshbuf_put_challenge(struct sshbuf *buf, struct challenge *chal)
 
 	if ((rc = chalbox_make(chal, &box)))
 		return (rc);
-	rc = sshbuf_put_minibox(buf, box);
+	rc = sshbuf_put_piv_box(buf, box);
 	return (rc);
 }
 
@@ -715,7 +586,7 @@ read_b64_minibox(struct piv_ecdh_box **outbox)
 			struct sshbuf *pbuf = sshbuf_fromb(buf);
 			pos = 0;
 			linebuf[0] = 0;
-			if (sshbuf_get_minibox(pbuf, &box) == 0)
+			if (sshbuf_get_piv_box(pbuf, &box) == 0)
 				sshbuf_free(buf);
 			sshbuf_free(pbuf);
 		} else {
@@ -1034,6 +905,7 @@ make_backup_config(const struct part *ps, size_t n, const uint8_t *key,
 		VERIFY(box != NULL);
 		bcopy(p->p_guid, box->pdb_guid, sizeof (box->pdb_guid));
 		box->pdb_slot = PIV_SLOT_KEY_MGMT;
+		box->pdb_guidslot_valid = B_TRUE;
 		VERIFY0(piv_box_set_data(box, (uint8_t *)share,
 		    sizeof (sss_Keyshare)));
 		explicit_bzero(share, sizeof (sss_Keyshare));
@@ -2190,7 +2062,7 @@ again2:
 	VERIFY0(piv_box_seal_offline(chal->c_destkey, respbox));
 
 	sshbuf_reset(resp);
-	VERIFY0(sshbuf_put_minibox(resp, respbox));
+	VERIFY0(sshbuf_put_piv_box(resp, respbox));
 
 	fprintf(stderr, "\nRESPONSE\n---\n");
 	printwrap(sshbuf_dtob64(resp), 65);
