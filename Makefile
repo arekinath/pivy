@@ -7,6 +7,7 @@ LIBRESSL_INC	= $(PWD)/libressl/include
 LIBRESSL_LIB	= $(PWD)/libressl/crypto/.libs
 
 HAVE_ZFS	:= no
+USE_ZFS		?= yes
 
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
@@ -20,9 +21,9 @@ ifeq ($(SYSTEM), Linux)
 	RDLINE_LIBS	= $(shell pkg-config --libs libedit)
 	SYSTEM_CFLAGS	= $(shell pkg-config --cflags libbsd-overlay)
 	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
-	LIBZFS_VER	= $(shell pkg-config --modversion libzfs)
+	LIBZFS_VER	= $(shell pkg-config --modversion libzfs --silence-errors || true)
 	ifneq (,$(LIBZFS_VER))
-		HAVE_ZFS	:= yes
+		HAVE_ZFS	:= $(USE_ZFS)
 		LIBZFS_CFLAGS	= $(shell pkg-config --cflags libzfs)
 		LIBZFS_LIBS	= $(shell pkg-config --libs libzfs) -lnvpair
 	else
@@ -101,7 +102,7 @@ PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			-fstack-protector-all \
 			-O2 -g -m64 -fwrapv \
 			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall
+			-Wall -D_GNU_SOURCE
 PIVTOOL_LDFLAGS=	-m64
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
@@ -187,7 +188,7 @@ AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			-fstack-protector-all \
 			-O2 -g -m64 -fwrapv \
 			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall
+			-Wall -D_GNU_SOURCE
 AGENT_LDFLAGS=		-m64
 AGENT_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
@@ -210,6 +211,8 @@ clean:
 	rm -f piv-agent $(AGENT_OBJS)
 	rm -f piv-zfs $(PIVZFS_OBJS)
 	rm -fr .dist
+
+distclean: clean
 	rm -fr libressl
 
 $(LIBRESSL_INC):

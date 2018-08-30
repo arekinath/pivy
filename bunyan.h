@@ -10,6 +10,8 @@
 #if !defined(_BUNYAN_H)
 #define _BUNYAN_H
 
+#include <sys/types.h>
+
 enum bunyan_log_level {
 	TRACE = 10,
 	DEBUG = 20,
