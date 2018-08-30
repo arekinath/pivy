@@ -1548,7 +1548,7 @@ redo_ps_open:
 	VERIFY3U(nshare, ==, n);
 
 	uint8_t *key = calloc(1, 32);
-	sss_combine_keyshares(key, shares, n);
+	sss_combine_keyshares(key, (const sss_Keyshare *)shares, n);
 	usekey(key, 32, B_TRUE, cookie);
 }
 
@@ -1562,7 +1562,9 @@ do_zfs_rekey(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 	nvlist_t **parts, *part;
 	nvlist_t **nvarr;
 	uint nopts, nparts;
+#if !defined(__sun)
 	FILE *file;
+#endif
 	char *json;
 	size_t jsonlen;
 	char *line;
@@ -1660,6 +1662,10 @@ save:
 	if (!changed)
 		exit(0);
 
+#if defined(__sun)
+	VERIFY0(nvlist_dump_json(config, &json));
+	jsonlen = strlen(json);
+#else
 	jsonlen = 4096;
 	json = malloc(jsonlen);
 	VERIFY(json != NULL);
@@ -1668,6 +1674,7 @@ save:
 	file = fmemopen(json, jsonlen, "w");
 	VERIFY0(nvlist_print_json(file, config));
 	fclose(file);
+#endif
 
 	rc = zfs_prop_set(state->zus_zfs_handle, "rfd77:config", json);
 	if (rc != 0) {
@@ -1688,6 +1695,11 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 	struct zfs_unlock_state *state;
 	state = (struct zfs_unlock_state *)cookie;
 
+#if !defined(ZFS_KEYSTATUS_AVAILABLE)
+	fprintf(stderr, "error: this ZFS implementation does not support "
+	    "ZFS encryption\n");
+	exit(4);
+#else
 	rc = lzc_load_key(state->zus_fsname, B_FALSE, (uint8_t *)key, keylen);
 	if (rc != 0) {
 		fprintf(stderr, "error: failed to load key "
@@ -1695,10 +1707,13 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 		    rc, strerror(rc));
 		exit(4);
 	}
+#endif
 
 	if (recov) {
 		nvlist_t *config, *nprim;
+#if !defined(__sun)
 		FILE *file;
+#endif
 		char *json;
 		size_t jsonlen;
 
@@ -1707,6 +1722,10 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 		nprim = prompt_new_primary(key, keylen);
 		config_replace_primary(state->zus_config, nprim, &config);
 
+#if defined(__sun)
+		VERIFY0(nvlist_dump_json(config, &json));
+		jsonlen = strlen(json);
+#else
 		jsonlen = 4096;
 		json = malloc(jsonlen);
 		VERIFY(json != NULL);
@@ -1715,6 +1734,7 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 		file = fmemopen(json, jsonlen, "w");
 		VERIFY0(nvlist_print_json(file, config));
 		fclose(file);
+#endif
 
 		rc = zfs_prop_set(state->zus_zfs_handle, "rfd77:config", json);
 		if (rc != 0) {
@@ -1747,7 +1767,11 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	int rc;
 	const char **newargv;
 	size_t newargc, maxargc;
+#if defined(__sun)
+	char *jsonp;
+#else
 	FILE *file;
+#endif
 	pid_t kid, rkid;
 	int inpipe[2];
 	ssize_t done;
@@ -1796,6 +1820,15 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 
 	VERIFY0(nvlist_add_nvlist_array(config, "o", options, 2));
 
+#if defined(__sun)
+	VERIFY0(nvlist_dump_json(config, &jsonp));
+	jsonlen = strlen(jsonp);
+	json = malloc(jsonlen + 32);
+	json[0] = 0;
+	strcat(json, "rfd77:config=");
+	strcat(json, jsonp);
+	jsonlen = strlen(json);
+#else
 	jsonlen = 4096;
 	json = malloc(jsonlen);
 	VERIFY(json != NULL);
@@ -1805,6 +1838,7 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	fprintf(file, "rfd77:config=");
 	VERIFY0(nvlist_print_json(file, config));
 	fclose(file);
+#endif
 
 	newargv[newargc++] = opt;
 	newargv[newargc++] = json;
@@ -1864,7 +1898,7 @@ cmd_rekey(const char *fsname)
 		exit(1);
 	}
 
-	props = zfs_get_all_props(ds);
+	props = zfs_get_user_props(ds);
 	VERIFY(props != NULL);
 
 	if (nvlist_lookup_nvlist(props, "rfd77:config", &prop)) {
@@ -1900,7 +1934,9 @@ cmd_unlock(const char *fsname)
 {
 	zfs_handle_t *ds;
 	nvlist_t *props, *prop, *config;
+#if defined(ZFS_KEYSTATUS_AVAILABLE)
 	uint64_t kstatus;
+#endif
 	char *json;
 	char *thing;
 	size_t tlen;
@@ -1917,6 +1953,7 @@ cmd_unlock(const char *fsname)
 		exit(1);
 	}
 
+#if defined(ZFS_KEYSTATUS_AVAILABLE)
 	props = zfs_get_all_props(ds);
 	VERIFY(props != NULL);
 
@@ -1932,6 +1969,10 @@ cmd_unlock(const char *fsname)
 		    fsname);
 		exit(1);
 	}
+#else
+	props = zfs_get_user_props(ds);
+	VERIFY(props != NULL);
+#endif
 
 	if (nvlist_lookup_nvlist(props, "rfd77:config", &prop)) {
 		fprintf(stderr, "error: no rfd77:config property "

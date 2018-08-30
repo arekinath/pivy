@@ -34,7 +34,7 @@
 #if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
 /* Dragonfly, FreeBSD, NetBSD, OpenBSD (has arc4random) */
 # include <sys/param.h>
-# if defined(BSD)
+# if defined(BSD) || defined(__sun)
 #  include <stdlib.h>
 # endif
 #endif
@@ -161,7 +161,7 @@ static int randombytes_linux_randombytes_urandom(void *buf, size_t n)
 #endif /* defined(__linux__) && !defined(SYS_getrandom) */
 
 
-#if defined(BSD)
+#if defined(BSD) || defined(__sun)
 static int randombytes_bsd_randombytes(void *buf, size_t n)
 {
 	arc4random_buf(buf, n);
@@ -182,7 +182,7 @@ int randombytes(void *buf, size_t n)
 	/* When we have enough entropy, we can read from /dev/urandom */
 	return randombytes_linux_randombytes_urandom(buf, n);
 # endif
-#elif defined(BSD)
+#elif defined(BSD) || defined(__sun)
 # pragma message("Using arc4random system call")
 	/* Use arc4random system call */
 	return randombytes_bsd_randombytes(buf, n);
