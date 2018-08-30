@@ -145,7 +145,7 @@ PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			-fstack-protector-all \
-			-O2 -g -m64 -fwrapv -fwrapv-pointer \
+			-O2 -g -m64 -fwrapv \
 			-fPIC -D_FORTIFY_SOURCE=2 \
 			-Wall -Werror -D_GNU_SOURCE -std=gnu99
 PIVZFS_LDFLAGS=		-m64
