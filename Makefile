@@ -9,6 +9,9 @@ LIBRESSL_LIB	= $(PWD)/libressl/crypto/.libs
 HAVE_ZFS	:= no
 USE_ZFS		?= yes
 
+TAR		= tar
+CURL		= curl -k
+
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
@@ -42,6 +45,22 @@ ifeq ($(SYSTEM), Darwin)
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
+endif
+ifeq ($(SYSTEM), SunOS)
+	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
+	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
+	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a -pthread
+	ZLIB_CFLAGS	=
+	ZLIB_LIBS	= -lz
+	RDLINE_CFLAGS	=
+	RDLINE_LIBS	= -ltecla
+	SYSTEM_CFLAGS	= -gdwarf-2 -isystem $(PROTO_AREA)/usr/include -m64 -msave-args
+	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib -m64 -lssp -lsocket -lnsl
+	HAVE_ZFS	:= $(USE_ZFS)
+	LIBZFS_CFLAGS	=
+	LIBZFS_LIBS	= -lzfs -lzfs_core -lnvpair
+	TAR		= gtar
 endif
 
 _ED25519_SOURCES=		\
@@ -216,7 +235,7 @@ distclean: clean
 	rm -fr libressl
 
 $(LIBRESSL_INC):
-	curl $(LIBRESSL_URL) | tar -zxf - && \
+	$(CURL) $(LIBRESSL_URL) | $(TAR) -zxf - && \
 	    mv libressl-$(LIBRESSL_VER) libressl
 
 $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)

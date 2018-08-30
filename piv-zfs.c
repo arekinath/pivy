@@ -45,7 +45,11 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#if defined(__sun)
+#include <libtecla.h>
+#else
 #include <editline/readline.h>
+#endif
 
 #include <libzfs.h>
 #include <libzfs_core.h>
@@ -71,6 +75,20 @@ static SCARDCONTEXT ctx;
 const char *optstring = "d";
 
 extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
+
+#if defined(__sun)
+static GetLine *sungl = NULL;
+
+static char *
+readline(const char *prompt)
+{
+	char *line;
+	line = gl_get_line(sungl, prompt, NULL, -1);
+	if (line != NULL)
+		line = strdup(line);
+	return (line);
+}
+#endif
 
 static uint8_t *
 parse_hex(const char *str, uint *outlen)
@@ -2103,6 +2121,11 @@ main(int argc, char *argv[])
 
 	bunyan_init();
 	bunyan_set_name("piv-zfs");
+
+#if defined(__sun)
+	sungl = new_GetLine(4096, 4096);
+	VERIFY(sungl != NULL);
+#endif
 
 	while ((c = getopt(argc, argv, optstring)) != -1) {
 		switch (c) {

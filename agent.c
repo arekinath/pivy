@@ -104,6 +104,10 @@
 #include <winscard.h>
 #endif
 
+#if defined(__sun)
+#include <ucred.h>
+#endif
+
 #include "libssh/digest.h"
 #include "libssh/cipher.h"
 #include "libssh/ssherr.h"
@@ -1164,6 +1168,9 @@ handle_socket_read(u_int socknum)
 	uid_t euid;
 	gid_t egid;
 	int fd;
+#if defined(__sun)
+	ucred_t *peer;
+#endif
 
 	slen = sizeof(sunaddr);
 	fd = accept(sockets[socknum].fd, (struct sockaddr *)&sunaddr, &slen);
@@ -1171,11 +1178,22 @@ handle_socket_read(u_int socknum)
 		error("accept from AUTH_SOCKET: %s", strerror(errno));
 		return -1;
 	}
+#if defined(__sun)
+	if (getpeerucred(fd, &peer) != 0) {
+		error("getpeerucred %d failed: %s", fd, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	euid = ucred_geteuid(peer);
+	egid = ucred_getegid(peer);
+	ucred_free(peer);
+#else
 	if (getpeereid(fd, &euid, &egid) < 0) {
 		error("getpeereid %d failed: %s", fd, strerror(errno));
 		close(fd);
 		return -1;
 	}
+#endif
 	if ((euid != 0) && (getuid() != euid)) {
 		error("uid mismatch: peer euid %u != uid %u",
 		    (u_int) euid, (u_int) getuid());
@@ -1792,8 +1810,8 @@ skip:
 
 	long pgsz = sysconf(_SC_PAGESIZE);
 	pinmem = mmap(NULL, 3*pgsz, PROT_READ | PROT_WRITE,
-	    MAP_PRIVATE | MAP_ANON, 0, 0);
-	VERIFY(pinmem != NULL);
+	    MAP_PRIVATE | MAP_ANON, -1, 0);
+	VERIFY(pinmem != MAP_FAILED);
 #if defined(MADV_DONTDUMP)
 	r = madvise(pinmem, 3*pgsz, MADV_DONTDUMP);
 	if (r != 0) {
