@@ -125,6 +125,8 @@
 /* Listen backlog for sshd, ssh-agent and forwarding sockets */
 #define SSH_LISTEN_BACKLOG		128
 
+#define	MAX_PIN_LEN	16
+
 static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
 static boolean_t txnopen = B_FALSE;
@@ -134,7 +136,10 @@ static uint64_t last_update;
 static uint64_t last_op;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
+
+static char *pinmem = NULL;
 static char *pin = NULL;
+static size_t pin_len = 0;
 
 static struct sshkey *cak = NULL;
 
@@ -272,6 +277,32 @@ agent_piv_close(boolean_t force)
 	}
 }
 
+static void
+drop_pin(void)
+{
+	if (pin_len != 0)
+		explicit_bzero(pin, pin_len);
+	pin_len = 0;
+}
+
+static boolean_t
+auth_cak(void)
+{
+	struct piv_slot *slot;
+	int rc;
+	slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
+	if (slot == NULL) {
+		bunyan_log(WARN, "CAK failed auth", NULL);
+		return (B_FALSE);
+	}
+	rc = piv_auth_key(selk, slot, cak);
+	if (rc != 0) {
+		bunyan_log(WARN, "CAK failed auth", NULL);
+		return (B_FALSE);
+	}
+	return (B_TRUE);
+}
+
 static int
 agent_piv_open(void)
 {
@@ -299,17 +330,15 @@ agent_piv_open(void)
 					    "unique; refusing to open token",
 					    NULL);
 					selk = NULL;
-					return (ENOENT);
+					break;
 				}
 			}
 		}
 		if (selk == NULL) {
 			bunyan_log(WARN, "PIV card with given GUID is not "
 			    "present on the system", NULL);
-			if (pin != NULL)
-				explicit_bzero(pin, strlen(pin));
-			free(pin);
-			pin = NULL;
+			if (monotime() - last_update > 5000)
+				drop_pin();
 			return (ENOENT);
 		}
 
@@ -332,22 +361,12 @@ agent_piv_open(void)
 			piv_txn_end(selk);
 			return (rc);
 		}
-		last_update = monotime();
-
-		if (cak != NULL) {
-			slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
-			if (slot == NULL) {
-				bunyan_log(WARN, "CAK failed auth", NULL);
-				piv_txn_end(selk);
-				return (ENOENT);
-			}
-			rc = piv_auth_key(selk, slot, cak);
-			if (rc != 0) {
-				bunyan_log(WARN, "CAK failed auth", NULL);
-				piv_txn_end(selk);
-				return (ENOENT);
-			}
+		if (cak != NULL && !auth_cak()) {
+			piv_txn_end(selk);
+			drop_pin();
+			return (ENOENT);
 		}
+		last_update = monotime();
 
 	} else {
 		if ((rc = piv_select(selk)) != 0) {
@@ -369,35 +388,21 @@ agent_piv_open(void)
 static void
 probe_card(void)
 {
-	struct piv_slot *slot;
-	int rc;
-
 	bunyan_log(TRACE, "doing idle probe", NULL);
 
 	last_op = monotime();
 	if (agent_piv_open() != 0) {
 		goto nope;
 	}
-	if (cak != NULL) {
-		slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
-		if (slot == NULL) {
-			bunyan_log(WARN, "CAK failed auth", NULL);
-			agent_piv_close(B_TRUE);
-			goto nope;
-		}
-		rc = piv_auth_key(selk, slot, cak);
-		if (rc != 0) {
-			bunyan_log(WARN, "CAK failed auth", NULL);
-			agent_piv_close(B_TRUE);
-			goto nope;
-		}
+	if (cak != NULL && !auth_cak()) {
+		agent_piv_close(B_TRUE);
+		goto nope;
 	}
 	agent_piv_close(B_FALSE);
 	return;
 
 nope:
-	free(pin);
-	pin = NULL;
+	drop_pin();
 	selk = NULL;
 }
 
@@ -406,7 +411,7 @@ agent_piv_try_pin(void)
 {
 	int r;
 	uint retries = 1;
-	if (pin != NULL) {
+	if (pin_len != 0) {
 		r = piv_verify_pin(selk, pin, &retries);
 		if (r == EACCES) {
 			if (retries == 0) {
@@ -417,9 +422,7 @@ agent_piv_try_pin(void)
 				bunyan_log(ERROR, "invalid PIN code",
 				    "attempts_remaining", BNY_INT, retries,
 				    NULL);
-				explicit_bzero(pin, strlen(pin));
-				free(pin);
-				pin = NULL;
+				drop_pin();
 			}
 			return (EACCES);
 		} else if (r == EAGAIN) {
@@ -427,9 +430,7 @@ agent_piv_try_pin(void)
 			    "remaining (stubbornly refusing to use up the "
 			    "last one)", "attempts_remaining", BNY_INT, retries,
 			    NULL);
-			explicit_bzero(pin, strlen(pin));
-			free(pin);
-			pin = NULL;
+			drop_pin();
 			return (EACCES);
 		} else if (r != 0) {
 			bunyan_log(ERROR, "piv_verify_pin returned error",
@@ -543,6 +544,13 @@ process_request_identities(SocketEntry *e)
 	if ((now - last_update) >= card_probe_interval * 1000) {
 		last_update = now;
 		piv_read_all_certs(selk);
+		if (cak != NULL && !auth_cak()) {
+			agent_piv_close(B_TRUE);
+			drop_pin();
+			sshbuf_free(msg);
+			send_status(e, 0);
+			return;
+		}
 	}
 	agent_piv_close(B_FALSE);
 
@@ -712,10 +720,7 @@ valid_pin(const char *pin)
 static void
 process_remove_all_identities(SocketEntry *e)
 {
-	if (pin != NULL)
-		explicit_bzero(pin, strlen(pin));
-	free(pin);
-	pin = NULL;
+	drop_pin();
 	send_status(e, 1);
 }
 
@@ -975,7 +980,7 @@ process_extension(SocketEntry *e)
 static void
 process_lock_agent(SocketEntry *e, int lock)
 {
-	int r;
+	int r, ret = 0;
 	char *passwd;
 	size_t pwlen;
 	uint retries = 1;
@@ -990,30 +995,28 @@ process_lock_agent(SocketEntry *e, int lock)
 	VERIFY(passwd != NULL);
 
 	if (lock) {
-		if (pin != NULL)
-			explicit_bzero(pin, strlen(pin));
-		free(pin);
-		pin = NULL;
+		drop_pin();
 		explicit_bzero(passwd, pwlen);
 		free(passwd);
-		send_status(e, 1);
+		ret = 1;
 	} else {
 		if (!valid_pin(passwd)) {
-			send_status(e, 0);
-			return;
+			goto out;
 		}
 
 		if (agent_piv_open() != 0) {
-			send_status(e, 0);
-			return;
+			goto out;
 		}
 		r = piv_verify_pin(selk, passwd, &retries);
 
 		if (r == 0) {
 			agent_piv_close(B_FALSE);
-			pin = passwd;
-			send_status(e, 1);
-			return;
+			if (pin_len != 0)
+				explicit_bzero(pin, pin_len);
+			pin_len = pwlen;
+			bcopy(passwd, pin, pwlen + 1);
+			ret = 1;
+			goto out;
 		}
 		agent_piv_close(B_TRUE);
 
@@ -1032,8 +1035,11 @@ process_lock_agent(SocketEntry *e, int lock)
 		}
 		bunyan_log(ERROR, "piv_verify_pin returned error",
 		    "code", BNY_INT, r, "error", BNY_STRING, strerror(r), NULL);
-		send_status(e, 0);
 	}
+out:
+	explicit_bzero(passwd, pwlen);
+	free(passwd);
+	send_status(e, ret);
 }
 
 /* dispatch incoming messages */
@@ -1783,6 +1789,15 @@ skip:
 		    "may be swapped out to disk if system is low on "
 		    "memory", "error", BNY_STRING, strerror(r), NULL);
 	}
+
+	long pgsz = sysconf(_SC_PAGESIZE);
+	pinmem = mmap(NULL, 3*pgsz, PROT_READ | PROT_WRITE,
+	    MAP_PRIVATE | MAP_ANON, 0, 0);
+	VERIFY(pinmem != NULL);
+	VERIFY0(mprotect(pinmem, pgsz, PROT_NONE));
+	VERIFY0(mprotect(pinmem + 2*pgsz, pgsz, PROT_NONE));
+	pin = pinmem + pgsz;
+	explicit_bzero(pin, MAX_PIN_LEN);
 
 	cleanup_pid = getpid();
 
