@@ -71,8 +71,10 @@ shell.
 
 ## Installing on Linux
 
-On Linux you will need to have `pcsclite` and `openssl` installed. There are no
-other dependencies (other than a compiler and basic build tools and headers).
+On Linux you will need to have a compiler and basic build tools and headers
+installed, as well as the libraries `pcsclite` and `libbsd` (and their `-dev`
+packages if your distro does those). Some `musl` based distros will also require
+installing `libedit`.
 
 Then, clone this repository and use `make` to build the binaries:
 
@@ -122,11 +124,10 @@ Add the following lines to your .profile or .bashrc:
 
 ## Installing on OSX
 
-Compiling on OSX is slightly more involved, due to the lack of a useable OpenSSL
-`libcrypto` in the base system. Rather than depend on homebrew or MacPorts or
+Compiling on OSX is even easier. Rather than depend on homebrew or MacPorts or
 another similar system, we simply build `libressl-portable` in a subdirectory
-and statically link the binaries against it. Thankfully, the Makefile in this
-repository will handle it all for you.
+and statically link the binaries against it. The Makefile in this repository
+will handle it all for you.
 
 Note there is no need to install PCSClite or OpenSC or any of the related
 tools or libraries on OSX -- the PCSC framework built into the operating system
