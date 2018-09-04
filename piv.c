@@ -55,6 +55,8 @@ const uint8_t AID_PIV[] = {
 	0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00
 };
 
+boolean_t piv_full_apdu_debug = B_FALSE;
+
 int
 piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 {
@@ -160,6 +162,8 @@ piv_read_chuid(struct piv_token *pk)
 	tlv_push(tlv, 0x5C);
 	tlv_write_uint(tlv, PIV_TAG_CHUID);
 	tlv_pop(tlv);
+
+	bunyan_log(DEBUG, "reading CHUID file", NULL);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
 	apdu->a_cmd.b_data = tlv_buf(tlv);
@@ -424,6 +428,78 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 	}
 }
 
+static const char *
+ins_to_name(enum iso_ins ins)
+{
+	switch (ins) {
+	case INS_SELECT:
+		return ("SELECT");
+	case INS_GET_DATA:
+		return ("GET_DATA");
+	case INS_VERIFY:
+		return ("VERIFY");
+	case INS_CHANGE_PIN:
+		return ("CHANGE_PIN");
+	case INS_RESET_PIN:
+		return ("RESET_PIN");
+	case INS_GEN_AUTH:
+		return ("GEN_AUTH");
+	case INS_PUT_DATA:
+		return ("PUT_DATA");
+	case INS_GEN_ASYM:
+		return ("GEN_ASYM");
+	case INS_CONTINUE:
+		return ("CONTINUE");
+	case INS_SET_MGMT:
+		return ("YKPIV_SET_MGMT");
+	case INS_IMPORT_ASYM:
+		return ("YKPIV_IMPORT_ASYM");
+	case INS_GET_VER:
+		return ("YKPIV_GET_VER");
+	default:
+		return ("UNKNOWN");
+	}
+}
+
+static const char *
+sw_to_name(enum iso_sw sw)
+{
+	switch (sw) {
+	case SW_NO_ERROR:
+		return ("NO_ERROR");
+	case SW_FUNC_NOT_SUPPORTED:
+		return ("FUNC_NOT_SUPPORTED");
+	case SW_CONDITIONS_NOT_SATISFIED:
+		return ("CONDITIONS_NOT_SATISFIED");
+	case SW_SECURITY_STATUS_NOT_SATISFIED:
+		return ("SECURITY_STATUS_NOT_SATISFIED");
+	case SW_WARNING_EOF:
+		return ("WARNING_EOF");
+	case SW_FILE_NOT_FOUND:
+		return ("FILE_NOT_FOUND");
+	case SW_INCORRECT_PIN:
+		return ("INCORRECT_PIN");
+	case SW_INCORRECT_P1P2:
+		return ("INCORRECT_P1P2");
+	case SW_WRONG_DATA:
+		return ("WRONG_DATA");
+	case SW_OUT_OF_MEMORY:
+		return ("OUT_OF_MEMORY");
+	case SW_WRONG_LENGTH:
+		return ("WRONG_LENGTH");
+	default:
+		/* FALL THROUGH */
+		(void)0;
+	}
+	if ((sw & 0xFF00) == SW_BYTES_REMAINING_00)
+		return ("BYTES_REMAINING");
+	else if ((sw & 0xFF00) == SW_WARNING_NO_CHANGE_00)
+		return ("WARNING_NO_CHANGE");
+	else if ((sw & 0xFF00) == SW_WARNING_00)
+		return ("WARNING_UNKNOWN");
+	return ("UNKNOWN");
+}
+
 int
 piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 {
@@ -451,18 +527,22 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	recvLength = r->b_size - r->b_offset;
 	assert(r->b_data != NULL);
 
-	bunyan_log(TRACE, "sending APDU",
-	    "apdu", BNY_BIN_HEX, cmd, cmdLen,
-	    NULL);
+	if (piv_full_apdu_debug) {
+		bunyan_log(TRACE, "sending APDU",
+		    "apdu", BNY_BIN_HEX, cmd, cmdLen,
+		    NULL);
+	}
 
 	rv = SCardTransmit(key->pt_cardhdl, &key->pt_sendpci, cmd,
 	    cmdLen, NULL, r->b_data + r->b_offset, &recvLength);
 	explicit_bzero(cmd, cmdLen);
 	free(cmd);
 
-	bunyan_log(TRACE, "received APDU",
-	    "apdu", BNY_BIN_HEX, r->b_data + r->b_offset, (size_t)recvLength,
-	    NULL);
+	if (piv_full_apdu_debug) {
+		bunyan_log(TRACE, "received APDU",
+		    "apdu", BNY_BIN_HEX, r->b_data + r->b_offset, (size_t)recvLength,
+		    NULL);
+	}
 
 	if (rv != SCARD_S_SUCCESS) {
 		bunyan_log(DEBUG, "SCardTransmit failed",
@@ -480,6 +560,18 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	r->b_len = recvLength;
 	apdu->a_sw = (r->b_data[r->b_offset + recvLength] << 8) |
 	    r->b_data[r->b_offset + recvLength + 1];
+
+	bunyan_log(DEBUG, "APDU exchanged",
+	    "class", BNY_UINT, (uint)apdu->a_cls,
+	    "ins", BNY_UINT, (uint)apdu->a_ins,
+	    "ins_name", BNY_STRING, ins_to_name(apdu->a_ins),
+	    "p1", BNY_UINT, (uint)apdu->a_p1,
+	    "p2", BNY_UINT, (uint)apdu->a_p2,
+	    "lc", BNY_UINT, (uint)cmdLen,
+	    "sw", BNY_UINT, (uint)apdu->a_sw,
+	    "sw_name", BNY_STRING, sw_to_name(apdu->a_sw),
+	    "le", BNY_UINT, (uint)r->b_len,
+	    NULL);
 
 	return (0);
 }
@@ -1110,6 +1202,11 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		assert(0);
 	}
 	tlv_pop(tlv);
+
+	bunyan_log(DEBUG, "reading cert file",
+	    "slot", BNY_UINT, (uint)slotid,
+	    "cdata", BNY_BIN_HEX, tlv_buf(tlv), tlv_len(tlv),
+	    NULL);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
 	apdu->a_cmd.b_data = tlv_buf(tlv);

@@ -1635,8 +1635,6 @@ main(int ac, char **av)
 			s_flag++;
 			break;
 		case 'd':
-			if (d_flag || D_flag)
-				usage();
 			d_flag++;
 			break;
 		case 'D':
@@ -1717,13 +1715,23 @@ main(int ac, char **av)
 	}
 	umask(prev_mask);
 
+	if (d_flag) {
+		ssh_dbglevel = TRACE;
+		bunyan_set_level(TRACE);
+	} else if (D_flag) {
+		ssh_dbglevel = DEBUG;
+		bunyan_set_level(DEBUG);
+	}
+
+	if (d_flag >= 2) {
+		piv_full_apdu_debug = B_TRUE;
+	}
+
 	/*
 	 * Fork, and have the parent execute the command, if any, or present
 	 * the socket data.  The child continues as the authentication agent.
 	 */
 	if (D_flag || d_flag) {
-		ssh_dbglevel = TRACE;
-		bunyan_set_level(TRACE);
 		format = c_flag ? "setenv %s %s;\n" : "%s=%s; export %s;\n";
 		printf(format, SSH_AUTHSOCKET_ENV_NAME, socket_name,
 		    SSH_AUTHSOCKET_ENV_NAME);

@@ -28,6 +28,8 @@
 
 #include "libssh/digest.h"
 
+extern boolean_t piv_full_apdu_debug;
+
 enum iso_class {
 	CLA_ISO = 0x00,
 	CLA_CHAIN = 0x10
