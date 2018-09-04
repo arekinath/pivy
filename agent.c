@@ -106,6 +106,7 @@
 
 #if defined(__sun)
 #include <ucred.h>
+#include <procfs.h>
 #endif
 
 #include "libssh/digest.h"
@@ -159,6 +160,9 @@ typedef enum {
 typedef struct {
 	int fd;
 	sock_type type;
+	pid_t pid;
+	gid_t gid;
+	char *exepath;
 	struct sshbuf *input;
 	struct sshbuf *output;
 	struct sshbuf *request;
@@ -457,6 +461,8 @@ close_socket(SocketEntry *e)
 	sshbuf_free(e->input);
 	sshbuf_free(e->output);
 	sshbuf_free(e->request);
+	if (e->exepath != NULL)
+		free(e->exepath);
 }
 
 static int
@@ -1047,6 +1053,35 @@ out:
 	send_status(e, ret);
 }
 
+static const char *
+msg_type_to_name(int msg)
+{
+	switch (msg) {
+	case SSH_AGENTC_LOCK:
+		return ("LOCK");
+	case SSH_AGENTC_UNLOCK:
+		return ("UNLOCK");
+	case SSH2_AGENTC_SIGN_REQUEST:
+		return ("SIGN_REQUEST");
+	case SSH2_AGENTC_ADD_IDENTITY:
+		return ("ADD_IDENTITY");
+	case SSH2_AGENTC_REMOVE_IDENTITY:
+		return ("REMOVE_IDENTITY");
+	case SSH2_AGENTC_REQUEST_IDENTITIES:
+		return ("REQUEST_IDENTITIES");
+	case SSH2_AGENTC_REMOVE_ALL_IDENTITIES:
+		return ("REMOVE_ALL_IDENTITIES");
+	case SSH_AGENTC_ADD_SMARTCARD_KEY:
+		return ("ADD_SMARTCARD_KEY");
+	case SSH_AGENTC_REMOVE_SMARTCARD_KEY:
+		return ("REMOVE_SMARTCARD_KEY");
+	case SSH2_AGENTC_EXTENSION:
+		return ("EXTENSION");
+	default:
+		return ("UNKNOWN");
+	}
+}
+
 /* dispatch incoming messages */
 
 static int
@@ -1088,7 +1123,13 @@ process_message(u_int socknum)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	}
 
-	sdebug("%s: socket %u (fd=%d) type %d", __func__, socknum, e->fd, type);
+	bunyan_log(DEBUG, "received ssh-agent message",
+	    "fd", BNY_INT, e->fd,
+	    "msg_type", BNY_INT, (int)type,
+	    "msg_type_name", BNY_STRING, msg_type_to_name(type),
+	    "remote_pid", BNY_INT, (int)e->pid,
+	    "remote_cmd", BNY_STRING, (e->exepath == NULL) ? "???" : e->exepath,
+	    NULL);
 
 	last_op = monotime();
 
@@ -1122,7 +1163,7 @@ process_message(u_int socknum)
 
 extern void *reallocarray(void *ptr, size_t nmemb, size_t size);
 
-static void
+static SocketEntry *
 new_socket(sock_type type, int fd)
 {
 	u_int i, old_alloc, new_alloc;
@@ -1142,7 +1183,7 @@ new_socket(sock_type type, int fd)
 			if ((sockets[i].request = sshbuf_new()) == NULL)
 				fatal("%s: sshbuf_new failed", __func__);
 			sockets[i].type = type;
-			return;
+			return (&sockets[i]);
 		}
 	old_alloc = sockets_alloc;
 	new_alloc = sockets_alloc + 10;
@@ -1159,6 +1200,7 @@ new_socket(sock_type type, int fd)
 	if ((sockets[old_alloc].request = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
 	sockets[old_alloc].type = type;
+	return (&sockets[old_alloc]);
 }
 
 static int
@@ -1169,10 +1211,20 @@ handle_socket_read(u_int socknum)
 	uid_t euid;
 	gid_t egid;
 	int fd;
+	pid_t pid = 0;
+	char *exepath = NULL;
+	SocketEntry *ent;
 #if defined(__sun)
 	ucred_t *peer;
+	struct psinfo *psinfo;
+	char fn[128];
+	FILE *f;
 #endif
-
+#if defined(SO_PEERCRED)
+	struct ucred *peer;
+	socklen_t len;
+	char fn[128], ln[128];
+#endif
 	slen = sizeof(sunaddr);
 	fd = accept(sockets[socknum].fd, (struct sockaddr *)&sunaddr, &slen);
 	if (fd < 0) {
@@ -1187,7 +1239,35 @@ handle_socket_read(u_int socknum)
 	}
 	euid = ucred_geteuid(peer);
 	egid = ucred_getegid(peer);
+	pid = ucred_getpid(peer);
 	ucred_free(peer);
+	psinfo = calloc(1, sizeof (struct psinfo));
+	snprintf(fn, sizeof (fn), "/proc/%d/psinfo", (int)pid);
+	f = fopen(fn, "r");
+	if (f != NULL) {
+		if (fread(psinfo, sizeof (struct psinfo), 1, f) == 1) {
+			exepath = strdup(psinfo->pr_fname);
+		}
+		fclose(f);
+	}
+	free(psinfo);
+#elif defined(SO_PEERCRED)
+	peer = calloc(1, sizeof (struct ucred));
+	len = sizeof (struct ucred);
+	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, peer, &len)) {
+		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	euid = peer->uid;
+	egid = peer->gid;
+	pid = peer->pid;
+	free(peer);
+	snprintf(fn, sizeof (fn), "/proc/%d/exe", (int)pid);
+	len = readlink(fn, ln, sizeof (ln));
+	if (len > 0 && len < sizeof (ln)) {
+		exepath = strndup(ln, len);
+	}
 #else
 	if (getpeereid(fd, &euid, &egid) < 0) {
 		error("getpeereid %d failed: %s", fd, strerror(errno));
@@ -1201,7 +1281,10 @@ handle_socket_read(u_int socknum)
 		close(fd);
 		return -1;
 	}
-	new_socket(AUTH_CONNECTION, fd);
+	ent = new_socket(AUTH_CONNECTION, fd);
+	ent->pid = pid;
+	ent->gid = egid;
+	ent->exepath = exepath;
 	return 0;
 }
 
