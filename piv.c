@@ -1531,13 +1531,13 @@ piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries)
 			}
 		} else if (apdu->a_sw == SW_NO_ERROR && pk->pt_ykpiv) {
 			/*
-			 * YubicoPIV returns sw=9000 on all PIN operations if
-			 * the PIN is already "unlocked". We normally get here
-			 * because of a bug -- YubicoPIV uses a single global
-			 * flag to indicate whether the PIN is unlocked, and
-			 * operations on a key just either reset or don't reset
-			 * that global flag based on whether the key is
-			 * reuseable.
+			 * YubicoPIV pre-4.x returns sw=9000 on all PIN
+			 * operations if the PIN is already "unlocked". We
+			 * normally get here because of a bug -- YubicoPIV uses
+			 * a single global flag to indicate whether the PIN is
+			 * unlocked, and operations on a key just either reset
+			 * or don't reset that global flag based on whether the
+			 * key is reuseable.
 			 *
 			 * This means that if we have a txn where we do, e.g.:
 			 * VERIFY, GEN_AUTH(9a), GEN_AUTH(9c)
@@ -1545,8 +1545,21 @@ piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries)
 			 * it shouldn't be by the PIV spec (9c is supposed to
 			 * require a PIN entry with every operation).
 			 */
-			piv_apdu_free(apdu);
-			return (0);
+			if (pk->pt_ykver[0] >= 4) {
+				/*
+				 * YubicoPIV >4.x returns 9000 here but we
+				 * still need to re-enter the PIN (they fixed
+				 * the bug... ish).
+				 */
+				rv = 0;
+			} else {
+				/*
+				 * YubicoPIV 1.x (Yubikey NEO) doesn't need the
+				 * PIN re-entered.
+				 */
+				piv_apdu_free(apdu);
+				return (0);
+			}
 		} else {
 			bunyan_log(DEBUG, "card did not accept INS_VERIFY"
 			    " for PIV",

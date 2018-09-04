@@ -284,6 +284,7 @@ agent_piv_close(boolean_t force)
 static void
 drop_pin(void)
 {
+	bunyan_log(DEBUG, "dropping PIN", NULL);
 	if (pin_len != 0)
 		explicit_bzero(pin, pin_len);
 	pin_len = 0;
