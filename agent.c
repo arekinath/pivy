@@ -670,7 +670,8 @@ process_sign_request2(SocketEntry *e)
 	agent_piv_close(B_FALSE);
 
 	if (hashalg != ohashalg) {
-		fprintf(stderr, "error: PIV signed with different hash algo\n");
+		fprintf(stderr, "error: PIV signed with different hash algo "
+		    "(%d versus %d)\n", (int)hashalg, (int)ohashalg);
 		goto send;
 	}
 
