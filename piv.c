@@ -414,7 +414,7 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 	buf[2] = apdu->a_p1;
 	buf[3] = apdu->a_p2;
 	if (d->b_data == NULL) {
-		buf[5] = apdu->a_le;
+		buf[4] = apdu->a_le;
 		*outlen = 5;
 		return (buf);
 	} else {
@@ -568,9 +568,10 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	    "p1", BNY_UINT, (uint)apdu->a_p1,
 	    "p2", BNY_UINT, (uint)apdu->a_p2,
 	    "lc", BNY_UINT, (uint)(cmdLen - 5),
+	    "le", BNY_UINT, (uint)apdu->a_le,
 	    "sw", BNY_UINT, (uint)apdu->a_sw,
 	    "sw_name", BNY_STRING, sw_to_name(apdu->a_sw),
-	    "le", BNY_UINT, (uint)r->b_len,
+	    "lr", BNY_UINT, (uint)r->b_len,
 	    NULL);
 
 	return (0);
