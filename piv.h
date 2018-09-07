@@ -321,7 +321,12 @@ int piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
  * Tries to unlock the PIV token using a PIN code.
  *
  * The "pin" argument should be a NULL-terminated ASCII numeric string of the
- * PIN to use. Max length is 10 digits.
+ * PIN to use. Max length is 8 digits.
+ *
+ * The boolean "canskip" argument is used to indicate whether PIN entry should
+ * be skipped if the PIN has already been entered (we use an empty VERIFY
+ * command to check the security status). This should be to B_FALSE before
+ * using "PIN Always" slots like the 9C Digital Signature slot.
  *
  * If the argument "retries" is given, then it will be read to determine a
  * minimum number of remaining attempts to assert are possible before trying to
@@ -339,7 +344,8 @@ int piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
  *            will be written with the number of attempts remaining before the
  *            card locks itself (and potentially erases keys)
  */
-int piv_verify_pin(struct piv_token *tk, const char *pin, uint *retries);
+int piv_verify_pin(struct piv_token *tk, const char *pin, uint *retries,
+    boolean_t canskip);
 
 /*
  * Changes the PIV PIN on a token.

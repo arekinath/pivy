@@ -416,12 +416,12 @@ nope:
 }
 
 static int
-agent_piv_try_pin(void)
+agent_piv_try_pin(boolean_t canskip)
 {
 	int r;
 	uint retries = 1;
 	if (pin_len != 0) {
-		r = piv_verify_pin(selk, pin, &retries);
+		r = piv_verify_pin(selk, pin, &retries, canskip);
 		if (r == EACCES) {
 			if (retries == 0) {
 				bunyan_log(ERROR, "token is locked due to "
@@ -613,6 +613,7 @@ process_sign_request2(SocketEntry *e)
 	int found = 0;
 	int i;
 	enum sshdigest_types hashalg, ohashalg;
+	boolean_t canskip = B_TRUE;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -641,7 +642,11 @@ process_sign_request2(SocketEntry *e)
 		goto send;
 	}
 
-	if (agent_piv_try_pin() != 0) {
+	if (slot->ps_slot == PIV_SLOT_SIGNATURE)
+		canskip = B_FALSE;
+
+pin_again:
+	if (agent_piv_try_pin(canskip) != 0) {
 		agent_piv_close(B_TRUE);
 		goto send;
 	}
@@ -657,7 +662,15 @@ process_sign_request2(SocketEntry *e)
 	ohashalg = hashalg;
 	r = piv_sign(selk, slot, data, dlen, &hashalg, &rawsig, &rslen);
 
-	if (r == EPERM) {
+	if (r == EPERM && pin_len != 0 && selk->pt_ykpiv && canskip) {
+		/*
+		 * On a Yubikey, slots other than 9C (SIGNATURE) can also be
+		 * set to "PIN Always" mode. We might have one, so try again
+		 * with forced PIN entry.
+		 */
+		canskip = B_FALSE;
+		goto pin_again;
+	} else if (r == EPERM) {
 		agent_piv_close(B_TRUE);
 		fprintf(stderr, "error: no PIN has been supplied to "
 		    "the agent (try ssh-add -X)\n");
@@ -754,6 +767,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	size_t seclen;
 	uint flags;
 	int found = 0;
+	boolean_t canskip = B_TRUE;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -792,12 +806,20 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 		goto fail;
 	}
 
-	if (agent_piv_try_pin() != 0) {
+	if (slot->ps_slot == PIV_SLOT_SIGNATURE)
+		canskip = B_FALSE;
+
+pin_again:
+	if (agent_piv_try_pin(canskip) != 0) {
 		agent_piv_close(B_TRUE);
 		goto fail;
 	}
-	r = piv_ecdh(selk, slot, partner, &secret, &seclen);\
-	if (r != 0) {
+	r = piv_ecdh(selk, slot, partner, &secret, &seclen);
+	if (r == EPERM && pin_len != 0 && selk->pt_ykpiv && canskip) {
+		/* Yubikey can have slots other than 9C as "PIN Always" */
+		canskip = B_FALSE;
+		goto pin_again;
+	} else if (r != 0) {
 		agent_piv_close(B_TRUE);
 		bunyan_log(ERROR, "piv_ecdh returned error",
 		    "code", BNY_INT, r,
@@ -865,7 +887,7 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 
 	if (agent_piv_open() != 0)
 		goto fail;
-	if (agent_piv_try_pin() != 0) {
+	if (agent_piv_try_pin(B_FALSE) != 0) {
 		agent_piv_close(B_TRUE);
 		goto fail;
 	}
@@ -1019,7 +1041,7 @@ process_lock_agent(SocketEntry *e, int lock)
 		if (agent_piv_open() != 0) {
 			goto out;
 		}
-		r = piv_verify_pin(selk, passwd, &retries);
+		r = piv_verify_pin(selk, passwd, &retries, B_FALSE);
 
 		if (r == 0) {
 			agent_piv_close(B_FALSE);

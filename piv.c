@@ -567,7 +567,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	    "ins_name", BNY_STRING, ins_to_name(apdu->a_ins),
 	    "p1", BNY_UINT, (uint)apdu->a_p1,
 	    "p2", BNY_UINT, (uint)apdu->a_p2,
-	    "lc", BNY_UINT, (uint)cmdLen,
+	    "lc", BNY_UINT, (uint)(cmdLen - 5),
 	    "sw", BNY_UINT, (uint)apdu->a_sw,
 	    "sw_name", BNY_STRING, sw_to_name(apdu->a_sw),
 	    "le", BNY_UINT, (uint)r->b_len,
@@ -1482,18 +1482,17 @@ piv_change_pin(struct piv_token *pk, const char *pin, const char *newpin)
 }
 
 int
-piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries)
+piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries,
+    boolean_t canskip)
 {
 	int rv;
 	struct apdu *apdu;
 	uint8_t pinbuf[8];
 	size_t i;
 
-	assert(pk->pt_intxn == B_TRUE);
+	VERIFY(pk->pt_intxn == B_TRUE);
 
-	if (pin == NULL || (retries != NULL && *retries > 0)) {
-		VERIFY3P(retries, !=, NULL);
-
+	if (pin == NULL || canskip || (retries != NULL && *retries > 0)) {
 		apdu = piv_apdu_make(CLA_ISO, INS_VERIFY, 0x00, 0x80);
 
 		rv = piv_apdu_transceive(pk, apdu);
@@ -1508,10 +1507,12 @@ piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries)
 
 		if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
 			if ((apdu->a_sw & 0x000F) <= *retries) {
-				*retries = (apdu->a_sw & 0x000F);
+				if (retries != NULL)
+					*retries = (apdu->a_sw & 0x000F);
 				rv = EAGAIN;
 			} else if (pin == NULL) {
-				*retries = (apdu->a_sw & 0x000F);
+				if (retries != NULL)
+					*retries = (apdu->a_sw & 0x000F);
 				piv_apdu_free(apdu);
 				return (0);
 			} else {
@@ -1529,27 +1530,16 @@ piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries)
 				 */
 				rv = 0;
 			}
-		} else if (apdu->a_sw == SW_NO_ERROR && pk->pt_ykpiv) {
-			/*
-			 * YubicoPIV pre-4.x returns sw=9000 on all PIN
-			 * operations if the PIN is already "unlocked". We
-			 * normally get here because of a bug -- YubicoPIV uses
-			 * a single global flag to indicate whether the PIN is
-			 * unlocked, and operations on a key just either reset
-			 * or don't reset that global flag based on whether the
-			 * key is reuseable.
-			 *
-			 * This means that if we have a txn where we do, e.g.:
-			 * VERIFY, GEN_AUTH(9a), GEN_AUTH(9c)
-			 * then the GEN_AUTH(9c) will be accepted, even though
-			 * it shouldn't be by the PIV spec (9c is supposed to
-			 * require a PIN entry with every operation).
-			 *
-			 * Later versions of YubicoPIV also return sw=9000 here
-			 * but require PIN re-entry, so we'll re-enter just in
-			 * case.
-			 */
-			rv = 0;
+		} else if (apdu->a_sw == SW_NO_ERROR) {
+			if (pin == NULL) {
+				piv_apdu_free(apdu);
+				return (0);
+			} else if (canskip) {
+				piv_apdu_free(apdu);
+				return (0);
+			} else {
+				rv = 0;
+			}
 		} else {
 			bunyan_log(DEBUG, "card did not accept INS_VERIFY"
 			    " for PIV",
@@ -1561,6 +1551,8 @@ piv_verify_pin(struct piv_token *pk, const char *pin, uint *retries)
 		if (rv != 0)
 			return (rv);
 	}
+
+	VERIFY(pin != NULL);
 
 	memset(pinbuf, 0xFF, sizeof (pinbuf));
 	for (i = 0; i < 8 && pin[i] != 0; ++i)

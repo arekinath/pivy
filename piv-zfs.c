@@ -159,7 +159,7 @@ assert_pin(struct piv_token *pk)
 	pin = strdup(pin);
 	free(guid);
 
-	rv = piv_verify_pin(pk, pin, &retries);
+	rv = piv_verify_pin(pk, pin, &retries, B_FALSE);
 	if (rv == EACCES) {
 		piv_txn_end(pk);
 		if (retries == 0) {
