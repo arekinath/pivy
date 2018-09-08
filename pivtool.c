@@ -217,6 +217,22 @@ assert_select(struct piv_token *tk)
 	}
 }
 
+static const char *
+pin_type_to_name(enum piv_pin type)
+{
+	switch (type) {
+	case PIV_PIN:
+		return ("PIV PIN");
+	case PIV_GLOBAL_PIN:
+		return ("Global PIN");
+	case PIV_PUK:
+		return ("PUK");
+	default:
+		VERIFY(0);
+		return (NULL);
+	}
+}
+
 static void
 assert_pin(struct piv_token *pk, boolean_t prompt)
 {
@@ -238,13 +254,14 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		char prompt[64];
 		char *guid;
 		guid = buf_to_hex(pk->pt_guid, 4, B_FALSE);
-		snprintf(prompt, 64, "Enter PIV PIN for token %s: ", guid);
+		snprintf(prompt, 64, "Enter %s for token %s: ",
+		    pin_type_to_name(pk->pt_auth), guid);
 		do {
 			pin = getpass(prompt);
 		} while (pin == NULL && errno == EINTR);
 		if (pin == NULL && errno == ENXIO) {
 			piv_txn_end(pk);
-			fprintf(stderr, "error: a PIN code is required to "
+			fprintf(stderr, "error: a PIN is required to "
 			    "unlock token %s\n", guid);
 			exit(4);
 		} else if (pin == NULL) {
@@ -255,15 +272,15 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		pin = strdup(pin);
 		free(guid);
 	}
-	rv = piv_verify_pin(pk, pin, &retries, B_FALSE);
+	rv = piv_verify_pin(pk, pk->pt_auth, pin, &retries, B_FALSE);
 	if (rv == EACCES) {
 		piv_txn_end(pk);
 		if (retries == 0) {
 			fprintf(stderr, "error: token is locked due to too "
-			    "many invalid PIN code entries\n");
+			    "many invalid PIN entries\n");
 			exit(10);
 		}
-		fprintf(stderr, "error: invalid PIN code (%d attempts "
+		fprintf(stderr, "error: invalid PIN (%d attempts "
 		    "remaining)\n", retries);
 		exit(4);
 	} else if (rv == EAGAIN) {
@@ -374,6 +391,9 @@ cmd_list(SCARDCONTEXT ctx)
 		buf = buf_to_hex(pk->pt_chuuid, sizeof (pk->pt_chuuid),
 		    B_FALSE);
 		printf("%10s: %s\n", "owner", buf);
+		free(buf);
+		buf = buf_to_hex(pk->pt_fascn, pk->pt_fascn_len, B_FALSE);
+		printf("%10s: %s\n", "fasc-n", buf);
 		if (pk->pt_expiry[0] >= '0' && pk->pt_expiry[0] <= '9') {
 			printf("%10s: %c%c%c%c-%c%c-%c%c\n", "expiry",
 			    pk->pt_expiry[0], pk->pt_expiry[1],
@@ -385,6 +405,24 @@ cmd_list(SCARDCONTEXT ctx)
 			printf("%10s: implements YubicoPIV extensions "
 			    "(v%d.%d.%d)\n", "yubico", pk->pt_ykver[0],
 			    pk->pt_ykver[1], pk->pt_ykver[2]);
+		}
+		printf("%10s:", "auth");
+		if (pk->pt_pin_app && pk->pt_auth == PIV_PIN)
+			printf(" PIN*");
+		else if (pk->pt_pin_app)
+			printf(" PIN");
+		if (pk->pt_pin_global && pk->pt_auth == PIV_GLOBAL_PIN)
+			printf(" GlobalPIN*");
+		else if (pk->pt_pin_global)
+			printf(" GlobalPIN");
+		if (pk->pt_occ && pk->pt_auth == PIV_OCC)
+			printf(" Biometrics*");
+		else if (pk->pt_occ)
+			printf(" Biometrics");
+		printf("\n");
+		if (pk->pt_vci) {
+			printf("%10s: supports VCI (secure contactless)\n",
+			    "vci");
 		}
 		if (pk->pt_alg_count > 0) {
 			printf("%10s: ", "algos");
@@ -631,7 +669,7 @@ again:
 
 	VERIFY0(piv_txn_begin(selk));
 	assert_select(selk);
-	rv = piv_change_pin(selk, pin, newpin);
+	rv = piv_change_pin(selk, PIV_PIN, pin, newpin);
 	piv_txn_end(selk);
 
 	if (rv == EACCES) {
@@ -654,7 +692,8 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	X509 *cert;
 	EVP_PKEY *pkey;
 	X509_NAME *subj;
-	const char *name, *ku, *basic;
+	const char *ku, *basic;
+	char *name;
 	enum sshdigest_types wantalg, hashalg;
 	int nid;
 	ASN1_TYPE null_parameter;
@@ -691,6 +730,37 @@ cmd_generate(uint slotid, enum piv_alg alg)
 		name = "piv-card-auth";
 		basic = "critical,CA:FALSE";
 		ku = "critical,digitalSignature,nonRepudiation";
+		break;
+	case 0x82:
+	case 0x83:
+	case 0x84:
+	case 0x85:
+	case 0x86:
+	case 0x87:
+	case 0x88:
+	case 0x89:
+	case 0x8A:
+	case 0x8B:
+	case 0x8C:
+	case 0x8D:
+	case 0x8E:
+	case 0x8F:
+	case 0x90:
+	case 0x91:
+	case 0x92:
+	case 0x93:
+	case 0x94:
+	case 0x95:
+		name = calloc(1, 64);
+		snprintf(name, 64, "piv-retired-%u", slotid - 0x81);
+		basic = "critical,CA:FALSE";
+		ku = "critical,digitalSignature,nonRepudiation";
+		if (slotid - 0x82 > selk->pt_hist_oncard) {
+			fprintf(stderr, "error: next available key history "
+			    "slot is %02X (must be used in order)\n",
+			    0x82 + selk->pt_hist_oncard);
+			exit(3);
+		}
 		break;
 	default:
 		fprintf(stderr, "error: PIV slot %02X cannot be "
@@ -843,6 +913,36 @@ signagain:
 
 	flags = PIV_COMP_NONE;
 	rv = piv_write_cert(selk, slotid, cdata, cdlen, flags);
+
+	if (rv == 0 && slotid >= 0x82 && slotid <= 0x95 &&
+	    selk->pt_hist_oncard <= slotid - 0x82) {
+		struct tlv_state *khtlv;
+		khtlv = tlv_init_write();
+
+		tlv_push(khtlv, 0xC1);
+		tlv_write_uint(khtlv, selk->pt_hist_oncard + 1);
+		tlv_pop(khtlv);
+
+		tlv_push(khtlv, 0xC2);
+		tlv_write_uint(khtlv, selk->pt_hist_offcard);
+		tlv_pop(khtlv);
+
+		if (selk->pt_hist_url != NULL) {
+			tlv_push(khtlv, 0xF3);
+			tlv_write(khtlv, (uint8_t *)selk->pt_hist_url, 0,
+			    strlen(selk->pt_hist_url));
+			tlv_pop(khtlv);
+		}
+
+		rv = piv_write_file(selk, PIV_TAG_KEYHIST, tlv_buf(khtlv),
+		    tlv_len(khtlv));
+		if (rv != 0) {
+			fprintf(stderr, "warning: failed to update key history "
+			    "object with new cert\n");
+			rv = 0;
+		}
+	}
+
 	piv_txn_end(selk);
 
 	if (rv != 0) {

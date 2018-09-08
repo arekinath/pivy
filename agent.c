@@ -421,7 +421,7 @@ agent_piv_try_pin(boolean_t canskip)
 	int r;
 	uint retries = 1;
 	if (pin_len != 0) {
-		r = piv_verify_pin(selk, pin, &retries, canskip);
+		r = piv_verify_pin(selk, selk->pt_auth, pin, &retries, canskip);
 		if (r == EACCES) {
 			if (retries == 0) {
 				bunyan_log(ERROR, "token is locked due to "
@@ -541,7 +541,7 @@ process_request_identities(SocketEntry *e)
 	struct piv_slot *slot;
 	char comment[256];
 	uint64_t now;
-	int r, n, i;
+	int r, n;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -566,24 +566,17 @@ process_request_identities(SocketEntry *e)
 	agent_piv_close(B_FALSE);
 
 	n = 0;
-	for (i = 0x9A; i < 0x9F; ++i) {
-		slot = piv_get_slot(selk, i);
-		if (slot != NULL) {
-			++n;
-		}
-	}
+	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next)
+		++n;
 
 	if ((r = sshbuf_put_u8(msg, SSH2_AGENT_IDENTITIES_ANSWER)) != 0 ||
 	    (r = sshbuf_put_u32(msg, n)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
-	for (i = 0x9A; i < 0x9F; ++i) {
-		slot = piv_get_slot(selk, i);
-		if (slot == NULL)
-			continue;
+	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
 		comment[0] = 0;
 		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
-		    i, slot->ps_subj);
+		    slot->ps_slot, slot->ps_subj);
 		if ((r = sshkey_puts(slot->ps_pubkey, msg)) != 0 ||
 		    (r = sshbuf_put_cstring(msg, comment)) != 0) {
 			error("%s: put key/comment: %s", __func__,
@@ -611,7 +604,6 @@ process_sign_request2(SocketEntry *e)
 	struct sshkey *key = NULL;
 	struct piv_slot *slot;
 	int found = 0;
-	int i;
 	enum sshdigest_types hashalg, ohashalg;
 	boolean_t canskip = B_TRUE;
 
@@ -627,10 +619,7 @@ process_sign_request2(SocketEntry *e)
 	if (agent_piv_open() != 0)
 		goto send;
 
-	for (i = 0x9A; i < 0x9F; ++i) {
-		slot = piv_get_slot(selk, i);
-		if (slot == NULL)
-			continue;
+	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
 		if (sshkey_equal(slot->ps_pubkey, key)) {
 			found = 1;
 			break;
@@ -758,7 +747,7 @@ struct exthandler exthandlers[];
 static void
 process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 {
-	int r, i;
+	int r;
 	struct sshbuf *msg;
 	struct sshkey *key = NULL;
 	struct sshkey *partner = NULL;
@@ -784,10 +773,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	if (agent_piv_open() != 0)
 		goto fail;
 
-	for (i = 0x9A; i < 0x9F; ++i) {
-		slot = piv_get_slot(selk, i);
-		if (slot == NULL)
-			continue;
+	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
 		if (sshkey_equal(slot->ps_pubkey, key)) {
 			found = 1;
 			break;
@@ -1041,7 +1027,8 @@ process_lock_agent(SocketEntry *e, int lock)
 		if (agent_piv_open() != 0) {
 			goto out;
 		}
-		r = piv_verify_pin(selk, passwd, &retries, B_FALSE);
+		r = piv_verify_pin(selk, selk->pt_auth, passwd, &retries,
+		    B_FALSE);
 
 		if (r == 0) {
 			agent_piv_close(B_FALSE);

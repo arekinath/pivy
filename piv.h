@@ -93,6 +93,9 @@ enum piv_tags {
 	PIV_TAG_CERT_9C = 0x5FC10A,
 	PIV_TAG_CERT_9D = 0x5FC10B,
 	PIV_TAG_CERT_9E = 0x5FC101,
+
+	PIV_TAG_CERT_82 = 0x5FC10D,	/* First retired slot */
+	PIV_TAG_CERT_95 = 0x5FC120,	/* Last retired slot */
 };
 
 enum gen_auth_tag {
@@ -131,6 +134,16 @@ enum piv_certinfo_flags {
 	PIV_CI_COMPTYPE = 0x03,
 };
 
+enum piv_pin {
+	PIV_PIN = 0x80,
+	PIV_GLOBAL_PIN = 0x00,
+	PIV_PUK = 0x81,
+	/* We don't really support these yet. */
+	PIV_OCC = 0x96,
+	PIV_OCC2 = 0x97,
+	PIV_PAIRING = 0x98
+};
+
 enum piv_slotid {
 	PIV_SLOT_9A = 0x9A,
 	PIV_SLOT_9B = 0x9B,
@@ -138,11 +151,17 @@ enum piv_slotid {
 	PIV_SLOT_9D = 0x9D,
 	PIV_SLOT_9E = 0x9E,
 
+	PIV_SLOT_82 = 0x82,
+	PIV_SLOT_95 = 0x95,
+
 	PIV_SLOT_PIV_AUTH = PIV_SLOT_9A,
 	PIV_SLOT_ADMIN = PIV_SLOT_9B,
 	PIV_SLOT_SIGNATURE = PIV_SLOT_9C,
 	PIV_SLOT_KEY_MGMT = PIV_SLOT_9D,
 	PIV_SLOT_CARD_AUTH = PIV_SLOT_9E,
+
+	PIV_SLOT_RETIRED_1 = PIV_SLOT_82,
+	PIV_SLOT_RETIRED_20 = PIV_SLOT_95,
 };
 
 struct apdubuf {
@@ -182,6 +201,9 @@ struct piv_token {
 	boolean_t pt_intxn;
 	boolean_t pt_reset;
 
+	uint8_t pt_fascn[26];
+	size_t pt_fascn_len;
+
 	uint8_t pt_guid[16];
 	uint8_t pt_chuuid[16];
 	uint8_t pt_expiry[8];
@@ -193,7 +215,19 @@ struct piv_token {
 	boolean_t pt_signedchuid;
 	uint8_t pt_ykver[3];
 
+	uint8_t pt_hist_oncard;
+	uint8_t pt_hist_offcard;
+	char *pt_hist_url;
+
+	enum piv_pin pt_auth;
+
+	boolean_t pt_pin_global;
+	boolean_t pt_pin_app;
+	boolean_t pt_occ;
+	boolean_t pt_vci;
+
 	struct piv_slot *pt_slots;
+	struct piv_slot *pt_last_slot;
 };
 
 struct piv_ecdh_box {
@@ -344,8 +378,8 @@ int piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
  *            will be written with the number of attempts remaining before the
  *            card locks itself (and potentially erases keys)
  */
-int piv_verify_pin(struct piv_token *tk, const char *pin, uint *retries,
-    boolean_t canskip);
+int piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
+    uint *retries, boolean_t canskip);
 
 /*
  * Changes the PIV PIN on a token.
@@ -358,7 +392,8 @@ int piv_verify_pin(struct piv_token *tk, const char *pin, uint *retries,
  *  - EINVAL: the card rejected the command (e.g. because applet not selected)
  *  - EACCES: the old PIN code was incorrect.
  */
-int piv_change_pin(struct piv_token *tk, const char *pin, const char *newpin);
+int piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
+    const char *newpin);
 
 /*
  * Authenticates a PIV key slot by matching its public key against the given
@@ -444,5 +479,6 @@ int sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 
 int piv_write_file(struct piv_token *pt, uint tag,
     const uint8_t *data, size_t len);
+int piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len);
 
 #endif

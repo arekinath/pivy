@@ -132,6 +132,22 @@ parse_hex(const char *str, uint *outlen)
 	return (data);
 }
 
+static const char *
+pin_type_to_name(enum piv_pin type)
+{
+	switch (type) {
+	case PIV_PIN:
+		return ("PIV PIN");
+	case PIV_GLOBAL_PIN:
+		return ("Global PIN");
+	case PIV_PUK:
+		return ("PUK");
+	default:
+		VERIFY(0);
+		return (NULL);
+	}
+}
+
 static void
 assert_pin(struct piv_token *pk)
 {
@@ -141,7 +157,8 @@ assert_pin(struct piv_token *pk)
 	char *guid;
 	char *pin = NULL;
 	guid = buf_to_hex(pk->pt_guid, 4, B_FALSE);
-	snprintf(prompt, 64, "Enter PIV PIN for token %s: ", guid);
+	snprintf(prompt, 64, "Enter %s for token %s: ",
+	    pin_type_to_name(pk->pt_auth), guid);
 	do {
 		pin = getpass(prompt);
 	} while (pin == NULL && errno == EINTR);
@@ -159,7 +176,7 @@ assert_pin(struct piv_token *pk)
 	pin = strdup(pin);
 	free(guid);
 
-	rv = piv_verify_pin(pk, pin, &retries, B_FALSE);
+	rv = piv_verify_pin(pk, pk->pt_auth, pin, &retries, B_FALSE);
 	if (rv == EACCES) {
 		piv_txn_end(pk);
 		if (retries == 0) {
