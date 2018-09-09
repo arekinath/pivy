@@ -1093,7 +1093,7 @@ cmd_sign(uint slotid)
 		exit(1);
 	}
 
-	buf = read_stdin(8192, &inplen);
+	buf = read_stdin(16384, &inplen);
 	assert(buf != NULL);
 
 	piv_txn_begin(selk);
@@ -1236,6 +1236,66 @@ again:
 	exit(0);
 }
 
+
+struct sgdebugbuf {
+	uint8_t sb_id;
+	uint8_t sb_flags;
+	uint16_t sb_size;
+	uint16_t sb_offset;
+	uint16_t sb_len;
+} __attribute__((packed));
+struct sgdebugdata {
+	uint16_t sg_buf;
+	uint16_t sg_off;
+	struct sgdebugbuf sg_bufs[1];
+} __attribute__((packed));
+
+static void
+cmd_sgdebug(void)
+{
+	struct apdu *apdu;
+	int rc;
+
+	apdu = piv_apdu_make(CLA_ISO, 0xE0, 0x00, 0x00);
+	VERIFY(apdu != NULL);
+
+	piv_txn_begin(selk);
+	assert_select(selk);
+	rc = piv_apdu_transceive(selk, apdu);
+	piv_txn_end(selk);
+
+	if (rc != 0) {
+		fprintf(stderr, "error: failed to run command (rc = %d)\n",
+		    rc);
+		exit(1);
+	}
+
+	const uint8_t *reply = &apdu->a_reply.b_data[apdu->a_reply.b_offset];
+	const size_t len = apdu->a_reply.b_len;
+	struct sgdebugdata *data = (struct sgdebugdata *)reply;
+	struct sgdebugbuf *buf;
+	data->sg_buf = ntohs(data->sg_buf);
+	data->sg_off = ntohs(data->sg_off);
+	printf("== SGList debug data ==\n");
+	printf("current position = %d + 0x%04x\n", data->sg_buf, data->sg_off);
+	buf = data->sg_bufs;
+	while ((char *)buf - (char *)data < len) {
+		buf->sb_size = ntohs(buf->sb_size);
+		buf->sb_offset = ntohs(buf->sb_offset);
+		buf->sb_len = ntohs(buf->sb_len);
+		printf("buf %-3d: ", buf->sb_id);
+		if (buf->sb_flags & 0x02)
+			printf("transient ");
+		if (buf->sb_flags & 0x01)
+			printf("dynamic ");
+		printf("size=%04x offset=%04x len=%04x\n",
+		    buf->sb_size, buf->sb_offset, buf->sb_len);
+		++buf;
+	}
+
+	piv_apdu_free(apdu);
+}
+
 static void
 cmd_box_info(void)
 {
@@ -1318,7 +1378,7 @@ cmd_auth(uint slotid)
 		exit(1);
 	}
 
-	buf = read_stdin(8192, &boff);
+	buf = read_stdin(16384, &boff);
 	assert(buf != NULL);
 	buf[boff] = 0;
 
@@ -1566,6 +1626,7 @@ main(int argc, char *argv[])
 	uint len;
 	char *ptr;
 	uint8_t *buf;
+	uint d_level = 0;
 
 	bunyan_init();
 	bunyan_set_name("pivtool");
@@ -1574,6 +1635,8 @@ main(int argc, char *argv[])
 		switch (c) {
 		case 'd':
 			bunyan_set_level(TRACE);
+			if (++d_level > 1)
+				piv_full_apdu_debug = B_TRUE;
 			break;
 		case 'K':
 			if (optarg[0] == '@') {
@@ -1822,6 +1885,14 @@ main(int argc, char *argv[])
 			usage();
 		}
 		cmd_box_info();
+
+	} else if (strcmp(op, "sgdebug") == 0) {
+		if (optind < argc) {
+			fprintf(stderr, "error: too many arguments\n");
+			usage();
+		}
+		check_select_key();
+		cmd_sgdebug();
 
 	} else if (strcmp(op, "generate") == 0) {
 		uint slotid;
