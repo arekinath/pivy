@@ -14,11 +14,19 @@ operations using PIV cards, and the `piv-agent`, which implements the SSH agent
 protocol as a drop-in replacement for the OpenSSH `ssh-agent` command (except
 that the keys it contains are always on a PIV card).
 
+"PIV cards" notably includes Yubico Yubikey devices such as the NEO and
+Yubikey4, which can store up to 24 keys by using the "retired key" slots (which
+this agent supports).
+
+This project re-uses most of the agent and protocol parsing code from OpenSSH,
+where it's been pretty thoroughly battle-hardened.
+
 ## Using the agent
 
 Using the PIV agent is identical to running the normal `ssh-agent` command,
 with the exception that `piv-agent` requires a `-g` argument specifying the
-GUID of the PIV card to attach to.
+GUID of the PIV card to attach to. You can also give a `-k` argument with
+the public key of the "Card Authentication" slot (9E) for extra security.
 
 For example, the GUID of my PIV card is `995E171383029CDA0D9CDBDBAD580813` (if
 you don't know your GUID, the `piv-tool` command can display it). I can use the
@@ -54,20 +62,43 @@ Last login: Wed Mar 28 21:56:11 2018 from laptop
 [user@host ~]$
 -----
 
+The PIV PIN is stored in memory only with special guard pages allocated either
+side of it and marked non-swappable. On Linux the memory area is also marked as
+non-dumpable so that it does not appear in core files.
+
 You can make the agent forget the PIN by using the `ssh-add -x` command to
 "lock" it. You can supply any password you like (including an empty string)
 for the "lock" command. The command `ssh-add -D` can also be used, and will not
 prompt for a password (useful from scripts).
 
+The agent will also forget the PIN automatically if the PIV card is unavailable
+for more than a few minutes, or if unusual conditions occur (e.g. an attacker
+tries to plug in a device with the same GUID that fails the 9E signature test).
+
 Note that it's perfectly fine to leave the `piv-agent` running and remove your
 PIV card: the agent will just return errors on any attempt to use it until
-you insert your card again. You can even start the agent without the PIV card
-present at all.
+you insert your card again (you will need to enter your PIN again). You can
+even start the agent without the PIV card present at all.
 
 One useful way to use the `piv-agent` is to set up a systemd unit file for it
 to run whenever you log in, and adjust your shell profile to use it as your
 normal SSH agent. Then your PIV keys are automatically ready for use in any
 shell.
+
+## Other tools
+
+There are two other tools that can be built as part of this repository as well:
+`piv-tool` and `piv-zfs`. The `piv-tool` utility is a general-purpose PIV
+information and management tool that uses the same client code as `piv-agent`,
+which can be useful for testing or debugging (you don't have to use it for
+setting up keys, you can use `yubico-piv-tool` or any other PIV client just as
+well).
+
+The `piv-zfs` tool is an early draft of a tool for managing ZFS
+encryption-at-rest keys using PIV EC. You can see a brief demo of it in action
+at https://asciinema.org/a/dsENdri85rPkOk6jpWsqCkUzn. The Makefile will only
+try to build `piv-zfs` on Linux or illumos and only if it detects `libzfs` is
+available.
 
 ## Installing on Linux
 
@@ -88,7 +119,10 @@ $ ./piv-tool list
      chuid: ok
       guid: 995E171383029CDA0D9CDBDBAD580813
      owner: 00000000000000000000000000000000
+    fasc-n: D4E739DA739CED39CE739D836858210842108421384210C3F5
     expiry: 2030-01-01
+    yubico: implements YubicoPIV extensions (v1.0.4)
+      auth: PIN*
      slots:
            ID   TYPE    BITS  CERTIFICATE
            9c   ECDSA   256   /CN=Digital Signature
@@ -148,7 +182,10 @@ $ ./piv-tool list
      chuid: ok
       guid: 995E171383029CDA0D9CDBDBAD580813
      owner: 00000000000000000000000000000000
+    fasc-n: D4E739DA739CED39CE739D836858210842108421384210C3F5
     expiry: 2030-01-01
+    yubico: implements YubicoPIV extensions (v1.0.4)
+      auth: PIN*
      slots:
            ID   TYPE    BITS  CERTIFICATE
            9c   ECDSA   256   /CN=Digital Signature
