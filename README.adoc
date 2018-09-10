@@ -25,7 +25,7 @@ where it's been pretty thoroughly battle-hardened.
 
 Using the PIV agent is identical to running the normal `ssh-agent` command,
 with the exception that `piv-agent` requires a `-g` argument specifying the
-GUID of the PIV card to attach to. You can also give a `-k` argument with
+GUID of the PIV card to attach to. You can also give a `-K` argument with
 the public key of the "Card Authentication" slot (9E) for extra security.
 
 For example, the GUID of my PIV card is `995E171383029CDA0D9CDBDBAD580813` (if
