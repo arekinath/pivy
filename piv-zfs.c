@@ -54,6 +54,7 @@
 #include <libzfs.h>
 #include <libzfs_core.h>
 #include <libnvpair.h>
+#include <sys/dmu.h>
 
 #define USING_SPL
 #include "tlv.h"
@@ -1712,7 +1713,7 @@ do_zfs_unlock(const uint8_t *key, size_t keylen, boolean_t recov, void *cookie)
 	struct zfs_unlock_state *state;
 	state = (struct zfs_unlock_state *)cookie;
 
-#if !defined(ZFS_KEYSTATUS_AVAILABLE)
+#if !defined(DMU_OT_ENCRYPTED)
 	fprintf(stderr, "error: this ZFS implementation does not support "
 	    "ZFS encryption\n");
 	exit(4);
@@ -1951,7 +1952,7 @@ cmd_unlock(const char *fsname)
 {
 	zfs_handle_t *ds;
 	nvlist_t *props, *prop, *config;
-#if defined(ZFS_KEYSTATUS_AVAILABLE)
+#if defined(DMU_OT_ENCRYPTED)
 	uint64_t kstatus;
 #endif
 	char *json;
@@ -1970,7 +1971,7 @@ cmd_unlock(const char *fsname)
 		exit(1);
 	}
 
-#if defined(ZFS_KEYSTATUS_AVAILABLE)
+#if defined(DMU_OT_ENCRYPTED)
 	props = zfs_get_all_props(ds);
 	VERIFY(props != NULL);
 
