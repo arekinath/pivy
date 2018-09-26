@@ -262,7 +262,7 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		do {
 			pin = getpass(prompt);
 		} while (pin == NULL && errno == EINTR);
-		if (pin == NULL && errno == ENXIO) {
+		if ((pin == NULL && errno == ENXIO) || strlen(pin) < 1) {
 			piv_txn_end(pk);
 			fprintf(stderr, "error: a PIN is required to "
 			    "unlock token %s\n", guid);
@@ -271,6 +271,13 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 			piv_txn_end(pk);
 			perror("getpass");
 			exit(3);
+		} else if (strlen(pin) < 6 || strlen(pin) > 8) {
+			const char *charType = "digits";
+			if (selk->pt_ykpiv)
+				charType = "characters";
+			fprintf(stderr, "error: a valid PIN must be 6-8 "
+			    "%s in length\n", charType);
+			exit(4);
 		}
 		pin = strdup(pin);
 		free(guid);
