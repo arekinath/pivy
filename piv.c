@@ -2247,8 +2247,15 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		}
 		break;
 	case PIV_ALG_ECCP384:
-		*hashalgo = SSH_DIGEST_SHA384;
-		inplen = (dglen = 48);
+		inplen = 48;
+		if (*hashalgo == SSH_DIGEST_SHA1) {
+			dglen = 20;
+		} else if (*hashalgo == SSH_DIGEST_SHA256) {
+			dglen = 32;
+		} else {
+			*hashalgo = SSH_DIGEST_SHA384;
+			dglen = 48;
+		}
 		break;
 	default:
 		assert(0);

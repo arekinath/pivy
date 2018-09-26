@@ -646,7 +646,19 @@ pin_again:
 		else if (flags & SSH_AGENT_RSA_SHA2_512)
 			hashalg = SSH_DIGEST_SHA512;
 	} else if (key->type == KEY_ECDSA) {
-		hashalg = SSH_DIGEST_SHA256;
+		switch (sshkey_curve_nid_to_bits(key->ecdsa_nid)) {
+		case 256:
+			hashalg = SSH_DIGEST_SHA256;
+			break;
+		case 384:
+			hashalg = SSH_DIGEST_SHA384;
+			break;
+		case 521:
+			hashalg = SSH_DIGEST_SHA512;
+			break;
+		default:
+			hashalg = SSH_DIGEST_SHA256;
+		}
 	}
 	ohashalg = hashalg;
 	r = piv_sign(selk, slot, data, dlen, &hashalg, &rawsig, &rslen);
