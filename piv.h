@@ -55,6 +55,7 @@ enum iso_ins {
 	INS_SET_MGMT = 0xFF,
 	INS_IMPORT_ASYM = 0xFE,
 	INS_GET_VER = 0xFD,
+	INS_SET_PIN_RETRIES = 0xFA,
 };
 
 enum iso_sw {
@@ -162,6 +163,20 @@ enum piv_slotid {
 
 	PIV_SLOT_RETIRED_1 = PIV_SLOT_82,
 	PIV_SLOT_RETIRED_20 = PIV_SLOT_95,
+};
+
+enum ykpiv_pin_policy {
+	YKPIV_PIN_DEFAULT = 0x00,
+	YKPIV_PIN_NEVER = 0x01,
+	YKPIV_PIN_ONCE = 0x02,
+	YKPIV_PIN_ALWAYS = 0x03,
+};
+
+enum ykpiv_touch_policy {
+	YKPIV_TOUCH_DEFAULT = 0x00,
+	YKPIV_TOUCH_NEVER = 0x01,
+	YKPIV_TOUCH_ALWAYS = 0x02,
+	YKPIV_TOUCH_CACHED = 0x03,
 };
 
 struct apdubuf {
@@ -325,6 +340,18 @@ int piv_read_all_certs(struct piv_token *tk);
 int piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
 
 /*
+ * YubicoPIV-specific: changes the 3DES card administrator key.
+ *
+ * Errors:
+ *  - EIO: general card communication failure
+ *  - ENOENT: the card has no 3DES admin key
+ *  - EPERM: must call piv_auth_admin() first
+ *  - EINVAL: the card rejected the command or is not YubicoPIV
+ */
+int ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
+    enum ykpiv_touch_policy touchpolicy);
+
+/*
  * Generates a new asymmetric private key in a slot on the token, and returns
  * the public key.
  *
@@ -335,6 +362,22 @@ int piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
  */
 int piv_generate(struct piv_token *tk, enum piv_slotid slotid,
     enum piv_alg alg, struct sshkey **pubkey);
+
+/*
+ * YubicoPIV specific: generates a new asymmetric private key in a slot on the
+ * token, and returns the public key in the same manner as piv_generate(), but
+ * takes two extra arguments for the PIN and Touch policy that can be set with
+ * YubicoPIV.
+ *
+ * Errors:
+ *  - EIO: general card communication failure
+ *  - EPERM: the card requires admin authentication before generating keys
+ *  - EINVAL: the card rejected the command, or you tried to use this on a
+ *            non-YubicoPIV card
+ */
+int ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
+    enum piv_alg alg, enum ykpiv_pin_policy pinpolicy,
+    enum ykpiv_touch_policy touchpolicy, struct sshkey **pubkey);
 
 /*
  * Loads a certificate for a given slot on the token.
@@ -394,6 +437,35 @@ int piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  */
 int piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
     const char *newpin);
+
+/*
+ * Resets the PIV PIN on a token using the PUK.
+ *
+ * The "puk" and "newpin" arguments should be a NULL-terminated ASCII numeric
+ * string of the PIN to use. Max length is 10 digits.
+ *
+ * Errors:
+ *  - EIO: general card communication failure
+ *  - EINVAL: the card rejected the command (e.g. because applet not selected)
+ *  - EACCES: the PUK was incorrect.
+ */
+int piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
+    const char *newpin);
+
+/*
+ * YubicoPIV only: changes the maximum number of retries for the PIN and PUK.
+ * This also resets both PIN and PUK to their default values. To execute it
+ * you must have called both piv_auth_admin() and piv_verify_pin() in this
+ * transaction.
+ *
+ * Errors:
+ *  - EIO: general card communication failure
+ *  - EINVAL: the card rejected the command (e.g. because applet not selected)
+ *            or the card does not support YubicoPIV extensions
+ *  - EPERM: the necessary auth has not been done before calling
+ *            (piv_auth_admin() and piv_verify_pin()).
+ */
+int ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
 
 /*
  * Authenticates a PIV key slot by matching its public key against the given

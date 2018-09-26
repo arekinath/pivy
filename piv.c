@@ -728,6 +728,8 @@ ins_to_name(enum iso_ins ins)
 		return ("YKPIV_IMPORT_ASYM");
 	case INS_GET_VER:
 		return ("YKPIV_GET_VER");
+	case INS_SET_PIN_RETRIES:
+		return ("YKPIV_SET_PIN_RETRIES");
 	default:
 		return ("UNKNOWN");
 	}
@@ -1206,7 +1208,9 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	} else if (apdu->a_sw == SW_INCORRECT_P1P2) {
 		rv = ENOENT;
 	} else if (apdu->a_sw == SW_WRONG_DATA) {
-		rv = EACCES;
+		rv = EPERM;
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		rv = EPERM;
 	} else {
 		rv = EINVAL;
 	}
@@ -1266,28 +1270,14 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 	return (rv);
 }
 
-int
-piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
+static int
+piv_generate_common(struct piv_token *pt, struct apdu *apdu,
+    struct tlv_state *tlv, enum piv_alg alg, enum piv_slotid slotid,
     struct sshkey **pubkey)
 {
 	int rv;
-	struct apdu *apdu;
-	struct tlv_state *tlv;
 	uint tag;
 	struct sshkey *k = NULL;
-
-	assert(pt->pt_intxn == B_TRUE);
-
-	tlv = tlv_init_write();
-	tlv_push(tlv, 0xAC);
-	tlv_push(tlv, 0x80);
-	tlv_write_uint(tlv, alg);
-	tlv_pop(tlv);
-	tlv_pop(tlv);
-
-	apdu = piv_apdu_make(CLA_ISO, INS_GEN_ASYM, 0x00, slotid);
-	apdu->a_cmd.b_data = tlv_buf(tlv);
-	apdu->a_cmd.b_len = tlv_len(tlv);
 
 	rv = piv_apdu_transceive_chain(pt, apdu);
 	if (rv != 0) {
@@ -1396,6 +1386,69 @@ piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
 
 	piv_apdu_free(apdu);
 	return (rv);
+}
+
+int
+piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
+    struct sshkey **pubkey)
+{
+	struct apdu *apdu;
+	struct tlv_state *tlv;
+
+	VERIFY(pt->pt_intxn);
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0xAC);
+	tlv_push(tlv, 0x80);
+	tlv_write_uint(tlv, alg);
+	tlv_pop(tlv);
+	tlv_pop(tlv);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_GEN_ASYM, 0x00, slotid);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	return (piv_generate_common(pt, apdu, tlv, alg, slotid, pubkey));
+}
+
+int
+ykpiv_generate(struct piv_token *pt, enum piv_slotid slotid,
+    enum piv_alg alg, enum ykpiv_pin_policy pinpolicy,
+    enum ykpiv_touch_policy touchpolicy, struct sshkey **pubkey)
+{
+	struct apdu *apdu;
+	struct tlv_state *tlv;
+
+	VERIFY(pt->pt_intxn);
+
+	/* Reject if this isn't a YubicoPIV card. */
+	if (!pt->pt_ykpiv)
+		return (EINVAL);
+	/* The TOUCH_CACHED option is only supported on versions >=4.3 */
+	if (touchpolicy == YKPIV_TOUCH_CACHED &&
+	    (pt->pt_ykver[0] < 4 ||
+	    (pt->pt_ykver[0] == 4 && pt->pt_ykver[1] < 3))) {
+		return (EINVAL);
+	}
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0xAC);
+	tlv_push(tlv, 0x80);
+	tlv_write_uint(tlv, alg);
+	tlv_pop(tlv);
+	tlv_push(tlv, 0xAA);
+	tlv_write_uint(tlv, pinpolicy);
+	tlv_pop(tlv);
+	tlv_push(tlv, 0xAB);
+	tlv_write_uint(tlv, touchpolicy);
+	tlv_pop(tlv);
+	tlv_pop(tlv);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_GEN_ASYM, 0x00, slotid);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	return (piv_generate_common(pt, apdu, tlv, alg, slotid, pubkey));
 }
 
 int
@@ -1845,6 +1898,168 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 
 	} else {
 		bunyan_log(DEBUG, "card did not accept INS_CHANGE_PIN for PIV",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
+		rv = EINVAL;
+	}
+
+	piv_apdu_free(apdu);
+
+	return (rv);
+}
+
+int
+piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
+    const char *newpin)
+{
+	int rv;
+	struct apdu *apdu;
+	uint8_t pinbuf[16];
+	size_t i;
+
+	VERIFY(pk->pt_intxn);
+
+	memset(pinbuf, 0xFF, sizeof (pinbuf));
+	for (i = 0; i < 8 && puk[i] != 0; ++i)
+		pinbuf[i] = puk[i];
+	VERIFY(puk[i] == 0);
+	for (i = 8; i < 16 && newpin[i - 8] != 0; ++i)
+		pinbuf[i] = newpin[i - 8];
+	VERIFY(newpin[i - 8] == 0);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_RESET_PIN, 0x00, type);
+	apdu->a_cmd.b_data = pinbuf;
+	apdu->a_cmd.b_len = 16;
+
+	rv = piv_apdu_transceive(pk, apdu);
+	if (rv != 0) {
+		bunyan_log(WARN, "piv_change_pin.transceive_apdu failed",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "err", BNY_STRING, pcsc_stringify_error(rv),
+		    NULL);
+		piv_apdu_free(apdu);
+		return (EIO);
+	}
+
+	explicit_bzero(pinbuf, sizeof (pinbuf));
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		rv = 0;
+		pk->pt_reset = B_TRUE;
+
+	} else if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
+		rv = EACCES;
+
+	} else {
+		bunyan_log(DEBUG, "card did not accept INS_RESET_PIN for PIV",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
+		rv = EINVAL;
+	}
+
+	piv_apdu_free(apdu);
+
+	return (rv);
+}
+
+int
+ykpiv_set_pin_retries(struct piv_token *pk, uint pintries, uint puktries)
+{
+	int rv;
+	struct apdu *apdu;
+
+	VERIFY(pk->pt_intxn);
+	if (!pk->pt_ykpiv)
+		return (EINVAL);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_SET_PIN_RETRIES, pintries, puktries);
+
+	rv = piv_apdu_transceive(pk, apdu);
+	if (rv != 0) {
+		bunyan_log(WARN,
+		    "ykpiv_set_pin_retries.transceive_apdu failed",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "err", BNY_STRING, pcsc_stringify_error(rv),
+		    NULL);
+		piv_apdu_free(apdu);
+		return (EIO);
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		rv = 0;
+		pk->pt_reset = B_TRUE;
+
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		rv = EPERM;
+
+	} else {
+		bunyan_log(DEBUG, "card did not accept INS_SET_PIN_RETRIES",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
+		rv = EINVAL;
+	}
+
+	piv_apdu_free(apdu);
+
+	return (rv);
+}
+
+int
+ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
+    enum ykpiv_touch_policy touchpolicy)
+{
+	int rv;
+	struct apdu *apdu;
+	uint8_t *databuf;
+	uint p2;
+
+	VERIFY(pk->pt_intxn);
+	if (!pk->pt_ykpiv)
+		return (EINVAL);
+
+	if (touchpolicy == YKPIV_TOUCH_DEFAULT ||
+	    touchpolicy == YKPIV_TOUCH_NEVER) {
+		p2 = 0xFF;
+	} else if (touchpolicy == YKPIV_TOUCH_ALWAYS) {
+		p2 = 0xFE;
+	} else {
+		return (EINVAL);
+	}
+
+	databuf = calloc(1, 3 + keylen);
+	VERIFY(databuf != NULL);
+	databuf[0] = 0x03;
+	databuf[1] = 0x9B;
+	databuf[2] = keylen;
+	bcopy(key, &databuf[3], keylen);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_SET_MGMT, 0xFF, p2);
+	apdu->a_cmd.b_data = databuf;
+	apdu->a_cmd.b_len = 3 + keylen;
+
+	rv = piv_apdu_transceive(pk, apdu);
+	if (rv != 0) {
+		bunyan_log(WARN,
+		    "ykpiv_set_admin.transceive_apdu failed",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "err", BNY_STRING, pcsc_stringify_error(rv),
+		    NULL);
+		piv_apdu_free(apdu);
+		return (EIO);
+	}
+
+	explicit_bzero(databuf, 3 + keylen);
+	free(databuf);
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		rv = 0;
+		pk->pt_reset = B_TRUE;
+
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		rv = EPERM;
+
+	} else {
+		bunyan_log(DEBUG, "card did not accept INS_SET_MGMT",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
 		rv = EINVAL;

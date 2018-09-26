@@ -65,6 +65,9 @@ static const uint8_t DEFAULT_ADMIN_KEY[] = {
 };
 static const uint8_t *admin_key = DEFAULT_ADMIN_KEY;
 
+static enum ykpiv_pin_policy pinpolicy = YKPIV_PIN_DEFAULT;
+static enum ykpiv_touch_policy touchpolicy = YKPIV_TOUCH_DEFAULT;
+
 static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
 //static struct piv_token *sysk = NULL;
@@ -554,7 +557,38 @@ cmd_init(void)
 	if (rv == ENOMEM) {
 		fprintf(stderr, "error: card is out of EEPROM\n");
 		exit(1);
-	} else if (rv == EPERM) {
+	} else if (rv == EPERM || rv == EACCES) {
+		fprintf(stderr, "error: admin authentication failed\n");
+		exit(1);
+	} else if (rv != 0) {
+		fprintf(stderr, "error: failed to write to card\n");
+		exit(1);
+	}
+
+	exit(0);
+}
+
+static void
+cmd_set_admin(uint8_t *new_admin_key)
+{
+	int rv;
+
+	piv_txn_begin(selk);
+	assert_select(selk);
+	rv = piv_auth_admin(selk, admin_key, 24);
+	if (rv == 0) {
+		rv = ykpiv_set_admin(selk, new_admin_key, 24, touchpolicy);
+	}
+	piv_txn_end(selk);
+
+	if (rv == EINVAL) {
+		fprintf(stderr, "error: card is not a yubikey or does not "
+		    "support changing admin key\n");
+		exit(1);
+	} else if (rv == ENOENT) {
+		fprintf(stderr, "error: card has no 3DES admin key\n");
+		exit(1);
+	} else if (rv == EACCES || rv == EPERM) {
 		fprintf(stderr, "error: admin authentication failed\n");
 		exit(1);
 	} else if (rv != 0) {
@@ -623,14 +657,78 @@ cmd_set_system(void)
 #endif
 
 static void
-cmd_change_pin(void)
+cmd_change_pin(enum piv_pin pintype)
 {
 	int rv;
 	char prompt[64];
 	char *p, *newpin, *guid;
 
 	guid = buf_to_hex(selk->pt_guid, 4, B_FALSE);
-	snprintf(prompt, 64, "Enter current PIV PIN (%s): ", guid);
+	snprintf(prompt, 64, "Enter current %s (%s): ",
+	    pin_type_to_name(pintype), guid);
+	do {
+		p = getpass(prompt);
+	} while (p == NULL && errno == EINTR);
+	if (p == NULL) {
+		perror("getpass");
+		exit(1);
+	}
+	pin = strdup(p);
+again:
+	snprintf(prompt, 64, "Enter new %s (%s): ",
+	    pin_type_to_name(pintype), guid);
+	do {
+		p = getpass(prompt);
+	} while (p == NULL && errno == EINTR);
+	if (p == NULL) {
+		perror("getpass");
+		exit(1);
+	}
+	if (strlen(p) < 6 || strlen(p) > 10) {
+		fprintf(stderr, "error: PIN must be 6-10 digits\n");
+		goto again;
+	}
+	newpin = strdup(p);
+	snprintf(prompt, 64, "Confirm new %s (%s): ",
+	    pin_type_to_name(pintype), guid);
+	do {
+		p = getpass(prompt);
+	} while (p == NULL && errno == EINTR);
+	if (p == NULL) {
+		perror("getpass");
+		exit(1);
+	}
+	if (strcmp(p, newpin) != 0) {
+		fprintf(stderr, "error: PINs do not match\n");
+		goto again;
+	}
+	free(guid);
+
+	VERIFY0(piv_txn_begin(selk));
+	assert_select(selk);
+	rv = piv_change_pin(selk, pintype, pin, newpin);
+	piv_txn_end(selk);
+
+	if (rv == EACCES) {
+		fprintf(stderr, "error: current PIN was incorrect; PIN change "
+		    "attempt failed\n");
+		exit(4);
+	} else if (rv != 0) {
+		fprintf(stderr, "error: failed to set new PIN\n");
+		exit(1);
+	}
+	exit(0);
+}
+
+static void
+cmd_reset_pin(void)
+{
+	int rv;
+	char prompt[64];
+	char *p, *newpin, *guid;
+
+	guid = buf_to_hex(selk->pt_guid, 4, B_FALSE);
+	snprintf(prompt, 64, "Enter PUK (%s): ", guid);
 	do {
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
@@ -669,11 +767,11 @@ again:
 
 	VERIFY0(piv_txn_begin(selk));
 	assert_select(selk);
-	rv = piv_change_pin(selk, PIV_PIN, pin, newpin);
+	rv = piv_reset_pin(selk, PIV_PIN, pin, newpin);
 	piv_txn_end(selk);
 
 	if (rv == EACCES) {
-		fprintf(stderr, "error: current PIN was incorrect; PIN change "
+		fprintf(stderr, "error: PUK was incorrect; PIN reset "
 		    "attempt failed\n");
 		exit(4);
 	} else if (rv != 0) {
@@ -771,8 +869,15 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	piv_txn_begin(selk);
 	assert_select(selk);
 	rv = piv_auth_admin(selk, admin_key, 24);
-	if (rv == 0)
-		rv = piv_generate(selk, slotid, alg, &pub);
+	if (rv == 0) {
+		if (pinpolicy == YKPIV_PIN_DEFAULT &&
+		    touchpolicy == YKPIV_TOUCH_DEFAULT) {
+			rv = piv_generate(selk, slotid, alg, &pub);
+		} else {
+			rv = ykpiv_generate(selk, slotid, alg, pinpolicy,
+			    touchpolicy, &pub);
+		}
+	}
 
 	if (rv != 0) {
 		piv_txn_end(selk);
@@ -1522,40 +1627,59 @@ usage(void)
 	    "usage: pivtool [options] <operation>\n"
 	    "Available operations:\n"
 	    "  list                   Lists PIV tokens present\n"
+	    "  pubkey <slot>          Outputs a public key in SSH format\n"
+	    "  cert <slot>            Outputs DER certificate from slot\n"
+	    "\n"
 	    "  init                   Writes GUID and card capabilities\n"
 	    "                         (used to init a new Yubico PIV)\n"
-	    "  pubkey <slot>          Outputs a public key in SSH format\n"
+	    "  generate <slot>        Generate a new private key and a\n"
+	    "                         self-signed cert\n"
+	    "  change-pin             Changes the PIV PIN\n"
+	    "  change-puk             Changes the PIV PUK\n"
+	    "  reset-pin              Resets the PIN using the PUK\n"
+	    "  set-admin <hex|@file>  Sets the admin 3DES key\n"
+	    "\n"
 	    "  sign <slot>            Signs data on stdin\n"
 	    "  ecdh <slot>            Do ECDH with pubkey on stdin\n"
 	    "  auth <slot>            Does a round-trip signature test to\n"
 	    "                         verify that the pubkey on stdin\n"
 	    "                         matches the one in the slot\n"
-	    "  generate <slot>        Generate a new private key and a\n"
-	    "                         self-signed cert\n"
-	    "  change-pin             Changes the PIV PIN\n"
+	    "\n"
 	    "  box [slot]             Encrypts stdin data with an ECDH box\n"
 	    "  unbox                  Decrypts stdin data with an ECDH box\n"
 	    "                         Chooses token and slot automatically\n"
+	    "  box-info               Prints metadata about a box from stdin\n"
 	    "\n"
-	    "Options:\n"
-	    "  --pin|-P <code>        PIN code to authenticate with\n"
-	    "  --debug|-d             Spit out lots of debug info to stderr\n"
-	    "                         (incl. APDU trace)\n"
-	    "  --parseable|-p         Generate parseable output from 'list'\n"
-	    "  --guid|-g              GUID of the PIV token to use\n"
-	    "  --algorithm|-a <algo>  Override algorithm for the slot and\n"
-	    "                         don't use the certificate\n"
-	    "  --admin-key|-K <hex|@file>\n"
-	    "                         Provides the admin 3DES key to use for\n"
-	    "                         auth to the card with admin ops (e.g.\n"
-	    "                         generate or init)\n"
-	    "  --key|-k <pubkey>      Use a public key for box operation\n"
-	    "                         instead of a slot\n"
-	    "  --force|-f             Attempt to unlock with PIN code even\n"
+	    "General options:\n"
+	    "  -g <hex>               GUID of the PIV token to use\n"
+	    "                         (Required if >1 token on system)\n"
+	    "  -P <code>              PIN code to authenticate with\n"
+	    "                         (defaults to reading from terminal)\n"
+	    "  -f                     Attempt to unlock with PIN code even\n"
 	    "                         if there is only 1 attempt left before\n"
 	    "                         card lock\n"
+	    "  -K <hex|@file>         Provides the admin 3DES key to use for\n"
+	    "                         auth to the card with admin ops (e.g.\n"
+	    "                         generate or init)\n"
+	    "  -d                     Output debug info to stderr\n"
+	    "                         (use twice to include APDU trace)\n"
+	    "\n"
+	    "Options for 'list':\n"
+	    "  -p                     Generate parseable output\n"
+	    "\n"
+	    "Options for 'generate':\n"
+	    "  -a <algo>              Choose algorithm of new key\n"
 	    "  -n <cn>                Used with 'generate', to customise the\n"
-	    "                         CN= attribute used on certificate\n");
+	    "                         CN= attribute used on certificate\n"
+	    "  -t <never|always|cached>\n"
+	    "                         Set the touch policy. Only supported\n"
+	    "                         with YubiKeys\n"
+	    "  -i <never|always|once> Set the PIN policy. Only supported\n"
+	    "                         with Yubikeys\n"
+	    "\n"
+	    "Options for 'box'/'unbox':\n"
+	    "  -k <pubkey>            Use a public key for box operation\n"
+	    "                         instead of a slot\n");
 	exit(3);
 }
 
@@ -1613,7 +1737,7 @@ check_select_key(void)
     "f(force)"
     "K:(admin-key)"
     "k:(key)";*/
-const char *optstring = "dpg:P:a:fK:k:n:";
+const char *optstring = "dpg:P:a:fK:k:n:t:i:";
 
 int
 main(int argc, char *argv[])
@@ -1639,7 +1763,9 @@ main(int argc, char *argv[])
 				piv_full_apdu_debug = B_TRUE;
 			break;
 		case 'K':
-			if (optarg[0] == '@') {
+			if (strcmp(optarg, "default") == 0) {
+				admin_key = DEFAULT_ADMIN_KEY;
+			} else if (optarg[0] == '@') {
 				buf = read_key_file(&optarg[1], &len);
 				if (len > 24 && sniff_hex(buf, len)) {
 					admin_key = parse_hex(
@@ -1661,6 +1787,24 @@ main(int argc, char *argv[])
 			break;
 		case 'f':
 			min_retries = 0;
+			break;
+		case 't':
+			if (strcasecmp(optarg, "never") == 0) {
+				touchpolicy = YKPIV_TOUCH_NEVER;
+			} else if (strcasecmp(optarg, "always") == 0) {
+				touchpolicy = YKPIV_TOUCH_ALWAYS;
+			} else if (strcasecmp(optarg, "cached") == 0) {
+				touchpolicy = YKPIV_TOUCH_CACHED;
+			}
+			break;
+		case 'i':
+			if (strcasecmp(optarg, "never") == 0) {
+				pinpolicy = YKPIV_PIN_NEVER;
+			} else if (strcasecmp(optarg, "always") == 0) {
+				pinpolicy = YKPIV_PIN_ALWAYS;
+			} else if (strcasecmp(optarg, "once") == 0) {
+				pinpolicy = YKPIV_PIN_ONCE;
+			}
 			break;
 		case 'a':
 			override = calloc(1, sizeof (struct piv_slot));
@@ -1759,7 +1903,56 @@ main(int argc, char *argv[])
 			usage();
 		}
 		check_select_key();
-		cmd_change_pin();
+		cmd_change_pin(selk->pt_auth);
+
+	} else if (strcmp(op, "set-admin") == 0) {
+		uint8_t *new_admin;
+
+		if (optind >= argc)
+			usage();
+
+		if (strcmp(argv[optind], "default") == 0) {
+			new_admin = DEFAULT_ADMIN_KEY;
+		} else if (argv[optind][0] == '@') {
+			buf = read_key_file(&argv[optind][1], &len);
+			if (len > 24 && sniff_hex(buf, len)) {
+				new_admin = parse_hex(
+				    (const char *)buf, &len);
+			} else {
+				new_admin = buf;
+			}
+		} else {
+			new_admin = parse_hex(argv[optind], &len);
+		}
+
+		if (++optind < argc) {
+			fprintf(stderr, "error: too many arguments\n");
+			usage();
+		}
+
+		if (len != 24) {
+			fprintf(stderr, "error: admin key must be "
+			    "24 bytes in length (you gave %d)\n", len);
+			exit(3);
+		}
+		check_select_key();
+		cmd_set_admin(new_admin);
+
+	} else if (strcmp(op, "change-puk") == 0) {
+		if (optind < argc) {
+			fprintf(stderr, "error: too many arguments\n");
+			usage();
+		}
+		check_select_key();
+		cmd_change_pin(PIV_PUK);
+
+	} else if (strcmp(op, "reset-pin") == 0) {
+		if (optind < argc) {
+			fprintf(stderr, "error: too many arguments\n");
+			usage();
+		}
+		check_select_key();
+		cmd_reset_pin();
 
 	} else if (strcmp(op, "sign") == 0) {
 		uint slotid;
