@@ -663,6 +663,9 @@ cmd_change_pin(enum piv_pin pintype)
 	int rv;
 	char prompt[64];
 	char *p, *newpin, *guidhex;
+	const char *charType = "digits";
+	if (selk->pt_ykpiv)
+		charType = "characters";
 
 	guidhex = buf_to_hex(selk->pt_guid, 4, B_FALSE);
 
@@ -688,8 +691,8 @@ again:
 		perror("getpass");
 		exit(1);
 	}
-	if (strlen(p) < 6 || strlen(p) > 10) {
-		fprintf(stderr, "error: PIN must be 6-10 digits\n");
+	if (strlen(p) < 6 || strlen(p) > 8) {
+		fprintf(stderr, "error: PIN must be 6-8 %s\n", charType);
 		goto again;
 	}
 	newpin = strdup(p);
@@ -729,6 +732,9 @@ cmd_reset_pin(void)
 	int rv;
 	char prompt[64];
 	char *p, *newpin, *guidhex;
+	const char *charType = "digits";
+	if (selk->pt_ykpiv)
+		charType = "characters";
 
 	guidhex = buf_to_hex(selk->pt_guid, 4, B_FALSE);
 	snprintf(prompt, 64, "Enter PUK (%s): ", guidhex);
@@ -749,8 +755,8 @@ again:
 		perror("getpass");
 		exit(1);
 	}
-	if (strlen(p) < 6 || strlen(p) > 10) {
-		fprintf(stderr, "error: PIN must be 6-10 digits\n");
+	if (strlen(p) < 6 || strlen(p) > 8) {
+		fprintf(stderr, "error: PIN must be 6-8 %s\n", charType);
 		goto again;
 	}
 	newpin = strdup(p);
