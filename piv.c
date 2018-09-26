@@ -1436,12 +1436,16 @@ ykpiv_generate(struct piv_token *pt, enum piv_slotid slotid,
 	tlv_push(tlv, 0x80);
 	tlv_write_uint(tlv, alg);
 	tlv_pop(tlv);
-	tlv_push(tlv, 0xAA);
-	tlv_write_uint(tlv, pinpolicy);
-	tlv_pop(tlv);
-	tlv_push(tlv, 0xAB);
-	tlv_write_uint(tlv, touchpolicy);
-	tlv_pop(tlv);
+	if (pinpolicy != YKPIV_PIN_DEFAULT) {
+		tlv_push(tlv, 0xAA);
+		tlv_write_uint(tlv, pinpolicy);
+		tlv_pop(tlv);
+	}
+	if (touchpolicy != YKPIV_TOUCH_DEFAULT) {
+		tlv_push(tlv, 0xAB);
+		tlv_write_uint(tlv, touchpolicy);
+		tlv_pop(tlv);
+	}
 	tlv_pop(tlv);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GEN_ASYM, 0x00, slotid);

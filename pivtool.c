@@ -253,7 +253,7 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 	if (pin == NULL && !prompt)
 		return;
 
-	if (prompt) {
+	if (pin == NULL && prompt) {
 		char prompt[64];
 		char *guid;
 		guid = buf_to_hex(pk->pt_guid, 4, B_FALSE);
@@ -460,7 +460,7 @@ cmd_init(void)
 {
 	int rv;
 	struct tlv_state *ccc, *chuid;
-	uint8_t guid[16];
+	uint8_t nguid[16];
 	uint8_t fascn[25];
 	uint8_t expiry[8] = { '2', '0', '5', '0', '0', '1', '0', '1' };
 	uint8_t cardId[21] = {
@@ -473,7 +473,7 @@ cmd_init(void)
 		0x00
 	};
 
-	arc4random_buf(guid, sizeof (guid));
+	arc4random_buf(nguid, sizeof (nguid));
 	arc4random_buf(&cardId[6], sizeof (cardId) - 6);
 	bzero(fascn, sizeof (fascn));
 
@@ -526,7 +526,7 @@ cmd_init(void)
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x34);
-	tlv_write(chuid, guid, 0, sizeof (guid));
+	tlv_write(chuid, nguid, 0, sizeof (nguid));
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x35);
@@ -565,7 +565,10 @@ cmd_init(void)
 		exit(1);
 	}
 
-	exit(0);
+	/* This is for cmd_setup */
+	guid = malloc(16);
+	bcopy(nguid, guid, sizeof (nguid));
+	guid_len = 16;
 }
 
 static void
@@ -595,8 +598,6 @@ cmd_set_admin(uint8_t *new_admin_key)
 		fprintf(stderr, "error: failed to write to card\n");
 		exit(1);
 	}
-
-	exit(0);
 }
 
 #if 0
@@ -661,22 +662,25 @@ cmd_change_pin(enum piv_pin pintype)
 {
 	int rv;
 	char prompt[64];
-	char *p, *newpin, *guid;
+	char *p, *newpin, *guidhex;
 
-	guid = buf_to_hex(selk->pt_guid, 4, B_FALSE);
-	snprintf(prompt, 64, "Enter current %s (%s): ",
-	    pin_type_to_name(pintype), guid);
-	do {
-		p = getpass(prompt);
-	} while (p == NULL && errno == EINTR);
-	if (p == NULL) {
-		perror("getpass");
-		exit(1);
+	guidhex = buf_to_hex(selk->pt_guid, 4, B_FALSE);
+
+	if (pin == NULL) {
+		snprintf(prompt, 64, "Enter current %s (%s): ",
+		    pin_type_to_name(pintype), guidhex);
+		do {
+			p = getpass(prompt);
+		} while (p == NULL && errno == EINTR);
+		if (p == NULL) {
+			perror("getpass");
+			exit(1);
+		}
+		pin = strdup(p);
 	}
-	pin = strdup(p);
 again:
 	snprintf(prompt, 64, "Enter new %s (%s): ",
-	    pin_type_to_name(pintype), guid);
+	    pin_type_to_name(pintype), guidhex);
 	do {
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
@@ -690,7 +694,7 @@ again:
 	}
 	newpin = strdup(p);
 	snprintf(prompt, 64, "Confirm new %s (%s): ",
-	    pin_type_to_name(pintype), guid);
+	    pin_type_to_name(pintype), guidhex);
 	do {
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
@@ -702,7 +706,7 @@ again:
 		fprintf(stderr, "error: PINs do not match\n");
 		goto again;
 	}
-	free(guid);
+	free(guidhex);
 
 	VERIFY0(piv_txn_begin(selk));
 	assert_select(selk);
@@ -717,7 +721,6 @@ again:
 		fprintf(stderr, "error: failed to set new PIN\n");
 		exit(1);
 	}
-	exit(0);
 }
 
 static void
@@ -725,10 +728,10 @@ cmd_reset_pin(void)
 {
 	int rv;
 	char prompt[64];
-	char *p, *newpin, *guid;
+	char *p, *newpin, *guidhex;
 
-	guid = buf_to_hex(selk->pt_guid, 4, B_FALSE);
-	snprintf(prompt, 64, "Enter PUK (%s): ", guid);
+	guidhex = buf_to_hex(selk->pt_guid, 4, B_FALSE);
+	snprintf(prompt, 64, "Enter PUK (%s): ", guidhex);
 	do {
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
@@ -738,7 +741,7 @@ cmd_reset_pin(void)
 	}
 	pin = strdup(p);
 again:
-	snprintf(prompt, 64, "Enter new PIV PIN (%s): ", guid);
+	snprintf(prompt, 64, "Enter new PIV PIN (%s): ", guidhex);
 	do {
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
@@ -751,7 +754,7 @@ again:
 		goto again;
 	}
 	newpin = strdup(p);
-	snprintf(prompt, 64, "Confirm new PIV PIN (%s): ", guid);
+	snprintf(prompt, 64, "Confirm new PIV PIN (%s): ", guidhex);
 	do {
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
@@ -763,7 +766,7 @@ again:
 		fprintf(stderr, "error: PINs do not match\n");
 		goto again;
 	}
-	free(guid);
+	free(guidhex);
 
 	VERIFY0(piv_txn_begin(selk));
 	assert_select(selk);
@@ -778,7 +781,6 @@ again:
 		fprintf(stderr, "error: failed to set new PIN\n");
 		exit(1);
 	}
-	exit(0);
 }
 
 static void
@@ -803,9 +805,9 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	ASN1_INTEGER *serial_asn1;
 	X509_EXTENSION *ext;
 	X509V3_CTX x509ctx;
-	char *guid;
+	char *guidhex;
 
-	guid = buf_to_hex(selk->pt_guid, sizeof (selk->pt_guid), B_FALSE);
+	guidhex = buf_to_hex(selk->pt_guid, sizeof (selk->pt_guid), B_FALSE);
 
 	switch (slotid) {
 	case 0x9A:
@@ -943,7 +945,7 @@ cmd_generate(uint slotid, enum piv_alg alg)
 		assert(X509_NAME_add_entry_by_NID(subj, NID_title, MBSTRING_ASC,
 		    (unsigned char *)name, -1, -1, 0) == 1);
 		assert(X509_NAME_add_entry_by_NID(subj, NID_commonName,
-		    MBSTRING_ASC, (unsigned char *)guid, -1, -1, 0) == 1);
+		    MBSTRING_ASC, (unsigned char *)guidhex, -1, -1, 0) == 1);
 	} else {
 		assert(X509_NAME_add_entry_by_NID(subj, NID_commonName,
 		    MBSTRING_ASC, (unsigned char *)cn, -1, -1, 0) == 1);
@@ -1064,9 +1066,7 @@ signagain:
 	fprintf(stdout, " PIV_slot_%02X@%s\n", slotid, buf);
 	free(buf);
 
-	free(guid);
-
-	exit(0);
+	free(guidhex);
 }
 
 static void
@@ -1114,7 +1114,6 @@ cmd_pubkey(uint slotid)
 	fprintf(stdout, " PIV_slot_%02X@%s \"%s\"\n", slotid, buf,
 	    cert->ps_subj);
 	free(buf);
-	exit(0);
 }
 
 static void
@@ -1153,7 +1152,6 @@ cmd_cert(uint slotid)
 	}
 
 	VERIFY(i2d_X509_fp(stdout, cert->ps_x509) == 1);
-	exit(0);
 }
 
 static void
@@ -1224,7 +1222,6 @@ again:
 	fwrite(sig, 1, siglen, stdout);
 
 	free(buf);
-	exit(0);
 }
 
 static void
@@ -1277,7 +1274,6 @@ cmd_box(uint slotid)
 	fwrite(buf, 1, len, stdout);
 	explicit_bzero(buf, len);
 	free(buf);
-	exit(0);
 }
 
 static void
@@ -1338,7 +1334,6 @@ again:
 	fwrite(buf, 1, len, stdout);
 	explicit_bzero(buf, len);
 	free(buf);
-	exit(0);
 }
 
 
@@ -1436,8 +1431,6 @@ cmd_box_info(void)
 	printf("kdf:          %s\n", box->pdb_kdf);
 	printf("ivsize:       %lu\n", box->pdb_iv.b_size);
 	printf("encsize:      %lu\n", box->pdb_enc.b_size);
-
-	exit(0);
 }
 
 static void
@@ -1519,8 +1512,6 @@ again:
 		fprintf(stderr, "error: piv_ecdh returned %d\n", rv);
 		exit(1);
 	}
-
-	exit(0);
 }
 
 static void
@@ -1610,8 +1601,125 @@ again:
 	}
 
 	fwrite(secret, 1, seclen, stdout);
+}
 
-	exit(0);
+static void
+check_select_key(void)
+{
+	struct piv_token *t;
+
+	if (ks == NULL) {
+		fprintf(stderr, "error: no PIV cards present\n");
+		exit(1);
+	}
+
+	if (guid != NULL) {
+		for (t = ks; t != NULL; t = t->pt_next) {
+			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
+				if (selk == NULL) {
+					selk = t;
+				} else {
+					fprintf(stderr, "error: GUID prefix "
+					    "specified is not unique\n");
+					exit(3);
+				}
+			}
+		}
+		if (selk == NULL) {
+			fprintf(stderr, "error: no PIV card present "
+			    "matching given GUID\n");
+			exit(3);
+		}
+	}
+
+#if 0
+	if (selk == NULL)
+		selk = sysk;
+#endif
+
+	if (selk == NULL) {
+		selk = ks;
+		if (selk->pt_next != NULL) {
+			fprintf(stderr, "error: multiple PIV cards "
+			    "present and no system token set; you "
+			    "must provide -g|--guid to select one\n");
+			exit(3);
+		}
+	}
+}
+
+static void
+cmd_setup(SCARDCONTEXT ctx)
+{
+	boolean_t usetouch = B_FALSE;
+
+	if (!selk->pt_ykpiv) {
+		fprintf(stderr, "error: setup command is only for YubiKeys\n");
+		exit(1);
+	}
+
+	if (selk->pt_ykver[0] > 4 ||
+	    (selk->pt_ykver[0] == 4 && selk->pt_ykver[1] >= 3)) {
+		usetouch = B_TRUE;
+	}
+
+	fprintf(stderr, "Initializing CCC and CHUID files...\n");
+	cmd_init();
+
+	piv_release(ks);
+	ks = piv_enumerate(ctx);
+	selk = NULL;
+	check_select_key();
+
+	override = calloc(1, sizeof (struct piv_slot));
+	touchpolicy = YKPIV_TOUCH_DEFAULT;
+	pinpolicy = YKPIV_PIN_DEFAULT;
+	pin = "123456";
+
+	fprintf(stderr, "Generating standard keys...\n");
+
+	override->ps_alg = PIV_ALG_ECCP256;
+	override->ps_slot = 0x9E;
+	cmd_generate(override->ps_slot, override->ps_alg);
+	override->ps_slot = 0x9A;
+	cmd_generate(override->ps_slot, override->ps_alg);
+
+	override->ps_alg = PIV_ALG_RSA2048;
+	override->ps_slot = 0x9C;
+	cmd_generate(override->ps_slot, override->ps_alg);
+
+	if (usetouch) {
+		touchpolicy = YKPIV_TOUCH_CACHED;
+		fprintf(stderr, "Using touch button confirmation for 9D key\n");
+		fprintf(stderr, "Please touch YubiKey when it is flashing\n");
+	}
+	override->ps_alg = PIV_ALG_ECCP256;
+	override->ps_slot = 0x9D;
+	cmd_generate(override->ps_slot, override->ps_alg);
+
+	touchpolicy = YKPIV_TOUCH_DEFAULT;
+
+	fprintf(stderr, "Changing PIN and PUK...\n");
+	cmd_change_pin(PIV_PIN);
+	pin = "12345678";
+	cmd_change_pin(PIV_PUK);
+
+	fprintf(stderr, "Generating final admin 3DES key...\n");
+	uint8_t *admin_key = malloc(24);
+	char *hex;
+	VERIFY(admin_key != NULL);
+	arc4random_buf(admin_key, 24);
+	if (usetouch)
+		touchpolicy = YKPIV_TOUCH_ALWAYS;
+	hex = buf_to_hex(admin_key, 24, B_FALSE);
+	printf("Admin 3DES key: %s\n", hex);
+	fprintf(stderr, "This key is only needed to generate new slot keys or "
+	    "change certificates in future. If you don't intend to do either "
+	    "you can simply forget about this key and the Yubikey will be "
+	    "sealed.\n");
+	cmd_set_admin(admin_key);
+
+	fprintf(stderr, "Done!\n");
 }
 
 const char *
@@ -1632,6 +1740,9 @@ usage(void)
 	    "\n"
 	    "  init                   Writes GUID and card capabilities\n"
 	    "                         (used to init a new Yubico PIV)\n"
+	    "  setup                  Quick setup procedure for new YubiKey\n"
+	    "                         (does init + generate + change-pin +\n"
+	    "                         change-puk + set-admin)\n"
 	    "  generate <slot>        Generate a new private key and a\n"
 	    "                         self-signed cert\n"
 	    "  change-pin             Changes the PIV PIN\n"
@@ -1681,51 +1792,6 @@ usage(void)
 	    "  -k <pubkey>            Use a public key for box operation\n"
 	    "                         instead of a slot\n");
 	exit(3);
-}
-
-static void
-check_select_key(void)
-{
-	struct piv_token *t;
-
-	if (ks == NULL) {
-		fprintf(stderr, "error: no PIV cards present\n");
-		exit(1);
-	}
-
-	if (guid != NULL) {
-		for (t = ks; t != NULL; t = t->pt_next) {
-			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
-				if (selk == NULL) {
-					selk = t;
-				} else {
-					fprintf(stderr, "error: GUID prefix "
-					    "specified is not unique\n");
-					exit(3);
-				}
-			}
-		}
-		if (selk == NULL) {
-			fprintf(stderr, "error: no PIV card present "
-			    "matching given GUID\n");
-			exit(3);
-		}
-	}
-
-#if 0
-	if (selk == NULL)
-		selk = sysk;
-#endif
-
-	if (selk == NULL) {
-		selk = ks;
-		if (selk->pt_next != NULL) {
-			fprintf(stderr, "error: multiple PIV cards "
-			    "present and no system token set; you "
-			    "must provide -g|--guid to select one\n");
-			exit(3);
-		}
-	}
 }
 
 /*const char *optstring =
@@ -1986,6 +2052,14 @@ main(int argc, char *argv[])
 
 		check_select_key();
 		cmd_pubkey(slotid);
+
+	} else if (strcmp(op, "setup") == 0) {
+		if (optind < argc) {
+			fprintf(stderr, "error: too many arguments\n");
+			usage();
+		}
+		check_select_key();
+		cmd_setup(ctx);
 
 	} else if (strcmp(op, "cert") == 0) {
 		uint slotid;
