@@ -9,6 +9,8 @@
         <string>/opt/piv-agent/bin/piv-agent</string>
         <string>-g</string>
         <string>@@GUID@@</string>
+        <string>-K</string>
+        <string>@@CAK@@</string>
     </array>
     <key>StandardOutPath</key>
     <string>@@HOME@@/.ssh/agent.env</string>

@@ -249,17 +249,15 @@ $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	@mkdir .dist
 
 ifeq ($(SYSTEM), Darwin)
-.dist/guid.plist: net.cooperi.piv-agent.plist .dist
+.dist/net.cooperi.piv-agent.plist: net.cooperi.piv-agent.plist .dist piv-tool
 	@./piv-tool list
 	@printf "Enter a GUID to use for piv-agent: "
 	@read guid && \
-	cat $< | sed "s/@@GUID@@/$${guid}/g" > $@
-
-.dist/home.plist: .dist/guid.plist .dist
-	@cat $< | sed "s|@@HOME@@|$${HOME}|g" > $@
-
-.dist/net.cooperi.piv-agent.plist: .dist/home.plist .dist
-	@cp $< $@
+	pkey=$$(./piv-tool -g $${guid} pubkey 9e) && \
+	cat $< | \
+	    sed "s/@@GUID@@/$${guid}/g" | \
+	    sed "s|@@CAK@@|$${pkey}|g" | \
+	    sed "s|@@HOME@@|$${HOME}|g" > $@
 
 install: .dist/net.cooperi.piv-agent.plist piv-tool piv-agent
 	sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
@@ -275,13 +273,14 @@ install: .dist/net.cooperi.piv-agent.plist piv-tool piv-agent
 endif
 
 ifeq ($(SYSTEM), Linux)
-.dist/guid.service: piv-agent.service .dist
+.dist/piv-agent.service: piv-agent.service .dist piv-tool
 	@./piv-tool list
 	@printf "Enter a GUID to use for piv-agent: "
 	@read guid && \
-	cat $< | sed "s/@@GUID@@/$${guid}/g" > $@
-.dist/piv-agent.service: .dist/guid.service .dist
-	@cp $< $@
+	pkey=$$(./piv-tool -g $${guid} pubkey 9e) && \
+	cat $< | \
+	    sed "s/@@GUID@@/$${guid}/g" | \
+	    sed "s|@@CAK@@|$${pkey}|g" > $@
 
 install: .dist/piv-agent.service piv-tool piv-agent
 	sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
