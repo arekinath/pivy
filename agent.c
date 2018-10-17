@@ -946,6 +946,94 @@ process_ext_x509_certs(SocketEntry *e, struct sshbuf *buf)
 }
 
 static void
+process_ext_attest(SocketEntry *e, struct sshbuf *buf)
+{
+	int r;
+	struct sshbuf *msg;
+	struct sshkey *key = NULL;
+	struct piv_slot *slot;
+	uint8_t *cert = NULL, *chain = NULL, *ptr;
+	size_t certlen, chainlen, len;
+	uint flags;
+	int found = 0;
+	struct tlv_state *tlv = NULL;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+	if ((r = sshkey_froms(buf, &key)) != 0 ||
+	    (r = sshbuf_get_u32(buf, &flags)) != 0) {
+		error("%s: couldn't parse request: %s", __func__, ssh_err(r));
+		goto fail;
+	}
+
+	if (flags != 0)
+		goto fail;
+
+	if (agent_piv_open() != 0)
+		goto fail;
+
+	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
+		if (sshkey_equal(slot->ps_pubkey, key)) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found) {
+		agent_piv_close(B_FALSE);
+		verbose("%s: %s key not found", __func__, sshkey_type(key));
+		goto fail;
+	}
+
+	r = ykpiv_attest(selk, slot, &cert, &certlen);
+	if (r != 0) {
+		agent_piv_close(B_TRUE);
+		bunyan_log(ERROR, "piv_attest returned error",
+		    "code", BNY_INT, r,
+		    "error", BNY_STRING, strerror(r), NULL);
+		goto fail;
+	}
+	r = piv_read_file(selk, PIV_TAG_CERT_YK_ATTESTATION, &chain, &chainlen);
+	if (r != 0) {
+		agent_piv_close(B_TRUE);
+		bunyan_log(ERROR, "piv_read_file returned error",
+		    "code", BNY_INT, r,
+		    "error", BNY_STRING, strerror(r), NULL);
+		goto fail;
+	}
+	agent_piv_close(B_FALSE);
+
+	tlv = tlv_init(chain, 0, chainlen);
+	if (tlv_read_tag(tlv) != 0x70)
+		goto fail;
+	ptr = tlv_ptr(tlv);
+	len = tlv_rem(tlv);
+	tlv_skip(tlv);
+
+	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (r = sshbuf_put_u32(msg, 2)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+	if ((r = sshbuf_put_string(msg, cert, certlen)) != 0 ||
+	    (r = sshbuf_put_string(msg, ptr, len)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	goto done;
+
+fail:
+	send_extfail(e);
+
+done:
+	if (tlv != NULL)
+		tlv_free(tlv);
+	free(cert);
+	free(chain);
+	sshbuf_free(msg);
+	sshkey_free(key);
+}
+
+static void
 process_ext_query(SocketEntry *e, struct sshbuf *buf)
 {
 	int r, n = 0;
@@ -976,6 +1064,7 @@ struct exthandler exthandlers[] = {
 	{ "ecdh@joyent.com", process_ext_ecdh },
 	{ "ecdh-rebox@joyent.com", process_ext_rebox },
 	{ "x509-certs@joyent.com", process_ext_x509_certs },
+	{ "ykpiv-attest@joyent.com", process_ext_attest },
 	{ NULL, NULL }
 };
 
