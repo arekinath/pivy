@@ -730,6 +730,8 @@ ins_to_name(enum iso_ins ins)
 		return ("YKPIV_GET_VER");
 	case INS_SET_PIN_RETRIES:
 		return ("YKPIV_SET_PIN_RETRIES");
+	case INS_ATTEST:
+		return ("YKPIV_ATTEST");
 	default:
 		return ("UNKNOWN");
 	}
@@ -862,7 +864,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 
 	/* First, send the command. */
 	rem = apdu->a_cmd.b_len;
-	while (rem > 0) {
+	do {
 		/* Is there another block needed in the chain? */
 		if (rem > 0xFF) {
 			apdu->a_cls |= CLA_CHAIN;
@@ -887,7 +889,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 			 */
 			return (0);
 		}
-	}
+	} while (rem > 0);
 
 	/*
 	 * We keep the original reply offset so we can calculate how much
@@ -1498,6 +1500,59 @@ piv_write_cert(struct piv_token *pk, enum piv_slotid slotid,
 	rv = piv_write_file(pk, tag, tlv_buf(tlv), tlv_len(tlv));
 
 	tlv_free(tlv);
+
+	return (rv);
+}
+
+int
+ykpiv_attest(struct piv_token *pt, struct piv_slot *slot, uint8_t **data,
+    size_t *len)
+{
+	int rv;
+	struct apdu *apdu;
+
+	VERIFY(pt->pt_intxn == B_TRUE);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_ATTEST, (uint8_t)slot->ps_slot, 0x00);
+
+	rv = piv_apdu_transceive_chain(pt, apdu);
+	if (rv != 0) {
+		bunyan_log(WARN, "piv_read_file.transceive_chain failed",
+		    "reader", BNY_STRING, pt->pt_rdrname,
+		    "err", BNY_STRING, pcsc_stringify_error(rv),
+		    NULL);
+		piv_apdu_free(apdu);
+		return (EIO);
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+		if (apdu->a_reply.b_offset + 1 > apdu->a_reply.b_len) {
+			piv_apdu_free(apdu);
+			return (ENOENT);
+		}
+		*data = malloc(apdu->a_reply.b_len);
+		VERIFY(*data != NULL);
+		*len = apdu->a_reply.b_len;
+		bcopy(apdu->a_reply.b_data + apdu->a_reply.b_offset,
+		    *data, apdu->a_reply.b_len);
+		rv = 0;
+
+	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
+		rv = ENOENT;
+
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		rv = EPERM;
+
+	} else {
+		bunyan_log(DEBUG, "card did not accept INS_ATTEST for PIV",
+		    "reader", BNY_STRING, pt->pt_rdrname,
+		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
+		rv = EINVAL;
+	}
+
+	piv_apdu_free(apdu);
 
 	return (rv);
 }

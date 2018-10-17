@@ -237,6 +237,18 @@ pin_type_to_name(enum piv_pin type)
 }
 
 static void
+assert_slotid(uint slotid)
+{
+	if (slotid >= 0x9A && slotid <= 0x9E && slotid != 0x9B)
+		return;
+	if (slotid >= PIV_SLOT_RETIRED_1 && slotid <= PIV_SLOT_RETIRED_20)
+		return;
+	fprintf(stderr, "error: PIV slot %02X cannot be used for asymmetric "
+	    "signing\n", slotid);
+	exit(3);
+}
+
+static void
 assert_pin(struct piv_token *pk, boolean_t prompt)
 {
 	int rv;
@@ -1083,23 +1095,95 @@ signagain:
 }
 
 static void
+cmd_attest(uint slotid)
+{
+	struct piv_slot *slot;
+	uint8_t *cert = NULL, *chain = NULL, *ptr;
+	size_t certlen, chainlen, len;
+	struct tlv_state *tlv;
+	X509 *x509;
+	int rv;
+	uint tag;
+	uint8_t certinfo;
+
+	assert_slotid(slotid);
+
+	piv_txn_begin(selk);
+	assert_select(selk);
+	rv = piv_read_cert(selk, slotid);
+	if (rv == 0) {
+		slot = piv_get_slot(selk, slotid);
+		VERIFY(slot != NULL);
+		rv = ykpiv_attest(selk, slot, &cert, &certlen);
+		if (rv == 0) {
+			rv = piv_read_file(selk, PIV_TAG_CERT_YK_ATTESTATION,
+			    &chain, &chainlen);
+		}
+	}
+	piv_txn_end(selk);
+
+	if (rv != 0) {
+		fprintf(stderr, "error: attestation failed: %d (%s)\n",
+		    rv, strerror(rv));
+		exit(1);
+	}
+
+	ptr = cert;
+	x509 = d2i_X509(NULL, (const uint8_t **)&ptr, certlen);
+	if (x509 == NULL) {
+		/* Getting error codes out of OpenSSL is weird. */
+		char errbuf[128];
+		unsigned long err = ERR_peek_last_error();
+		ERR_load_crypto_strings();
+		ERR_error_string(err, errbuf);
+		fprintf(stderr, "error: failed to parse attestation cert: "
+		    "%s\n", errbuf);
+		exit(3);
+	}
+	PEM_write_X509(stdout, x509);
+	X509_free(x509);
+
+	ptr = NULL;
+	len = 0;
+	certinfo = 0;
+	tlv = tlv_init(chain, 0, chainlen);
+	tag = tlv_read_tag(tlv);
+	if (tag != 0x70) {
+		fprintf(stderr, "error: failed to parse attestation cert: "
+		    "got tlv tag 0x%02x instead of 0x70\n", tag);
+		exit(3);
+	}
+	ptr = tlv_ptr(tlv);
+	len = tlv_rem(tlv);
+	tlv_skip(tlv);
+	tlv_free(tlv);
+
+	x509 = d2i_X509(NULL, (const uint8_t **)&ptr, len);
+	if (x509 == NULL) {
+		/* Getting error codes out of OpenSSL is weird. */
+		char errbuf[128];
+		unsigned long err = ERR_peek_last_error();
+		ERR_load_crypto_strings();
+		ERR_error_string(err, errbuf);
+		fprintf(stderr, "error: failed to parse attestation cert: "
+		    "%s\n", errbuf);
+		exit(3);
+	}
+	PEM_write_X509(stdout, x509);
+	X509_free(x509);
+
+	free(cert);
+	free(chain);
+}
+
+static void
 cmd_pubkey(uint slotid)
 {
 	struct piv_slot *cert;
 	char *buf;
 	int rv;
 
-	switch (slotid) {
-	case 0x9A:
-	case 0x9C:
-	case 0x9D:
-	case 0x9E:
-		break;
-	default:
-		fprintf(stderr, "error: PIV slot %02X cannot be "
-		    "used for asymmetric signing\n", slotid);
-		exit(3);
-	}
+	assert_slotid(slotid);
 
 	piv_txn_begin(selk);
 	assert_select(selk);
@@ -1135,17 +1219,7 @@ cmd_cert(uint slotid)
 	struct piv_slot *cert;
 	int rv;
 
-	switch (slotid) {
-	case 0x9A:
-	case 0x9C:
-	case 0x9D:
-	case 0x9E:
-		break;
-	default:
-		fprintf(stderr, "error: PIV slot %02X cannot be "
-		    "used for asymmetric signing\n", slotid);
-		exit(3);
-	}
+	assert_slotid(slotid);
 
 	piv_txn_begin(selk);
 	assert_select(selk);
@@ -1176,17 +1250,7 @@ cmd_sign(uint slotid)
 	size_t inplen, siglen;
 	int rv;
 
-	switch (slotid) {
-	case 0x9A:
-	case 0x9C:
-	case 0x9D:
-	case 0x9E:
-		break;
-	default:
-		fprintf(stderr, "error: PIV slot %02X cannot be "
-		    "used for asymmetric signing\n", slotid);
-		exit(3);
-	}
+	assert_slotid(slotid);
 
 	if (override == NULL) {
 		piv_txn_begin(selk);
@@ -1768,6 +1832,8 @@ usage(void)
 	    "  auth <slot>            Does a round-trip signature test to\n"
 	    "                         verify that the pubkey on stdin\n"
 	    "                         matches the one in the slot\n"
+	    "  attest <slot>          (Yubikey only) Output attestation cert\n"
+	    "                         and chain for a given slot.\n"
 	    "\n"
 	    "  box [slot]             Encrypts stdin data with an ECDH box\n"
 	    "  unbox                  Decrypts stdin data with an ECDH box\n"
@@ -2067,6 +2133,23 @@ main(int argc, char *argv[])
 
 		check_select_key();
 		cmd_pubkey(slotid);
+
+	} else if (strcmp(op, "attest") == 0) {
+		uint slotid;
+
+		if (optind >= argc) {
+			fprintf(stderr, "error: slot required\n");
+			usage();
+		}
+		slotid = strtol(argv[optind++], NULL, 16);
+
+		if (optind < argc) {
+			fprintf(stderr, "error: too many arguments\n");
+			usage();
+		}
+
+		check_select_key();
+		cmd_attest(slotid);
 
 	} else if (strcmp(op, "setup") == 0) {
 		if (optind < argc) {

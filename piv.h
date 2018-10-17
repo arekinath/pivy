@@ -56,6 +56,7 @@ enum iso_ins {
 	INS_IMPORT_ASYM = 0xFE,
 	INS_GET_VER = 0xFD,
 	INS_SET_PIN_RETRIES = 0xFA,
+	INS_ATTEST = 0xF9,
 };
 
 enum iso_sw {
@@ -97,6 +98,8 @@ enum piv_tags {
 
 	PIV_TAG_CERT_82 = 0x5FC10D,	/* First retired slot */
 	PIV_TAG_CERT_95 = 0x5FC120,	/* Last retired slot */
+
+	PIV_TAG_CERT_YK_ATTESTATION = 0x5FFF01,
 };
 
 enum gen_auth_tag {
@@ -155,6 +158,8 @@ enum piv_slotid {
 	PIV_SLOT_82 = 0x82,
 	PIV_SLOT_95 = 0x95,
 
+	PIV_SLOT_F9 = 0xF9,
+
 	PIV_SLOT_PIV_AUTH = PIV_SLOT_9A,
 	PIV_SLOT_ADMIN = PIV_SLOT_9B,
 	PIV_SLOT_SIGNATURE = PIV_SLOT_9C,
@@ -163,6 +168,8 @@ enum piv_slotid {
 
 	PIV_SLOT_RETIRED_1 = PIV_SLOT_82,
 	PIV_SLOT_RETIRED_20 = PIV_SLOT_95,
+
+	PIV_SLOT_YK_ATTESTATION = PIV_SLOT_F9,
 };
 
 enum ykpiv_pin_policy {
@@ -482,6 +489,17 @@ int ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
  */
 int piv_auth_key(struct piv_token *tk, struct piv_slot *slot,
     struct sshkey *pubkey);
+
+/*
+ * Requests an attestation certificate.
+ *
+ * Errors:
+ *  - EIO: general card communication failure
+ *  - EINVAL: the card rejected the command (e.g. because applet not selected,
+ *            or the command is unsupported)
+ */
+int ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
+    uint8_t **data, size_t *len);
 
 /*
  * Signs a payload using a private key stored on the card.
