@@ -2253,7 +2253,7 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 	struct ssh_digest_ctx *hctx;
 	uint8_t *buf;
 	size_t nread, dglen, inplen;
-	boolean_t cardhash = B_FALSE;
+	boolean_t cardhash = B_FALSE, ch_sha256 = B_FALSE;
 	enum piv_alg oldalg;
 
 	assert(tk->pt_intxn == B_TRUE);
@@ -2281,23 +2281,30 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		break;
 	case PIV_ALG_ECCP256:
 		inplen = 32;
+		for (i = 0; i < tk->pt_alg_count; ++i) {
+			if (tk->pt_algs[i] == PIV_ALG_ECCP256_SHA256) {
+				cardhash = B_TRUE;
+				ch_sha256 = B_TRUE;
+			} else if (tk->pt_algs[i] == PIV_ALG_ECCP256_SHA1) {
+				cardhash = B_TRUE;
+			}
+		}
 		if (*hashalgo == SSH_DIGEST_SHA1) {
 			dglen = 20;
+			if (cardhash) {
+				oldalg = slot->ps_alg;
+				slot->ps_alg = PIV_ALG_ECCP256_SHA1;
+			}
 		} else {
 			*hashalgo = SSH_DIGEST_SHA256;
 			dglen = 32;
-		}
-		for (i = 0; i < tk->pt_alg_count; ++i) {
-			if (tk->pt_algs[i] == PIV_ALG_ECCP256_SHA1 &&
-			    *hashalgo == SSH_DIGEST_SHA1) {
-				cardhash = B_TRUE;
-				oldalg = slot->ps_alg;
-				slot->ps_alg = PIV_ALG_ECCP256_SHA1;
-			} else if (tk->pt_algs[i] == PIV_ALG_ECCP256_SHA256 &&
-			    *hashalgo == SSH_DIGEST_SHA256) {
-				cardhash = B_TRUE;
+			if (cardhash && ch_sha256) {
 				oldalg = slot->ps_alg;
 				slot->ps_alg = PIV_ALG_ECCP256_SHA256;
+			} else if (cardhash) {
+				*hashalgo = SSH_DIGEST_SHA1;
+				dglen = 20;
+				slot->ps_alg = PIV_ALG_ECCP256_SHA1;
 			}
 		}
 		break;
