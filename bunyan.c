@@ -21,11 +21,44 @@
 
 #include "bunyan.h"
 #include "debug.h"
+#include "errf.h"
 
 static const char *bunyan_name = NULL;
 static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
 static enum bunyan_log_level bunyan_min_level = INFO;
+
+struct bunyan_var {
+	struct bunyan_var *bv_next;
+	const char *bv_name;
+	enum bunyan_arg_type bv_type;
+	union {
+		const char *bvv_string;
+		int bvv_int;
+		uint bvv_uint;
+		uint64_t bvv_uint64;
+		size_t bvv_size_t;
+		struct bunyan_timers *bvv_timers;
+		struct {
+			const uint8_t *bvvbh_data;
+			size_t bvvbh_len;
+		} bvv_bin_hex;
+		errf_t *bvv_erf;
+	} bv_value;
+};
+struct bunyan_frame {
+	const char *bf_func;
+	struct bunyan_frame *bf_next;
+	struct bunyan_var *bf_vars;
+	struct bunyan_var *bf_lastvar;
+};
+struct bunyan_stack {
+	struct bunyan_stack *bs_next;
+	struct bunyan_frame *bs_top;
+};
+
+static __thread struct bunyan_stack *thstack;
+static struct bunyan_stack *bunyan_stacks;
 
 #if defined(__APPLE__)
 typedef unsigned int uint;
@@ -92,6 +125,12 @@ void
 bunyan_set_level(enum bunyan_log_level level)
 {
 	bunyan_min_level = level;
+}
+
+enum bunyan_log_level
+bunyan_get_level(void)
+{
+	return (bunyan_min_level);
 }
 
 struct bunyan_timers *
@@ -162,7 +201,7 @@ printf_buf(const char *fmt, ...)
 {
 	size_t wrote, orig, avail;
 	char *nbuf;
-	va_list ap;
+	va_list ap, ap2;
 
 	if (bunyan_buf_sz == 0) {
 		bunyan_buf_sz = 1024;
@@ -171,6 +210,10 @@ printf_buf(const char *fmt, ...)
 	}
 
 	va_start(ap, fmt);
+
+	/* Make a backup copy of the args so we can try again if we resize. */
+	va_copy(ap2, ap);
+
 	orig = strlen(bunyan_buf);
 	avail = bunyan_buf_sz - orig;
 again:
@@ -185,9 +228,12 @@ again:
 		bunyan_buf = nbuf;
 
 		avail = bunyan_buf_sz - orig;
+		va_end(ap);
+		va_copy(ap, ap2);
 		goto again;
 	}
 	va_end(ap);
+	va_end(ap2);
 }
 
 static void
@@ -240,10 +286,184 @@ bunyan_timestamp(char *buffer, size_t len)
 	    info->tm_hour, info->tm_min, info->tm_sec, ts.tv_nsec / 1000000);
 }
 
-void
-bunyan_set(const char *name1, enum bunyan_arg_type typ1, ...)
+static void
+bunyan_add_vars_p(struct bunyan_frame *frame, va_list ap)
 {
-	abort();
+	struct bunyan_var *var = frame->bf_lastvar;
+	const char *propname;
+
+	while (1) {
+		propname = va_arg(ap, const char *);
+
+		if (propname == NULL)
+			break;
+
+		if (var == NULL) {
+			frame->bf_vars = (var =
+			    calloc(1, sizeof (struct bunyan_var)));
+			VERIFY(var != NULL);
+		} else {
+			var->bv_next = calloc(1, sizeof (struct bunyan_var));
+			var = var->bv_next;
+			VERIFY(var != NULL);
+		}
+
+		var->bv_name = propname;
+		var->bv_type = va_arg(ap, enum bunyan_arg_type);
+
+		switch (var->bv_type) {
+		case BNY_STRING:
+			var->bv_value.bvv_string = va_arg(ap, const char *);
+			break;
+		case BNY_INT:
+			var->bv_value.bvv_int = va_arg(ap, int);
+			break;
+		case BNY_UINT:
+			var->bv_value.bvv_uint = va_arg(ap, uint);
+			break;
+		case BNY_UINT64:
+			var->bv_value.bvv_uint64 = va_arg(ap, uint64_t);
+			break;
+		case BNY_SIZE_T:
+			var->bv_value.bvv_size_t = va_arg(ap, size_t);
+			break;
+		case BNY_NVLIST:
+			abort();
+			break;
+		case BNY_TIMERS:
+			var->bv_value.bvv_timers = va_arg(ap,
+			    struct bunyan_timers *);
+			break;
+		case BNY_BIN_HEX:
+			var->bv_value.bvv_bin_hex.bvvbh_data =
+			    va_arg(ap, const uint8_t *);
+			var->bv_value.bvv_bin_hex.bvvbh_len =
+			    va_arg(ap, size_t);
+			break;
+		case BNY_ERF:
+			var->bv_value.bvv_erf = va_arg(ap, errf_t *);
+			break;
+		default:
+			abort();
+		}
+	}
+
+	frame->bf_lastvar = var;
+}
+
+void
+bunyan_add_vars(struct bunyan_frame *frame, ...)
+{
+	va_list ap;
+	va_start(ap, frame);
+	bunyan_add_vars_p(frame, ap);
+	va_end(ap);
+}
+
+struct bunyan_frame *
+_bunyan_push(const char *func, ...)
+{
+	va_list ap;
+	struct bunyan_frame *frame;
+
+	frame = calloc(1, sizeof (struct bunyan_frame));
+	frame->bf_func = func;
+
+	va_start(ap, func);
+	bunyan_add_vars_p(frame, ap);
+	va_end(ap);
+
+	if (thstack == NULL) {
+		thstack = calloc(1, sizeof (struct bunyan_stack));
+		thstack->bs_next = bunyan_stacks;
+		bunyan_stacks = thstack;
+	}
+
+	frame->bf_next = thstack->bs_top;
+	thstack->bs_top = frame;
+
+	return (frame);
+}
+
+void
+bunyan_pop(struct bunyan_frame *frame)
+{
+	struct bunyan_var *var, *nvar;
+	VERIFY(frame != NULL);
+	VERIFY(thstack != NULL);
+	VERIFY(thstack->bs_top == frame);
+	thstack->bs_top = frame->bf_next;
+
+	for (var = frame->bf_vars; var != NULL; var = nvar) {
+		nvar = var->bv_next;
+		free(var);
+	}
+	free(frame);
+}
+
+static void
+print_frame(struct bunyan_frame *frame, uint *pn, struct bunyan_var **evars)
+{
+	struct bunyan_var *var;
+	uint n = *pn;
+	struct bunyan_var *evar;
+	char *wstrval;
+
+	for (var = frame->bf_vars; var != NULL; var = var->bv_next, ++n) {
+		if (n == 0) {
+			printf_buf(": ");
+		} else {
+			printf_buf(", ");
+		}
+
+		switch (var->bv_type) {
+		case BNY_STRING:
+			printf_buf("%s = \"%s\"", var->bv_name,
+			    var->bv_value.bvv_string);
+			break;
+		case BNY_INT:
+			printf_buf("%s = %d", var->bv_name,
+			    var->bv_value.bvv_int);
+			break;
+		case BNY_UINT:
+			printf_buf("%s = 0x%x", var->bv_name,
+			    var->bv_value.bvv_uint);
+			break;
+		case BNY_UINT64:
+			printf_buf("%s = 0x%llx", var->bv_name,
+			    var->bv_value.bvv_uint64);
+			break;
+		case BNY_SIZE_T:
+			printf_buf("%s = %llu", var->bv_name,
+			    var->bv_value.bvv_size_t);
+			break;
+		case BNY_NVLIST:
+			abort();
+			break;
+		case BNY_TIMERS:
+			VERIFY0(bny_timer_print(var->bv_value.bvv_timers));
+			break;
+		case BNY_BIN_HEX:
+			wstrval = buf_to_hex(
+			    var->bv_value.bvv_bin_hex.bvvbh_data,
+			    var->bv_value.bvv_bin_hex.bvvbh_len, 1);
+			printf_buf("%s = << %s >>", var->bv_name, wstrval);
+			free(wstrval);
+			break;
+		case BNY_ERF:
+			evar = calloc(1, sizeof (struct bunyan_var));
+			bcopy(var, evar, sizeof (struct bunyan_var));
+			evar->bv_next = *evars;
+			*evars = evar;
+			printf_buf("%s = %s...", var->bv_name,
+			    errf_name(var->bv_value.bvv_erf));
+			break;
+		default:
+			abort();
+		}
+	}
+
+	*pn = n;
 }
 
 void
@@ -252,8 +472,11 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 	char time[128];
 	va_list ap;
 	const char *propname;
+	errf_t *err = NULL;
 	enum bunyan_arg_type typ;
-	int didsep = 0;
+	uint n = 0;
+	struct bunyan_frame *frame;
+	struct bunyan_var *evars = NULL, *evar, *nevar;
 
 	reset_buf();
 
@@ -283,6 +506,13 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 
 	printf_buf("%s", msg);
 
+	if (thstack != NULL) {
+		frame = thstack->bs_top;
+		for (; frame != NULL; frame = frame->bf_next) {
+			print_frame(frame, &n, &evars);
+		}
+	}
+
 	va_start(ap, msg);
 	while (1) {
 		const char *strval;
@@ -298,12 +528,12 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 		if (propname == NULL)
 			break;
 
-		if (!didsep) {
-			didsep = 1;
+		if (n == 0) {
 			printf_buf(": ");
 		} else {
 			printf_buf(", ");
 		}
+		++n;
 
 		typ = va_arg(ap, enum bunyan_arg_type);
 
@@ -342,12 +572,37 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 			printf_buf("%s = << %s >>", propname, wstrval);
 			free(wstrval);
 			break;
+		case BNY_ERF:
+			err = va_arg(ap, errf_t *);
+			printf_buf("%s = %s...", propname, errf_name(err));
+
+			evar = calloc(1, sizeof (struct bunyan_var));
+			evar->bv_name = propname;
+			evar->bv_value.bvv_erf = err;
+
+			evar->bv_next = evars;
+			evars = evar;
+			break;
 		default:
 			abort();
 		}
 	}
 	va_end(ap);
 	printf_buf("\n");
+
+	for (evar = evars; evar != NULL; evar = nevar) {
+		const char *prefix = "";
+		nevar = evar->bv_next;
+		printf_buf("\t%s = ", evar->bv_name);
+		err = evar->bv_value.bvv_erf;
+		for (; err != NULL; err = errf_cause(err)) {
+			printf_buf("%s%s: %s\n\t    in %s() at %s:%d\n", prefix,
+			    errf_name(err), errf_message(err),
+			    errf_function(err), errf_file(err), errf_line(err));
+			prefix = "\t  Caused by ";
+		}
+		free(evar);
+	}
 
 	if (level < bunyan_min_level) {
 		return;

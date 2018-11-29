@@ -7,7 +7,7 @@ LIBRESSL_INC	= $(PWD)/libressl/include
 LIBRESSL_LIB	= $(PWD)/libressl/crypto/.libs
 
 HAVE_ZFS	:= no
-USE_ZFS		?= yes
+USE_ZFS		?= no
 
 TAR		= tar
 CURL		= curl -k
@@ -107,12 +107,14 @@ PIVTOOL_SOURCES=		\
 	piv.c			\
 	debug.c			\
 	bunyan.c		\
+	errf.c			\
 	$(LIBSSH_SOURCES)
 PIVTOOL_HEADERS=		\
 	tlv.h			\
 	piv.h			\
 	bunyan.h		\
-	debug.h
+	debug.h			\
+	errf.h
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)
 PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
@@ -136,6 +138,52 @@ piv-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 piv-tool: $(PIVTOOL_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
 
+EBOX_SOURCES=			\
+	ebox-cmd.c		\
+	ebox.c			\
+	tlv.c			\
+	piv.c			\
+	debug.c			\
+	bunyan.c		\
+	errf.c			\
+	$(LIBSSH_SOURCES)	\
+	$(SSS_SOURCES)
+EBOX_HEADERS=			\
+	ebox.h			\
+	tlv.h			\
+	piv.h			\
+	bunyan.h		\
+	errf.h			\
+	debug.h
+
+EBOX_OBJS=		$(EBOX_SOURCES:%.c=%.o)
+EBOX_CFLAGS=		$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(RDLINE_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			-fstack-protector-all \
+			-O2 -g -m64 -fwrapv \
+			-fPIC -D_FORTIFY_SOURCE=2 \
+			-Wall -D_GNU_SOURCE -std=gnu99
+EBOX_LDFLAGS=		-m64
+EBOX_LIBS=		$(PCSC_LIBS) \
+			$(CRYPTO_LIBS) \
+			$(ZLIB_LIBS) \
+			$(RDLINE_LIBS) \
+			$(SYSTEM_LIBS)
+
+ebox :		CFLAGS=		$(EBOX_CFLAGS)
+ebox :		LIBS+=		$(EBOX_LIBS)
+ebox :		LDFLAGS+=	$(EBOX_LDFLAGS)
+ebox :		HEADERS=	$(EBOX_HEADERS)
+
+ebox: $(EBOX_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+	$(CC) $(LDFLAGS) -o $@ $(EBOX_OBJS) $(LIBS)
+
+all: ebox
+
+
 PIVZFS_SOURCES=			\
 	piv-zfs.c		\
 	tlv.c			\
@@ -144,6 +192,7 @@ PIVZFS_SOURCES=			\
 	bunyan.c		\
 	json.c			\
 	custr.c			\
+	errf.c			\
 	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
 PIVZFS_HEADERS=			\
@@ -151,6 +200,7 @@ PIVZFS_HEADERS=			\
 	piv.h			\
 	bunyan.h		\
 	json.h			\
+	errf.h			\
 	custr.h			\
 	debug.h
 
@@ -193,11 +243,13 @@ AGENT_SOURCES=			\
 	piv.c			\
 	debug.c			\
 	bunyan.c		\
+	errf.c			\
 	$(LIBSSH_SOURCES)
 AGENT_HEADERS=		\
 	tlv.h			\
 	piv.h			\
 	bunyan.h		\
+	errf.h			\
 	debug.h
 AGENT_OBJS=		$(AGENT_SOURCES:%.c=%.o)
 AGENT_CFLAGS=		$(PCSC_CFLAGS) \
@@ -229,6 +281,7 @@ clean:
 	rm -f piv-tool $(PIVTOOL_OBJS)
 	rm -f piv-agent $(AGENT_OBJS)
 	rm -f piv-zfs $(PIVZFS_OBJS)
+	rm -f ebox $(EBOX_OBJS)
 	rm -fr .dist
 
 distclean: clean

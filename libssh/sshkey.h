@@ -70,6 +70,8 @@ enum sshkey_fp_rep {
 /* key is stored in external hardware */
 #define SSHKEY_FLAG_EXT		0x0001
 
+typedef unsigned int u_int;
+
 #define SSHKEY_CERT_MAX_PRINCIPALS	256
 /* XXX opaquify? */
 struct sshkey_cert {
@@ -139,6 +141,8 @@ typedef int sshkey_certify_signer(const struct sshkey *, u_char **, size_t *,
     const u_char *, size_t, const char *, u_int, void *);
 int	 sshkey_certify_custom(struct sshkey *, struct sshkey *, const char *,
     sshkey_certify_signer *, void *);
+
+int	 sshkey_format_text(const struct sshkey *key, struct sshbuf *b);
 
 int		 sshkey_ecdsa_nid_from_name(const char *);
 int		 sshkey_curve_name_to_nid(const char *);

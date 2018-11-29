@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <strings.h>
 #include <limits.h>
+#include <err.h>
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -39,16 +40,26 @@
 #include "libssh/sshkey.h"
 #include "libssh/sshbuf.h"
 #include "libssh/digest.h"
+#include "libssh/ssherr.h"
 
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
+
+int PEM_write_X509(FILE *fp, X509 *x);
 
 #include "ed25519/crypto_api.h"
 
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"
+
+#if defined(__sun) || defined(__APPLE__)
+#include <netinet/in.h>
+#define	be16toh(v)	(ntohs(v))
+#else
+#include <endian.h>
+#endif
 
 boolean_t debug = B_FALSE;
 static boolean_t parseable = B_FALSE;
@@ -73,7 +84,26 @@ static struct piv_token *selk = NULL;
 //static struct piv_token *sysk = NULL;
 static struct piv_slot *override = NULL;
 
+SCARDCONTEXT ctx;
+
+#ifndef LINT
+#define	funcerrf(cause, fmt, ...)	\
+    errf(__func__, cause, fmt , ##__VA_ARGS__)
+#define pcscerrf(call, rv)	\
+    errf("PCSCError", NULL, call " failed: %d (%s)", \
+    rv, pcsc_stringify_error(rv))
+#endif
+
 extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
+
+enum pivtool_exit_status {
+	EXIT_OK = 0,
+	EXIT_IO_ERROR = 1,
+	EXIT_BAD_ARGS = 2,
+	EXIT_NO_CARD = 3,
+	EXIT_PIN = 4,
+	EXIT_PIN_LOCKED = 5,
+};
 
 static boolean_t
 sniff_hex(uint8_t *buf, uint len)
@@ -105,6 +135,16 @@ sniff_hex(uint8_t *buf, uint len)
 	return (B_FALSE);
 }
 
+static boolean_t
+buf_is_zero(const uint8_t *buf, size_t len)
+{
+	uint8_t v = 0;
+	size_t i;
+	for (i = 0; i < len; ++i)
+		v |= buf[i];
+	return (v == 0);
+}
+
 static uint8_t *
 parse_hex(const char *str, uint *outlen)
 {
@@ -126,8 +166,7 @@ parse_hex(const char *str, uint *outlen)
 		    c == '\n' || c == '\r') {
 			skip = B_TRUE;
 		} else {
-			fprintf(stderr, "error: invalid hex digit: '%c'\n", c);
-			exit(1);
+			errx(EXIT_BAD_ARGS, "invalid hex digit: '%c'", c);
 		}
 		if (skip == B_FALSE) {
 			if (shift == 4) {
@@ -138,11 +177,8 @@ parse_hex(const char *str, uint *outlen)
 			}
 		}
 	}
-	if (shift == 0) {
-		fprintf(stderr, "error: odd number of hex digits "
-		    "(incomplete)\n");
-		exit(1);
-	}
+	if (shift == 0)
+		errx(EXIT_BAD_ARGS, "odd number of hex digits (incomplete)");
 	*outlen = idx;
 	return (data);
 }
@@ -157,24 +193,17 @@ read_key_file(const char *fname, uint *outlen)
 	uint8_t *buf;
 
 	f = fopen(fname, "r");
-	if (f == NULL) {
-		fprintf(stderr, "error: failed to open %s: %s\n", fname,
-		    strerror(errno));
-		exit(2);
-	}
+	if (f == NULL)
+		err(EXIT_BAD_ARGS, "failed to open '%s'", fname);
 
 	buf = calloc(1, MAX_KEYFILE_LEN);
 	VERIFY(buf != NULL);
 
 	len = fread(buf, 1, MAX_KEYFILE_LEN, f);
-	if (len <= 0) {
-		fprintf(stderr, "error: keyfile %s is too short\n", fname);
-		exit(2);
-	}
-	if (!feof(f)) {
-		fprintf(stderr, "error: keyfile %s is too long\n", fname);
-		exit(2);
-	}
+	if (len <= 0)
+		errx(EXIT_BAD_ARGS, "keyfile '%s' is too short", fname);
+	if (!feof(f))
+		errx(EXIT_BAD_ARGS, "keyfile '%s' is too long", fname);
 
 	*outlen = len;
 
@@ -190,33 +219,34 @@ read_stdin(size_t limit, size_t *outlen)
 	size_t n;
 
 	n = fread(buf, 1, limit * 3 - 1, stdin);
-	if (!feof(stdin)) {
-		fprintf(stderr, "error: input too long (max %lu bytes)\n",
-		    limit);
-		exit(1);
-	}
+	if (!feof(stdin))
+		errx(EXIT_BAD_ARGS, "input too long (max %lu bytes)", limit);
 
-	if (n > limit) {
-		fprintf(stderr, "error: input too long (max %lu bytes)\n",
-		    limit);
-		exit(1);
-	}
+	if (n > limit)
+		errx(EXIT_BAD_ARGS, "input too long (max %lu bytes)", limit);
 
 	*outlen = n;
 	return (buf);
 }
 
+static char *
+piv_token_shortid(struct piv_token *pk)
+{
+	char *guid;
+	guid = strdup(piv_token_guid_hex(pk));
+	guid[8] = '\0';
+	return (guid);
+}
+
 static void
 assert_select(struct piv_token *tk)
 {
-	int rv;
+	errf_t *err;
 
-	rv = piv_select(tk);
-	if (rv != 0) {
+	err = piv_select(tk);
+	if (err) {
 		piv_txn_end(tk);
-		fprintf(stderr, "error: failed to select PIV applet "
-		    "(rv = %d)\n", rv);
-		exit(1);
+		errfx(1, err, "error while selecting applet");
 	}
 }
 
@@ -243,16 +273,16 @@ assert_slotid(uint slotid)
 		return;
 	if (slotid >= PIV_SLOT_RETIRED_1 && slotid <= PIV_SLOT_RETIRED_20)
 		return;
-	fprintf(stderr, "error: PIV slot %02X cannot be used for asymmetric "
-	    "signing\n", slotid);
-	exit(3);
+	errx(EXIT_BAD_ARGS, "PIV slot %02X cannot be used for asymmetric "
+	    "signing", slotid);
 }
 
 static void
 assert_pin(struct piv_token *pk, boolean_t prompt)
 {
-	int rv;
+	errf_t *er;
 	uint retries = min_retries;
+	enum piv_pin auth = piv_token_default_auth(pk);
 
 #if 0
 	if (pin == NULL && pk == sysk) {
@@ -267,53 +297,48 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 
 	if (pin == NULL && prompt) {
 		char prompt[64];
-		char *guid;
-		guid = buf_to_hex(pk->pt_guid, 4, B_FALSE);
+		char *guid = piv_token_shortid(pk);
 		snprintf(prompt, 64, "Enter %s for token %s: ",
-		    pin_type_to_name(pk->pt_auth), guid);
+		    pin_type_to_name(auth), guid);
 		do {
 			pin = getpass(prompt);
 		} while (pin == NULL && errno == EINTR);
 		if ((pin == NULL && errno == ENXIO) || strlen(pin) < 1) {
 			piv_txn_end(pk);
-			fprintf(stderr, "error: a PIN is required to "
-			    "unlock token %s\n", guid);
-			exit(4);
+			errx(EXIT_PIN, "a PIN is required to unlock "
+			    "token %s", guid);
 		} else if (pin == NULL) {
 			piv_txn_end(pk);
-			perror("getpass");
-			exit(3);
+			err(EXIT_PIN, "failed to read PIN");
 		} else if (strlen(pin) < 6 || strlen(pin) > 8) {
 			const char *charType = "digits";
-			if (selk->pt_ykpiv)
+			if (piv_token_is_ykpiv(selk))
 				charType = "characters";
-			fprintf(stderr, "error: a valid PIN must be 6-8 "
-			    "%s in length\n", charType);
-			exit(4);
+			errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+			    charType);
 		}
 		pin = strdup(pin);
 		free(guid);
 	}
-	rv = piv_verify_pin(pk, pk->pt_auth, pin, &retries, B_FALSE);
-	if (rv == EACCES) {
+	er = piv_verify_pin(pk, auth, pin, &retries, B_FALSE);
+	if (errf_caused_by(er, "PermissionError")) {
 		piv_txn_end(pk);
 		if (retries == 0) {
-			fprintf(stderr, "error: token is locked due to too "
-			    "many invalid PIN entries\n");
-			exit(10);
+			errx(EXIT_PIN_LOCKED, "token is locked due to too "
+			    "many invalid PIN attempts");
 		}
-		fprintf(stderr, "error: invalid PIN (%d attempts "
-		    "remaining)\n", retries);
-		exit(4);
-	} else if (rv == EAGAIN) {
+		errx(EXIT_PIN, "invalid PIN (%d attempts remaining)", retries);
+	} else if (errf_caused_by(er, "MinRetriesError")) {
 		piv_txn_end(pk);
-		fprintf(stderr, "error: insufficient retries remaining "
-		    "(%d left)\n", retries);
-		exit(4);
-	} else if (rv != 0) {
+		if (retries == 0) {
+			errx(EXIT_PIN_LOCKED, "token is locked due to too "
+			    "many invalid PIN attempts");
+		}
+		errx(EXIT_PIN, "insufficient PIN retries remaining (%d left)",
+		    retries);
+	} else if (er) {
 		piv_txn_end(pk);
-		fprintf(stderr, "error: failed to verify PIN\n");
-		exit(4);
+		errfx(EXIT_PIN, er, "failed to verify PIN");
 	}
 }
 
@@ -347,113 +372,146 @@ alg_to_string(uint alg)
 	}
 }
 
-static void
-cmd_list(SCARDCONTEXT ctx)
+static errf_t *
+cmd_list(void)
 {
 	struct piv_token *pk;
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	uint i;
 	char *buf = NULL;
+	const uint8_t *temp;
+	size_t len;
+	enum piv_pin defauth;
+	errf_t *err;
 
-	for (pk = ks; pk != NULL; pk = pk->pt_next) {
+	for (pk = ks; pk != NULL; pk = piv_token_next(pk)) {
+		const uint8_t *tguid = piv_token_guid(pk);
 		if (guid != NULL &&
-		    bcmp(pk->pt_guid, guid, guid_len) != 0) {
+		    bcmp(tguid, guid, guid_len) != 0) {
 			continue;
 		}
 
-		assert(piv_txn_begin(pk) == 0);
+		if ((err = piv_txn_begin(pk)))
+			return (err);
 		assert_select(pk);
-		piv_read_all_certs(pk);
+		if ((err = piv_read_all_certs(pk))) {
+			piv_txn_end(pk);
+			return (err);
+		}
 		piv_txn_end(pk);
 
 		if (parseable) {
-			free(buf);
-			buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid),
-			    B_FALSE);
+			uint8_t nover[] = { 0, 0, 0 };
+			const uint8_t *ver = nover;
+			if (piv_token_is_ykpiv(pk))
+				ver = ykpiv_token_version(pk);
 			printf("%s:%s:%s:%s:%d.%d.%d:",
-			    pk->pt_rdrname, buf,
-			    pk->pt_nochuid ? "true" : "false",
-			    pk->pt_ykpiv ? "true" : "false",
-			    pk->pt_ykver[0], pk->pt_ykver[1], pk->pt_ykver[2]);
-			for (i = 0; i < pk->pt_alg_count; ++i) {
-				printf("%s%s", alg_to_string(pk->pt_algs[i]),
-				    (i + 1 < pk->pt_alg_count) ? "," : "");
+			    piv_token_rdrname(pk),
+			    piv_token_guid_hex(pk),
+			    piv_token_has_chuid(pk) ? "true" : "false",
+			    piv_token_is_ykpiv(pk) ? "true" : "false",
+			    ver[0], ver[1], ver[2]);
+			for (i = 0; i < piv_token_nalgs(pk); ++i) {
+				enum piv_alg alg = piv_token_alg(pk, i);
+				printf("%s%s", alg_to_string(alg),
+				    (i + 1 < piv_token_nalgs(pk)) ? "," : "");
 			}
 			for (i = 0x9A; i < 0x9F; ++i) {
 				slot = piv_get_slot(pk, i);
 				if (slot == NULL) {
 					printf(":%02X", i);
 				} else {
+					struct sshkey *key =
+					    piv_slot_pubkey(slot);
 					printf(":%02X;%s;%s;%d",
-					    i, slot->ps_subj,
-					    sshkey_type(slot->ps_pubkey),
-					    sshkey_size(slot->ps_pubkey));
+					    i, piv_slot_subject(slot),
+					    sshkey_type(key),
+					    sshkey_size(key));
 				}
 			}
 			printf("\n");
 			continue;
 		}
 
-		free(buf);
-		buf = buf_to_hex(pk->pt_guid, 4, B_FALSE);
+		if (piv_token_has_chuid(pk)) {
+			buf = piv_token_shortid(pk);
+		} else {
+			buf = strdup("00000000");
+		}
 		printf("%10s: %s\n", "card", buf);
-		printf("%10s: %s\n", "device", pk->pt_rdrname);
-		if (pk->pt_nochuid) {
+		free(buf);
+		printf("%10s: %s\n", "device", piv_token_rdrname(pk));
+		if (!piv_token_has_chuid(pk)) {
 			printf("%10s: %s\n", "chuid", "not set "
 			    "(needs initialization)");
-		} else if (pk->pt_signedchuid) {
+		} else if (piv_token_has_signed_chuid(pk)) {
 			printf("%10s: %s\n", "chuid", "ok, signed");
 		} else {
 			printf("%10s: %s\n", "chuid", "ok");
 		}
-		free(buf);
-		buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid), B_FALSE);
-		printf("%10s: %s\n", "guid", buf);
-		free(buf);
-		buf = buf_to_hex(pk->pt_chuuid, sizeof (pk->pt_chuuid),
-		    B_FALSE);
-		printf("%10s: %s\n", "owner", buf);
-		free(buf);
-		buf = buf_to_hex(pk->pt_fascn, pk->pt_fascn_len, B_FALSE);
-		printf("%10s: %s\n", "fasc-n", buf);
-		if (pk->pt_expiry[0] >= '0' && pk->pt_expiry[0] <= '9') {
-			printf("%10s: %c%c%c%c-%c%c-%c%c\n", "expiry",
-			    pk->pt_expiry[0], pk->pt_expiry[1],
-			    pk->pt_expiry[2], pk->pt_expiry[3],
-			    pk->pt_expiry[4], pk->pt_expiry[5],
-			    pk->pt_expiry[6], pk->pt_expiry[7]);
+		printf("%10s: %s\n", "guid", piv_token_guid_hex(pk));
+		temp = piv_token_chuuid(pk);
+		if (temp != NULL) {
+			buf = buf_to_hex(temp, 16, B_FALSE);
+			printf("%10s: %s\n", "owner", buf);
+			free(buf);
 		}
-		if (pk->pt_ykpiv) {
+		temp = piv_token_fascn(pk, &len);
+		if (temp != NULL && len > 0) {
+			buf = buf_to_hex(temp, len, B_FALSE);
+			printf("%10s: %s\n", "fasc-n", buf);
+			free(buf);
+		}
+		temp = piv_token_expiry(pk, &len);
+		if (len == 8 && temp[0] >= '0' && temp[0] <= '9') {
+			printf("%10s: %c%c%c%c-%c%c-%c%c\n", "expiry",
+			    temp[0], temp[1], temp[2], temp[3],
+			    temp[4], temp[5], temp[6], temp[7]);
+		}
+		if (piv_token_is_ykpiv(pk)) {
+			temp = ykpiv_token_version(pk);
 			printf("%10s: implements YubicoPIV extensions "
-			    "(v%d.%d.%d)\n", "yubico", pk->pt_ykver[0],
-			    pk->pt_ykver[1], pk->pt_ykver[2]);
+			    "(v%d.%d.%d)\n", "yubico", temp[0], temp[1],
+			    temp[2]);
+			if (ykpiv_token_has_serial(pk)) {
+				printf("%10s: %u\n", "serial",
+				    ykpiv_token_serial(pk));
+			}
 		}
 		printf("%10s:", "auth");
-		if (pk->pt_pin_app && pk->pt_auth == PIV_PIN)
-			printf(" PIN*");
-		else if (pk->pt_pin_app)
-			printf(" PIN");
-		if (pk->pt_pin_global && pk->pt_auth == PIV_GLOBAL_PIN)
-			printf(" GlobalPIN*");
-		else if (pk->pt_pin_global)
-			printf(" GlobalPIN");
-		if (pk->pt_occ && pk->pt_auth == PIV_OCC)
-			printf(" Biometrics*");
-		else if (pk->pt_occ)
-			printf(" Biometrics");
+		defauth = piv_token_default_auth(pk);
+		if (piv_token_has_auth(pk, PIV_PIN)) {
+			if (defauth == PIV_PIN)
+				printf(" PIN*");
+			else
+				printf(" PIN");
+		}
+		if (piv_token_has_auth(pk, PIV_GLOBAL_PIN)) {
+			if (defauth == PIV_GLOBAL_PIN)
+				printf(" GlobalPIN*");
+			else
+				printf(" GlobalPIN");
+		}
+		if (piv_token_has_auth(pk, PIV_OCC)) {
+			if (defauth == PIV_OCC)
+				printf(" Biometrics*");
+			else
+				printf(" Biometrics");
+		}
 		printf("\n");
-		if (pk->pt_vci) {
+		if (piv_token_has_vci(pk)) {
 			printf("%10s: supports VCI (secure contactless)\n",
 			    "vci");
 		}
-		if (pk->pt_alg_count > 0) {
+		if (piv_token_nalgs(pk) > 0) {
 			printf("%10s: ", "algos");
-			for (i = 0; i < pk->pt_alg_count; ++i) {
-				printf("%s ", alg_to_string(pk->pt_algs[i]));
+			for (i = 0; i < piv_token_nalgs(pk); ++i) {
+				printf("%s ", alg_to_string(
+				    piv_token_alg(pk, i)));
 			}
 			printf("\n");
 		}
-		if (pk->pt_nochuid) {
+		if (!piv_token_has_chuid(pk)) {
 			printf("%10s:\n", "action");
 			printf("%10s Initialize this card using 'piv-tool "
 			    "init'\n", "");
@@ -465,19 +523,22 @@ cmd_list(SCARDCONTEXT ctx)
 		printf("%10s:\n", "slots");
 		printf("%10s %-3s  %-6s  %-4s  %-30s\n", "", "ID", "TYPE",
 		    "BITS", "CERTIFICATE");
-		for (slot = pk->pt_slots; slot != NULL; slot = slot->ps_next) {
+		while ((slot = piv_slot_next(pk, slot)) != NULL) {
+			struct sshkey *pubkey = piv_slot_pubkey(slot);
 			printf("%10s %-3x  %-6s  %-4d  %-30s\n", "",
-			    slot->ps_slot, sshkey_type(slot->ps_pubkey),
-			    sshkey_size(slot->ps_pubkey), slot->ps_subj);
+			    piv_slot_id(slot), sshkey_type(pubkey),
+			    sshkey_size(pubkey), piv_slot_subject(slot));
 		}
 		printf("\n");
 	}
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_init(void)
 {
-	int rv;
+	errf_t *err;
 	struct tlv_state *ccc, *chuid;
 	uint8_t nguid[16];
 	uint8_t fascn[25];
@@ -557,15 +618,16 @@ cmd_init(void)
 	tlv_push(chuid, 0xFE);
 	tlv_pop(chuid);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
-	rv = piv_auth_admin(selk, admin_key, 24);
-	if (rv == 0) {
-		rv = piv_write_file(selk, PIV_TAG_CARDCAP,
+	err = piv_auth_admin(selk, admin_key, 24);
+	if (err == ERRF_OK) {
+		err = piv_write_file(selk, PIV_TAG_CARDCAP,
 		    tlv_buf(ccc), tlv_len(ccc));
 	}
-	if (rv == 0) {
-		rv = piv_write_file(selk, PIV_TAG_CHUID,
+	if (err == ERRF_OK) {
+		err = piv_write_file(selk, PIV_TAG_CHUID,
 		    tlv_buf(chuid), tlv_len(chuid));
 	}
 	piv_txn_end(selk);
@@ -573,50 +635,49 @@ cmd_init(void)
 	tlv_free(ccc);
 	tlv_free(chuid);
 
-	if (rv == ENOMEM) {
-		fprintf(stderr, "error: card is out of EEPROM\n");
-		exit(1);
-	} else if (rv == EPERM || rv == EACCES) {
-		fprintf(stderr, "error: admin authentication failed\n");
-		exit(1);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to write to card\n");
-		exit(1);
+	if (errf_caused_by(err, "DeviceOutOfMemoryError")) {
+		err = funcerrf(err, "out of EEPROM to write CHUID "
+		    "and CARDCAP");
+		return (err);
+	} else if (errf_caused_by(err, "PermissionError")) {
+		err = funcerrf(err, "cannot write init data due to failed "
+		    "admin authentication");
+		return (err);
+	} else if (err) {
+		err = funcerrf(err, "failed to write to card");
+		return (err);
 	}
 
 	/* This is for cmd_setup */
 	guid = malloc(16);
 	bcopy(nguid, guid, sizeof (nguid));
 	guid_len = 16;
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_set_admin(uint8_t *new_admin_key)
 {
-	int rv;
+	errf_t *err;
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
-	rv = piv_auth_admin(selk, admin_key, 24);
-	if (rv == 0) {
-		rv = ykpiv_set_admin(selk, new_admin_key, 24, touchpolicy);
+	err = piv_auth_admin(selk, admin_key, 24);
+	if (err) {
+		err = funcerrf(err, "Failed to authenticate with old admin key");
+	} else {
+		err = ykpiv_set_admin(selk, new_admin_key, 24, touchpolicy);
+		if (err) {
+			err = funcerrf(err, "Failed to set new admin key");
+		}
 	}
 	piv_txn_end(selk);
 
-	if (rv == EINVAL) {
-		fprintf(stderr, "error: card is not a yubikey or does not "
-		    "support changing admin key\n");
-		exit(1);
-	} else if (rv == ENOENT) {
-		fprintf(stderr, "error: card has no 3DES admin key\n");
-		exit(1);
-	} else if (rv == EACCES || rv == EPERM) {
-		fprintf(stderr, "error: admin authentication failed\n");
-		exit(1);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to write to card\n");
-		exit(1);
-	}
+	if (err)
+		return (err);
+	return (ERRF_OK);
 }
 
 #if 0
@@ -676,17 +737,17 @@ cmd_set_system(void)
 }
 #endif
 
-static void
+static errf_t *
 cmd_change_pin(enum piv_pin pintype)
 {
-	int rv;
+	errf_t *err;
 	char prompt[64];
 	char *p, *newpin, *guidhex;
 	const char *charType = "digits";
-	if (selk->pt_ykpiv)
+	if (piv_token_is_ykpiv(selk))
 		charType = "characters";
 
-	guidhex = buf_to_hex(selk->pt_guid, 4, B_FALSE);
+	guidhex = piv_token_shortid(selk);
 
 	if (pin == NULL) {
 		snprintf(prompt, 64, "Enter current %s (%s): ",
@@ -695,8 +756,8 @@ cmd_change_pin(enum piv_pin pintype)
 			p = getpass(prompt);
 		} while (p == NULL && errno == EINTR);
 		if (p == NULL) {
-			perror("getpass");
-			exit(1);
+			err = errfno("getpass", errno, "");
+			return (err);
 		}
 		pin = strdup(p);
 	}
@@ -707,11 +768,11 @@ again:
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
 	if (p == NULL) {
-		perror("getpass");
-		exit(1);
+		err = errfno("getpass", errno, "");
+		return (err);
 	}
 	if (strlen(p) < 6 || strlen(p) > 8) {
-		fprintf(stderr, "error: PIN must be 6-8 %s\n", charType);
+		warnx("PIN must be 6-8 %s", charType);
 		goto again;
 	}
 	newpin = strdup(p);
@@ -721,48 +782,51 @@ again:
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
 	if (p == NULL) {
-		perror("getpass");
-		exit(1);
+		err = errfno("getpass", errno, "");
+		return (err);
 	}
 	if (strcmp(p, newpin) != 0) {
-		fprintf(stderr, "error: PINs do not match\n");
+		warnx("PINs do not match");
 		goto again;
 	}
 	free(guidhex);
 
-	VERIFY0(piv_txn_begin(selk));
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
-	rv = piv_change_pin(selk, pintype, pin, newpin);
+	err = piv_change_pin(selk, pintype, pin, newpin);
 	piv_txn_end(selk);
 
-	if (rv == EACCES) {
-		fprintf(stderr, "error: current PIN was incorrect; PIN change "
-		    "attempt failed\n");
-		exit(4);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to set new PIN\n");
-		exit(1);
+	if (errf_caused_by(err, "PermissionError")) {
+		err = funcerrf(err, "current PIN was incorrect; PIN "
+		    "change attempt failed");
+		return (err);
+	} else if (err) {
+		err = funcerrf(err, "failed to set new PIN");
+		return (err);
 	}
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_reset_pin(void)
 {
-	int rv;
+	errf_t *err;
 	char prompt[64];
 	char *p, *newpin, *guidhex;
 	const char *charType = "digits";
-	if (selk->pt_ykpiv)
+	if (piv_token_is_ykpiv(selk))
 		charType = "characters";
 
-	guidhex = buf_to_hex(selk->pt_guid, 4, B_FALSE);
+	guidhex = piv_token_shortid(selk);
 	snprintf(prompt, 64, "Enter PUK (%s): ", guidhex);
 	do {
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
 	if (p == NULL) {
-		perror("getpass");
-		exit(1);
+		err = errfno("getpass", errno, "");
+		return (err);
 	}
 	pin = strdup(p);
 again:
@@ -771,11 +835,11 @@ again:
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
 	if (p == NULL) {
-		perror("getpass");
-		exit(1);
+		err = errfno("getpass", errno, "");
+		return (err);
 	}
 	if (strlen(p) < 6 || strlen(p) > 8) {
-		fprintf(stderr, "error: PIN must be 6-8 %s\n", charType);
+		warnx("PIN must be 6-8 %s", charType);
 		goto again;
 	}
 	newpin = strdup(p);
@@ -784,35 +848,38 @@ again:
 		p = getpass(prompt);
 	} while (p == NULL && errno == EINTR);
 	if (p == NULL) {
-		perror("getpass");
-		exit(1);
+		err = errfno("getpass", errno, "");
+		return (err);
 	}
 	if (strcmp(p, newpin) != 0) {
-		fprintf(stderr, "error: PINs do not match\n");
+		warnx("PINs do not match");
 		goto again;
 	}
 	free(guidhex);
 
-	VERIFY0(piv_txn_begin(selk));
+	if ((err = piv_txn_begin(selk)))
+		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
-	rv = piv_reset_pin(selk, PIV_PIN, pin, newpin);
+	err = piv_reset_pin(selk, PIV_PIN, pin, newpin);
 	piv_txn_end(selk);
 
-	if (rv == EACCES) {
-		fprintf(stderr, "error: PUK was incorrect; PIN reset "
-		    "attempt failed\n");
-		exit(4);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to set new PIN\n");
-		exit(1);
+	if (errf_caused_by(err, "PermissionError")) {
+		err = funcerrf(err, "PUK was incorrect; PIN reset "
+		    "attempt failed");
+		return (err);
+	} else if (err) {
+		err = funcerrf(err, "failed to set new PIN");
+		return (err);
 	}
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_generate(uint slotid, enum piv_alg alg)
 {
-	char *buf;
 	int rv;
+	errf_t *err;
 	struct sshkey *pub;
 	X509 *cert;
 	EVP_PKEY *pkey;
@@ -830,9 +897,9 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	ASN1_INTEGER *serial_asn1;
 	X509_EXTENSION *ext;
 	X509V3_CTX x509ctx;
-	char *guidhex;
+	const char *guidhex;
 
-	guidhex = buf_to_hex(selk->pt_guid, sizeof (selk->pt_guid), B_FALSE);
+	guidhex = piv_token_guid_hex(selk);
 
 	switch (slotid) {
 	case 0x9A:
@@ -880,49 +947,50 @@ cmd_generate(uint slotid, enum piv_alg alg)
 		snprintf(name, 64, "piv-retired-%u", slotid - 0x81);
 		basic = "critical,CA:FALSE";
 		ku = "critical,digitalSignature,nonRepudiation";
-		if (slotid - 0x82 > selk->pt_hist_oncard) {
-			fprintf(stderr, "error: next available key history "
-			    "slot is %02X (must be used in order)\n",
-			    0x82 + selk->pt_hist_oncard);
-			exit(3);
+		if (slotid - 0x82 > piv_token_keyhistory_oncard(selk)) {
+			err = funcerrf(NULL, "next available key history "
+			    "slot is %02X (must be used in order)",
+			    0x82 + piv_token_keyhistory_oncard(selk));
+			return (err);
 		}
 		break;
 	default:
-		fprintf(stderr, "error: PIV slot %02X cannot be "
+		err = funcerrf(NULL, "PIV slot %02X cannot be "
 		    "used for asymmetric crypto\n", slotid);
-		exit(3);
+		return (err);
 	}
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
-	rv = piv_auth_admin(selk, admin_key, 24);
-	if (rv == 0) {
+	err = piv_auth_admin(selk, admin_key, 24);
+	if (err == ERRF_OK) {
 		if (pinpolicy == YKPIV_PIN_DEFAULT &&
 		    touchpolicy == YKPIV_TOUCH_DEFAULT) {
-			rv = piv_generate(selk, slotid, alg, &pub);
+			err = piv_generate(selk, slotid, alg, &pub);
 		} else {
-			rv = ykpiv_generate(selk, slotid, alg, pinpolicy,
+			err = ykpiv_generate(selk, slotid, alg, pinpolicy,
 			    touchpolicy, &pub);
 		}
 	}
 
-	if (rv != 0) {
+	if (err) {
 		piv_txn_end(selk);
-		fprintf(stderr, "error: key generation failed (%d)\n", rv);
-		exit(1);
+		err = funcerrf(err, "key generation failed");
+		return (err);
 	}
 
 	pkey = EVP_PKEY_new();
-	assert(pkey != NULL);
+	VERIFY(pkey != NULL);
 	if (pub->type == KEY_RSA) {
 		RSA *copy = RSA_new();
-		assert(copy != NULL);
+		VERIFY(copy != NULL);
 		copy->e = BN_dup(pub->rsa->e);
-		assert(copy->e != NULL);
+		VERIFY(copy->e != NULL);
 		copy->n = BN_dup(pub->rsa->n);
-		assert(copy->n != NULL);
+		VERIFY(copy->n != NULL);
 		rv = EVP_PKEY_assign_RSA(pkey, copy);
-		assert(rv == 1);
+		VERIFY(rv == 1);
 		nid = NID_sha256WithRSAEncryption;
 		wantalg = SSH_DIGEST_SHA256;
 	} else if (pub->type == KEY_ECDSA) {
@@ -931,12 +999,13 @@ cmd_generate(uint slotid, enum piv_alg alg)
 
 		EC_KEY *copy = EC_KEY_dup(pub->ecdsa);
 		rv = EVP_PKEY_assign_EC_KEY(pkey, copy);
-		assert(rv == 1);
+		VERIFY(rv == 1);
 
-		for (i = 0; i < selk->pt_alg_count; ++i) {
-			if (selk->pt_algs[i] == PIV_ALG_ECCP256_SHA256) {
+		for (i = 0; i < piv_token_nalgs(selk); ++i) {
+			enum piv_alg alg = piv_token_alg(selk, i);
+			if (alg == PIV_ALG_ECCP256_SHA256) {
 				haveSha256 = B_TRUE;
-			} else if (selk->pt_algs[i] == PIV_ALG_ECCP256_SHA1) {
+			} else if (alg == PIV_ALG_ECCP256_SHA1) {
 				haveSha1 = B_TRUE;
 			}
 		}
@@ -948,39 +1017,39 @@ cmd_generate(uint slotid, enum piv_alg alg)
 			wantalg = SSH_DIGEST_SHA256;
 		}
 	} else {
-		assert(0);
+		return (funcerrf(NULL, "invalid key type"));
 	}
 
 	serial = BN_new();
 	serial_asn1 = ASN1_INTEGER_new();
-	assert(serial != NULL);
-	assert(BN_pseudo_rand(serial, 64, 0, 0) == 1);
-	assert(BN_to_ASN1_INTEGER(serial, serial_asn1) != NULL);
+	VERIFY(serial != NULL);
+	VERIFY(BN_pseudo_rand(serial, 64, 0, 0) == 1);
+	VERIFY(BN_to_ASN1_INTEGER(serial, serial_asn1) != NULL);
 
 	cert = X509_new();
-	assert(cert != NULL);
-	assert(X509_set_version(cert, 2) == 1);
-	assert(X509_set_serialNumber(cert, serial_asn1) == 1);
-	assert(X509_gmtime_adj(X509_get_notBefore(cert), 0) != NULL);
-	assert(X509_gmtime_adj(X509_get_notAfter(cert), 315360000L) != NULL);
+	VERIFY(cert != NULL);
+	VERIFY(X509_set_version(cert, 2) == 1);
+	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
+	VERIFY(X509_gmtime_adj(X509_get_notBefore(cert), 0) != NULL);
+	VERIFY(X509_gmtime_adj(X509_get_notAfter(cert), 315360000L) != NULL);
 
 	subj = X509_NAME_new();
-	assert(subj != NULL);
+	VERIFY(subj != NULL);
 	if (cn == NULL) {
-		assert(X509_NAME_add_entry_by_NID(subj, NID_title, MBSTRING_ASC,
+		VERIFY(X509_NAME_add_entry_by_NID(subj, NID_title, MBSTRING_ASC,
 		    (unsigned char *)name, -1, -1, 0) == 1);
-		assert(X509_NAME_add_entry_by_NID(subj, NID_commonName,
+		VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
 		    MBSTRING_ASC, (unsigned char *)guidhex, -1, -1, 0) == 1);
 	} else {
-		assert(X509_NAME_add_entry_by_NID(subj, NID_commonName,
+		VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
 		    MBSTRING_ASC, (unsigned char *)cn, -1, -1, 0) == 1);
 	}
-	/*assert(X509_NAME_add_entry_by_NID(subj, NID_organizationalUnitName,
+	/*VERIFY(X509_NAME_add_entry_by_NID(subj, NID_organizationalUnitName,
 	    MBSTRING_ASC, (unsigned char *)"tokens", -1, -1, 0) == 1);
-	assert(X509_NAME_add_entry_by_NID(subj, NID_organizationName,
+	VERIFY(X509_NAME_add_entry_by_NID(subj, NID_organizationName,
 	    MBSTRING_ASC, (unsigned char *)"triton", -1, -1, 0) == 1);*/
-	assert(X509_set_subject_name(cert, subj) == 1);
-	assert(X509_set_issuer_name(cert, subj) == 1);
+	VERIFY(X509_set_subject_name(cert, subj) == 1);
+	VERIFY(X509_set_issuer_name(cert, subj) == 1);
 
 	X509V3_set_ctx_nodb(&x509ctx);
 	X509V3_set_ctx(&x509ctx, cert, cert, NULL, NULL, 0);
@@ -996,7 +1065,7 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	X509_add_ext(cert, ext, -1);
 	X509_EXTENSION_free(ext);
 
-	assert(X509_set_pubkey(cert, pkey) == 1);
+	VERIFY(X509_set_pubkey(cert, pkey) == 1);
 
 	cert->sig_alg->algorithm = OBJ_nid2obj(nid);
 	cert->cert_info->signature->algorithm = cert->sig_alg->algorithm;
@@ -1010,148 +1079,136 @@ cmd_generate(uint slotid, enum piv_alg alg)
 
 	cert->cert_info->enc.modified = 1;
 	tbslen = i2d_X509_CINF(cert->cert_info, &tbs);
-	assert(tbs != NULL);
-	assert(tbslen > 0);
+	if (tbs == NULL || tbslen <= 0) {
+		make_sslerrf(err, "i2d_X509_CINF", "generating cert");
+		err = funcerrf(err, "failed to generate new cert");
+		return (err);
+	}
 
 	hashalg = wantalg;
 
 	assert_pin(selk, B_FALSE);
 
 signagain:
-	rv = piv_sign(selk, override, tbs, tbslen, &hashalg, &sig, &siglen);
+	err = piv_sign(selk, override, tbs, tbslen, &hashalg, &sig, &siglen);
 
-	if (rv == EPERM) {
+	if (errf_caused_by(err, "PermissionError")) {
 		assert_pin(selk, B_TRUE);
 		goto signagain;
-	} else if (rv != 0) {
+	} else if (err) {
 		piv_txn_end(selk);
-		fprintf(stderr, "error: failed to sign cert with key\n");
-		exit(1);
+		err = funcerrf(err, "failed to sign cert with key");
+		return (err);
 	}
 
 	if (hashalg != wantalg) {
 		piv_txn_end(selk);
-		fprintf(stderr, "error: card could not sign with the "
-		    "requested hash algorithm\n");
-		exit(1);
+		err = funcerrf(NULL, "card could not sign with the "
+		    "requested hash algorithm");
+		return (err);
 	}
 
 	M_ASN1_BIT_STRING_set(cert->signature, sig, siglen);
 	cert->signature->flags = ASN1_STRING_FLAG_BITS_LEFT;
 
 	cdlen = i2d_X509(cert, &cdata);
-	assert(cdata != NULL);
-	assert(cdlen > 0);
+	if (cdata == NULL || cdlen <= 0) {
+		make_sslerrf(err, "i2d_X509", "generating cert");
+		err = errf("generate", err, "failed to generate signed cert");
+		return (err);
+	}
 
 	flags = PIV_COMP_NONE;
-	rv = piv_write_cert(selk, slotid, cdata, cdlen, flags);
+	err = piv_write_cert(selk, slotid, cdata, cdlen, flags);
 
-	if (rv == 0 && slotid >= 0x82 && slotid <= 0x95 &&
-	    selk->pt_hist_oncard <= slotid - 0x82) {
-		struct tlv_state *khtlv;
-		khtlv = tlv_init_write();
+	if (err == ERRF_OK && slotid >= 0x82 && slotid <= 0x95 &&
+	    piv_token_keyhistory_oncard(selk) <= slotid - 0x82) {
+		uint oncard, offcard;
+		const char *url;
 
-		tlv_push(khtlv, 0xC1);
-		tlv_write_uint(khtlv, selk->pt_hist_oncard + 1);
-		tlv_pop(khtlv);
+		oncard = piv_token_keyhistory_oncard(selk);
+		offcard = piv_token_keyhistory_offcard(selk);
+		url = piv_token_offcard_url(selk);
 
-		tlv_push(khtlv, 0xC2);
-		tlv_write_uint(khtlv, selk->pt_hist_offcard);
-		tlv_pop(khtlv);
+		++oncard;
 
-		if (selk->pt_hist_url != NULL) {
-			tlv_push(khtlv, 0xF3);
-			tlv_write(khtlv, (uint8_t *)selk->pt_hist_url, 0,
-			    strlen(selk->pt_hist_url));
-			tlv_pop(khtlv);
-		}
+		err = piv_write_keyhistory(selk, oncard, offcard, url);
 
-		rv = piv_write_file(selk, PIV_TAG_KEYHIST, tlv_buf(khtlv),
-		    tlv_len(khtlv));
-		if (rv != 0) {
-			fprintf(stderr, "warning: failed to update key history "
-			    "object with new cert\n");
-			rv = 0;
+		if (err) {
+			warnfx(err, "failed to update key "
+			    "history object with new cert, trying to "
+			    "continue anyway...");
+			err = ERRF_OK;
 		}
 	}
 
 	piv_txn_end(selk);
 
-	if (rv != 0) {
-		fprintf(stderr, "error: failed to write cert\n");
-		exit(1);
+	if (err) {
+		err = errf("generate", err, "failed to write new cert");
+		return (err);
 	}
 
 	rv = sshkey_write(pub, stdout);
 	if (rv != 0) {
-		fprintf(stderr, "error: failed to write out key\n");
-		exit(1);
+		err = errf("generate", ssherrf("sshkey_write", rv),
+		    "failed to write public key to stdout");
+		return (err);
 	}
-	buf = buf_to_hex(selk->pt_guid, sizeof (selk->pt_guid), B_FALSE);
-	fprintf(stdout, " PIV_slot_%02X@%s\n", slotid, buf);
-	free(buf);
-
-	free(guidhex);
+	fprintf(stdout, " PIV_slot_%02X@%s\n", slotid,
+	    piv_token_guid_hex(selk));
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_attest(uint slotid)
 {
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	uint8_t *cert = NULL, *chain = NULL, *ptr;
 	size_t certlen, chainlen, len;
 	struct tlv_state *tlv;
 	X509 *x509;
-	int rv;
+	errf_t *err;
 	uint tag;
-	uint8_t certinfo;
 
 	assert_slotid(slotid);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
-	rv = piv_read_cert(selk, slotid);
-	if (rv == 0) {
+	err = piv_read_cert(selk, slotid);
+	if (err == ERRF_OK) {
 		slot = piv_get_slot(selk, slotid);
 		VERIFY(slot != NULL);
-		rv = ykpiv_attest(selk, slot, &cert, &certlen);
-		if (rv == 0) {
-			rv = piv_read_file(selk, PIV_TAG_CERT_YK_ATTESTATION,
+		err = ykpiv_attest(selk, slot, &cert, &certlen);
+		if (err == ERRF_OK) {
+			err = piv_read_file(selk, PIV_TAG_CERT_YK_ATTESTATION,
 			    &chain, &chainlen);
 		}
 	}
 	piv_txn_end(selk);
 
-	if (rv != 0) {
-		fprintf(stderr, "error: attestation failed: %d (%s)\n",
-		    rv, strerror(rv));
-		exit(1);
-	}
+	if (err != ERRF_OK)
+		goto error;
 
 	ptr = cert;
 	x509 = d2i_X509(NULL, (const uint8_t **)&ptr, certlen);
 	if (x509 == NULL) {
-		/* Getting error codes out of OpenSSL is weird. */
-		char errbuf[128];
-		unsigned long err = ERR_peek_last_error();
-		ERR_load_crypto_strings();
-		ERR_error_string(err, errbuf);
-		fprintf(stderr, "error: failed to parse attestation cert: "
-		    "%s\n", errbuf);
-		exit(3);
+		make_sslerrf(err, "d2i_X509", "parsing attestation cert "
+		    "for slot %02x", piv_slot_id(slot));
+		goto error;
 	}
 	PEM_write_X509(stdout, x509);
 	X509_free(x509);
 
 	ptr = NULL;
 	len = 0;
-	certinfo = 0;
 	tlv = tlv_init(chain, 0, chainlen);
 	tag = tlv_read_tag(tlv);
 	if (tag != 0x70) {
-		fprintf(stderr, "error: failed to parse attestation cert: "
-		    "got tlv tag 0x%02x instead of 0x70\n", tag);
-		exit(3);
+		err = errf("PIVTagError", NULL,
+		    "Got TLV tag 0x%x instead of 0x70", tag);
+		goto error;
 	}
 	ptr = tlv_ptr(tlv);
 	len = tlv_rem(tlv);
@@ -1160,102 +1217,100 @@ cmd_attest(uint slotid)
 
 	x509 = d2i_X509(NULL, (const uint8_t **)&ptr, len);
 	if (x509 == NULL) {
-		/* Getting error codes out of OpenSSL is weird. */
-		char errbuf[128];
-		unsigned long err = ERR_peek_last_error();
-		ERR_load_crypto_strings();
-		ERR_error_string(err, errbuf);
-		fprintf(stderr, "error: failed to parse attestation cert: "
-		    "%s\n", errbuf);
-		exit(3);
+		make_sslerrf(err, "d2i_X509", "parsing attestation device cert");
+		goto error;
 	}
 	PEM_write_X509(stdout, x509);
 	X509_free(x509);
 
 	free(cert);
 	free(chain);
+	return (ERRF_OK);
+error:
+	err = funcerrf(err, "attestation failed");
+	return (err);
 }
 
-static void
+static errf_t *
 cmd_pubkey(uint slotid)
 {
 	struct piv_slot *cert;
-	char *buf;
+	errf_t *err;
 	int rv;
 
 	assert_slotid(slotid);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
-	rv = piv_read_cert(selk, slotid);
+	err = piv_read_cert(selk, slotid);
 	piv_txn_end(selk);
 
 	cert = piv_get_slot(selk, slotid);
 
-	if (cert == NULL && rv == ENOENT) {
-		fprintf(stderr, "error: PIV slot %02X has no key present\n",
+	if (cert == NULL && errf_caused_by(err, "NotFoundError")) {
+		err = funcerrf(err, "PIV slot %02X has no key present",
 		    slotid);
-		exit(1);
+		return (err);
 	} else if (cert == NULL) {
-		fprintf(stderr, "error: failed to read cert in PIV slot %02X\n",
+		err = funcerrf(err, "failed to read cert in slot %02X",
 		    slotid);
-		exit(1);
+		return (err);
 	}
 
-	rv = sshkey_write(cert->ps_pubkey, stdout);
+	rv = sshkey_write(piv_slot_pubkey(cert), stdout);
 	if (rv != 0) {
-		fprintf(stderr, "error: failed to write out key\n");
-		exit(1);
+		err = funcerrf(ssherrf("sshkey_write", rv),
+		    "failed to write public key to stdout");
+		return (err);
 	}
-	buf = buf_to_hex(selk->pt_guid, sizeof (selk->pt_guid), B_FALSE);
-	fprintf(stdout, " PIV_slot_%02X@%s \"%s\"\n", slotid, buf,
-	    cert->ps_subj);
-	free(buf);
+	fprintf(stdout, " PIV_slot_%02X@%s \"%s\"\n", slotid,
+	    piv_token_guid_hex(selk), piv_slot_subject(cert));
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_cert(uint slotid)
 {
 	struct piv_slot *cert;
-	int rv;
+	errf_t *err;
 
 	assert_slotid(slotid);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
-	rv = piv_read_cert(selk, slotid);
+	err = piv_read_cert(selk, slotid);
 	piv_txn_end(selk);
 
 	cert = piv_get_slot(selk, slotid);
 
-	if (cert == NULL && rv == ENOENT) {
-		fprintf(stderr, "error: PIV slot %02X has no key present\n",
-		    slotid);
-		exit(1);
-	} else if (cert == NULL) {
-		fprintf(stderr, "error: failed to read cert in PIV slot %02X\n",
-		    slotid);
-		exit(1);
+	if (cert == NULL || err) {
+		err = funcerrf(err, "failed to read cert in slot %02X", slotid);
+		return (err);
 	}
 
-	VERIFY(i2d_X509_fp(stdout, cert->ps_x509) == 1);
+	VERIFY(i2d_X509_fp(stdout, piv_slot_cert(cert)) == 1);
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_sign(uint slotid)
 {
 	struct piv_slot *cert;
 	uint8_t *buf, *sig;
 	enum sshdigest_types hashalg;
 	size_t inplen, siglen;
-	int rv;
+	errf_t *err = ERRF_OK;
 
 	assert_slotid(slotid);
 
 	if (override == NULL) {
-		piv_txn_begin(selk);
+		if ((err = piv_txn_begin(selk)))
+			return (err);
 		assert_select(selk);
-		rv = piv_read_cert(selk, slotid);
+		err = piv_read_cert(selk, slotid);
 		piv_txn_end(selk);
 
 		cert = piv_get_slot(selk, slotid);
@@ -1263,66 +1318,58 @@ cmd_sign(uint slotid)
 		cert = override;
 	}
 
-	if (cert == NULL && rv == ENOENT) {
-		fprintf(stderr, "error: PIV slot %02X has no key present\n",
-		    slotid);
-		exit(1);
-	} else if (cert == NULL) {
-		fprintf(stderr, "error: failed to read cert in PIV slot %02X\n",
-		    slotid);
-		exit(1);
+	if (cert == NULL || err) {
+		err = funcerrf(err, "failed to read cert for signing key in "
+		    "slot %02X", slotid);
+		return (err);
 	}
 
 	buf = read_stdin(16384, &inplen);
 	assert(buf != NULL);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
 	assert_pin(selk, B_FALSE);
 again:
 	hashalg = 0;
-	rv = piv_sign(selk, cert, buf, inplen, &hashalg, &sig, &siglen);
-	if (rv == EPERM) {
+	err = piv_sign(selk, cert, buf, inplen, &hashalg, &sig, &siglen);
+	if (errf_caused_by(err, "PermissionError")) {
 		assert_pin(selk, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);
-	if (rv == EPERM) {
-		fprintf(stderr, "error: key in slot %02X requires PIN\n",
-		    slotid);
-		exit(4);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: piv_sign_hash returned %d\n", rv);
-		exit(1);
+	if (err) {
+		err = funcerrf(err, "failed to sign data");
+		return (err);
 	}
 
 	fwrite(sig, 1, siglen, stdout);
 
 	free(buf);
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_box(uint slotid)
 {
 	struct piv_slot *slot = NULL;
 	struct piv_ecdh_box *box;
-	int rv;
+	errf_t *err;
 	size_t len;
 	uint8_t *buf;
 
 	if (slotid != 0 || opubkey == NULL) {
-		piv_txn_begin(selk);
+		if ((err = piv_txn_begin(selk)))
+			return (err);
 		assert_select(selk);
-		rv = piv_read_cert(selk, slotid);
+		err = piv_read_cert(selk, slotid);
 		piv_txn_end(selk);
-		if (rv == ENOENT) {
-			fprintf(stderr, "error: slot %02X does not contain "
-			    "a key\n", slotid);
-			exit(1);
-		} else if (rv != 0) {
-			fprintf(stderr, "error: slot %02X reading cert "
-			    "failed\n", slotid);
-			exit(1);
+		if (err) {
+			err = funcerrf(err, "while reading cert for slot "
+			    "%02X", slotid);
+			return (err);
 		}
 
 		slot = piv_get_slot(selk, slotid);
@@ -1340,9 +1387,18 @@ cmd_box(uint slotid)
 	free(buf);
 
 	if (opubkey == NULL) {
-		VERIFY0(piv_box_seal(selk, slot, box));
+		err = piv_box_seal(selk, slot, box);
 	} else {
-		VERIFY0(piv_box_seal_offline(opubkey, box));
+		err = piv_box_seal_offline(opubkey, box);
+	}
+	if (err) {
+		if (slotid != 0) {
+			err = errf("box", err, "failed sealing new box to key "
+			    "in slot %02x", slotid);
+		} else {
+			err = errf("box", err, "failed sealing to given pubkey");
+		}
+		return (err);
 	}
 
 	VERIFY0(piv_box_to_binary(box, &buf, &len));
@@ -1351,66 +1407,74 @@ cmd_box(uint slotid)
 	fwrite(buf, 1, len, stdout);
 	explicit_bzero(buf, len);
 	free(buf);
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_unbox(void)
 {
 	struct piv_token *tk;
 	struct piv_slot *sl;
 	struct piv_ecdh_box *box;
-	int rv;
+	errf_t *err;
 	size_t len;
 	uint8_t *buf;
-	char *guid;
 
 	buf = read_stdin(8192, &len);
 	assert(buf != NULL);
 	VERIFY3U(len, >, 0);
 
-	if (piv_box_from_binary(buf, len, &box)) {
-		fprintf(stderr, "error: failed parsing ecdh box\n");
-		exit(1);
-	}
+	if ((err = piv_box_from_binary(buf, len, &box)))
+		return (err);
 	free(buf);
 
-	rv = piv_box_find_token(ks, box, &tk, &sl);
-	if (rv == ENOENT) {
-		fprintf(stderr, "error: no token found on system that can "
-		    "unlock this box\n");
-		exit(5);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to communicate with token\n");
-		exit(1);
+	if (!piv_box_has_guidslot(box)) {
+		err = funcerrf(NULL, "box has no hardware GUID + slot "
+		    "information; can't be opened by piv-tool");
+		return (err);
 	}
 
-	piv_txn_begin(tk);
+	err = piv_find(ctx, piv_box_guid(box), GUID_LEN, &tk);
+	if (err)
+		return (err);
+	ks = (selk = tk);
+	err = piv_box_find_token(ks, box, &tk, &sl);
+	if (errf_caused_by(err, "NotFoundError")) {
+		err = funcerrf(err, "no token found on system that can "
+		    "unlock this box");
+		return (err);
+	} else if (err) {
+		return (err);
+	}
+
+	if ((err = piv_txn_begin(tk)))
+		return (err);
 	assert_select(tk);
 	assert_pin(tk, B_FALSE);
 again:
-	rv = piv_box_open(tk, sl, box);
-	if (rv == EPERM) {
+	err = piv_box_open(tk, sl, box);
+	if (errf_caused_by(err, "PermissionError")) {
 		assert_pin(tk, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(tk);
 
-	if (rv == EPERM) {
-		guid = buf_to_hex(tk->pt_guid, sizeof (tk->pt_guid), B_FALSE);
-		fprintf(stderr, "error: token %s slot %02X requires a PIN\n",
-		    guid, sl->ps_slot);
-		free(guid);
-		exit(4);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to communicate with token "
-		    "(rv = %d)\n", rv);
-		exit(1);
+	if (err) {
+		return (funcerrf(err, "failed to open box"));
 	}
 
-	VERIFY0(piv_box_take_data(box, &buf, &len));
+	if ((err = piv_box_take_data(box, &buf, &len))) {
+		explicit_bzero(buf, len);
+		free(buf);
+		return (err);
+	}
+
 	fwrite(buf, 1, len, stdout);
 	explicit_bzero(buf, len);
 	free(buf);
+
+	return (ERRF_OK);
 }
 
 
@@ -1427,39 +1491,41 @@ struct sgdebugdata {
 	struct sgdebugbuf sg_bufs[1];
 } __attribute__((packed));
 
-static void
+static errf_t *
 cmd_sgdebug(void)
 {
 	struct apdu *apdu;
-	int rc;
+	errf_t *err;
 
 	apdu = piv_apdu_make(CLA_ISO, 0xE0, 0x00, 0x00);
 	VERIFY(apdu != NULL);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
-	rc = piv_apdu_transceive(selk, apdu);
+	err = piv_apdu_transceive(selk, apdu);
 	piv_txn_end(selk);
 
-	if (rc != 0) {
-		fprintf(stderr, "error: failed to run command (rc = %d)\n",
-		    rc);
-		exit(1);
+	if (err) {
+		err = errf("sgdebug", err, "failed to fetch debug info");
+		return (err);
 	}
 
-	const uint8_t *reply = &apdu->a_reply.b_data[apdu->a_reply.b_offset];
-	const size_t len = apdu->a_reply.b_len;
+	const uint8_t *reply;
+	size_t len;
+	reply = piv_apdu_get_reply(apdu, &len);
+
 	struct sgdebugdata *data = (struct sgdebugdata *)reply;
 	struct sgdebugbuf *buf;
-	data->sg_buf = ntohs(data->sg_buf);
-	data->sg_off = ntohs(data->sg_off);
+	data->sg_buf = be16toh(data->sg_buf);
+	data->sg_off = be16toh(data->sg_off);
 	printf("== SGList debug data ==\n");
 	printf("current position = %d + 0x%04x\n", data->sg_buf, data->sg_off);
 	buf = data->sg_bufs;
 	while ((char *)buf - (char *)data < len) {
-		buf->sb_size = ntohs(buf->sb_size);
-		buf->sb_offset = ntohs(buf->sb_offset);
-		buf->sb_len = ntohs(buf->sb_len);
+		buf->sb_size = be16toh(buf->sb_size);
+		buf->sb_offset = be16toh(buf->sb_offset);
+		buf->sb_len = be16toh(buf->sb_len);
 		printf("buf %-3d: ", buf->sb_id);
 		if (buf->sb_flags & 0x02)
 			printf("transient ");
@@ -1471,46 +1537,53 @@ cmd_sgdebug(void)
 	}
 
 	piv_apdu_free(apdu);
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_box_info(void)
 {
 	struct piv_ecdh_box *box;
 	size_t len;
 	uint8_t *buf;
 	char *hex;
+	errf_t *err;
 
 	buf = read_stdin(8192, &len);
 	assert(buf != NULL);
 	VERIFY3U(len, >, 0);
 
-	if (piv_box_from_binary(buf, len, &box)) {
-		fprintf(stderr, "error: failed parsing ecdh box\n");
-		exit(1);
-	}
+	if ((err = piv_box_from_binary(buf, len, &box)))
+		return (err);
 	free(buf);
 
-	hex = buf_to_hex(box->pdb_guid, sizeof (box->pdb_guid), B_FALSE);
-	printf("guid:         %s\n", hex);
-	free(hex);
-	printf("slot:         %02X\n", box->pdb_slot);
+	if (piv_box_has_guidslot(box)) {
+		printf("type:         hardware (has guid + slot)\n");
+		hex = buf_to_hex(piv_box_guid(box), 16, B_FALSE);
+		printf("guid:         %s\n", hex);
+		free(hex);
+		printf("slot:         %02X\n", piv_box_slot(box));
+	} else {
+		printf("type:         virtual (no guid or slot)\n");
+	}
 
 	printf("pubkey:       ");
-	VERIFY0(sshkey_write(box->pdb_pub, stdout));
+	VERIFY0(sshkey_write(piv_box_pubkey(box), stdout));
 	printf("\n");
 
 	printf("ephem_pubkey: ");
-	VERIFY0(sshkey_write(box->pdb_ephem_pub, stdout));
+	VERIFY0(sshkey_write(piv_box_ephem_pubkey(box), stdout));
 	printf("\n");
 
-	printf("cipher:       %s\n", box->pdb_cipher);
-	printf("kdf:          %s\n", box->pdb_kdf);
-	printf("ivsize:       %lu\n", box->pdb_iv.b_size);
-	printf("encsize:      %lu\n", box->pdb_enc.b_size);
+	printf("cipher:       %s\n", piv_box_cipher(box));
+	printf("kdf:          %s\n", piv_box_kdf(box));
+	printf("encsize:      %lu\n", piv_box_encsize(box));
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_auth(uint slotid)
 {
 	struct piv_slot *cert;
@@ -1518,6 +1591,7 @@ cmd_auth(uint slotid)
 	uint8_t *buf;
 	char *ptr;
 	size_t boff;
+	errf_t *err = NULL;
 	int rv;
 
 	switch (slotid) {
@@ -1527,15 +1601,16 @@ cmd_auth(uint slotid)
 	case 0x9E:
 		break;
 	default:
-		fprintf(stderr, "error: PIV slot %02X cannot be "
-		    "used for signing\n", slotid);
-		exit(3);
+		err = funcerrf(NULL, "PIV slot %02X cannot be "
+		    "used for signing", slotid);
+		return (err);
 	}
 
 	if (override == NULL) {
-		piv_txn_begin(selk);
+		if ((err = piv_txn_begin(selk)))
+			return (err);
 		assert_select(selk);
-		rv = piv_read_cert(selk, slotid);
+		err = piv_read_cert(selk, slotid);
 		piv_txn_end(selk);
 
 		cert = piv_get_slot(selk, slotid);
@@ -1543,55 +1618,45 @@ cmd_auth(uint slotid)
 		cert = override;
 	}
 
-	if (cert == NULL && rv == ENOENT) {
-		fprintf(stderr, "error: PIV slot %02X has no key present\n",
-		    slotid);
-		exit(1);
-	} else if (cert == NULL) {
-		fprintf(stderr, "error: failed to read cert in PIV slot %02X\n",
-		    slotid);
-		exit(1);
+	if (cert == NULL || err) {
+		err = funcerrf(err, "failed to read cert for signing key");
+		return (err);
 	}
 
 	buf = read_stdin(16384, &boff);
 	assert(buf != NULL);
 	buf[boff] = 0;
 
-	pubkey = sshkey_new(cert->ps_pubkey->type);
-	assert(pubkey != NULL);
+	pubkey = sshkey_new(piv_slot_pubkey(cert)->type);
+	VERIFY(pubkey != NULL);
 	ptr = (char *)buf;
 	rv = sshkey_read(pubkey, &ptr);
 	if (rv != 0) {
-		fprintf(stderr, "error: failed to parse public key: %d\n",
-		    rv);
-		exit(1);
+		err = funcerrf(ssherrf("sshkey_read", rv),
+		    "failed to parse public key input");
+		return (err);
 	}
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
 	assert_pin(selk, B_FALSE);
 again:
-	rv = piv_auth_key(selk, cert, pubkey);
-	if (rv == EPERM) {
+	err = piv_auth_key(selk, cert, pubkey);
+	if (errf_caused_by(err, "PermissionError")) {
 		assert_pin(selk, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);
-	if (rv == EPERM) {
-		fprintf(stderr, "error: key in slot %02X requires PIN\n",
-		    slotid);
-		exit(4);
-	} else if (rv == ESRCH) {
-		fprintf(stderr, "error: keys do not match, or signature "
-		    "validation failed\n");
-		exit(1);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: piv_ecdh returned %d\n", rv);
-		exit(1);
+	if (err) {
+		err = funcerrf(err, "key authentication failed");
+		return (err);
 	}
+
+	return (ERRF_OK);
 }
 
-static void
+static errf_t *
 cmd_ecdh(uint slotid)
 {
 	struct piv_slot *cert;
@@ -1599,6 +1664,7 @@ cmd_ecdh(uint slotid)
 	uint8_t *buf, *secret;
 	char *ptr;
 	size_t boff, seclen;
+	errf_t *err = ERRF_OK;
 	int rv;
 
 	switch (slotid) {
@@ -1608,15 +1674,16 @@ cmd_ecdh(uint slotid)
 	case 0x9E:
 		break;
 	default:
-		fprintf(stderr, "error: PIV slot %02X cannot be "
-		    "used for ECDH\n", slotid);
-		exit(3);
+		err = funcerrf(NULL, "PIV slot %02X cannot be used for ECDH",
+		    slotid);
+		return (err);
 	}
 
 	if (override == NULL) {
-		piv_txn_begin(selk);
+		if ((err = piv_txn_begin(selk)))
+			return (err);
 		assert_select(selk);
-		rv = piv_read_cert(selk, slotid);
+		err = piv_read_cert(selk, slotid);
 		piv_txn_end(selk);
 
 		cert = piv_get_slot(selk, slotid);
@@ -1624,162 +1691,160 @@ cmd_ecdh(uint slotid)
 		cert = override;
 	}
 
-	if (cert == NULL && rv == ENOENT) {
-		fprintf(stderr, "error: PIV slot %02X has no key present\n",
+	if (cert == NULL || err) {
+		err = funcerrf(err, "failed to read cert in PIV slot %02X",
 		    slotid);
-		exit(1);
-	} else if (cert == NULL) {
-		fprintf(stderr, "error: failed to read cert in PIV slot %02X\n",
-		    slotid);
-		exit(1);
+		return (err);
 	}
 
-	switch (cert->ps_alg) {
+	switch (piv_slot_alg(cert)) {
 	case PIV_ALG_ECCP256:
 	case PIV_ALG_ECCP384:
 		break;
 	default:
-		fprintf(stderr, "error: PIV slot %02X does not contain an EC "
-		    "key\n", slotid);
-		exit(1);
+		err = funcerrf(NULL, "PIV slot %02X does not contain an EC key",
+		    slotid);
+		return (err);
 	}
 
 	buf = read_stdin(8192, &boff);
 	assert(buf != NULL);
 	buf[boff] = 0;
 
-	pubkey = sshkey_new(cert->ps_pubkey->type);
+	pubkey = sshkey_new(piv_slot_pubkey(cert)->type);
 	assert(pubkey != NULL);
 	ptr = (char *)buf;
 	rv = sshkey_read(pubkey, &ptr);
 	if (rv != 0) {
-		fprintf(stderr, "error: failed to parse public key: %d\n",
-		    rv);
-		exit(1);
+		err = errf("ecdh", ssherrf("sshkey_read", rv),
+		    "failed to parse public key input");
+		return (err);
 	}
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		return (err);
 	assert_select(selk);
 	assert_pin(selk, B_FALSE);
 again:
-	rv = piv_ecdh(selk, cert, pubkey, &secret, &seclen);
-	if (rv == EPERM) {
+	err = piv_ecdh(selk, cert, pubkey, &secret, &seclen);
+	if (errf_caused_by(err, "PermissionError")) {
 		assert_pin(selk, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);
-	if (rv == EPERM) {
-		fprintf(stderr, "error: key in slot %02X requires PIN\n",
-		    slotid);
-		exit(4);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: piv_ecdh returned %d\n", rv);
-		exit(1);
+	if (err) {
+		err = funcerrf(err, "failed to compute ECDH");
+		return (err);
 	}
 
 	fwrite(secret, 1, seclen, stdout);
+
+	return (ERRF_OK);
 }
 
 static void
 check_select_key(void)
 {
 	struct piv_token *t;
+	errf_t *err;
+	size_t len;
 
-	if (ks == NULL) {
-		fprintf(stderr, "error: no PIV cards present\n");
-		exit(1);
-	}
-
-	if (guid != NULL) {
-		for (t = ks; t != NULL; t = t->pt_next) {
-			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
-				if (selk == NULL) {
-					selk = t;
-				} else {
-					fprintf(stderr, "error: GUID prefix "
-					    "specified is not unique\n");
-					exit(3);
-				}
-			}
-		}
-		if (selk == NULL) {
-			fprintf(stderr, "error: no PIV card present "
-			    "matching given GUID\n");
-			exit(3);
-		}
-	}
-
-#if 0
-	if (selk == NULL)
-		selk = sysk;
-#endif
-
-	if (selk == NULL) {
-		selk = ks;
-		if (selk->pt_next != NULL) {
-			fprintf(stderr, "error: multiple PIV cards "
+	if (guid_len == 0) {
+		err = piv_enumerate(ctx, &t);
+		if (err)
+			errfx(EXIT_IO_ERROR, err,
+			    "failed to enumerate PIV tokens");
+		if (piv_token_next(t) != NULL) {
+			errx(EXIT_NO_CARD, "multiple PIV cards "
 			    "present and no system token set; you "
-			    "must provide -g|--guid to select one\n");
-			exit(3);
+			    "must provide -g|--guid to select one");
 		}
+		selk = (ks = t);
+		return;
 	}
+
+	len = guid_len;
+	if (buf_is_zero(guid, guid_len))
+		len = 0;
+
+	err = piv_find(ctx, guid, len, &t);
+	if (errf_caused_by(err, "DuplicateError"))
+		errx(EXIT_NO_CARD, "GUID prefix specified is not unique");
+	if (errf_caused_by(err, "NotFoundError")) {
+		errx(EXIT_NO_CARD, "no PIV card present matching given "
+		    "GUID");
+	}
+	if (err)
+		errfx(EXIT_IO_ERROR, err, "while finding PIV token with GUID");
+	selk = (ks = t);
 }
 
-static void
+static errf_t *
 cmd_setup(SCARDCONTEXT ctx)
 {
 	boolean_t usetouch = B_FALSE;
+	errf_t *err;
 
-	if (!selk->pt_ykpiv) {
-		fprintf(stderr, "error: setup command is only for YubiKeys\n");
-		exit(1);
+	if (!piv_token_is_ykpiv(selk)) {
+		err = funcerrf(NULL, "setup command is only for YubiKeys");
+		return (err);
 	}
 
-	if (selk->pt_ykver[0] > 4 ||
-	    (selk->pt_ykver[0] == 4 && selk->pt_ykver[1] >= 3)) {
+	if (ykpiv_version_compare(selk, 4, 3, 0) == 1) {
 		usetouch = B_TRUE;
 	}
 
 	fprintf(stderr, "Initializing CCC and CHUID files...\n");
-	cmd_init();
+	if ((err = cmd_init()))
+		return (funcerrf(err, "initializing CCC and CHUID files"));
 
 	piv_release(ks);
-	ks = piv_enumerate(ctx);
 	selk = NULL;
 	check_select_key();
 
-	override = calloc(1, sizeof (struct piv_slot));
 	touchpolicy = YKPIV_TOUCH_DEFAULT;
 	pinpolicy = YKPIV_PIN_DEFAULT;
 	pin = "123456";
 
 	fprintf(stderr, "Generating standard keys...\n");
 
-	override->ps_alg = PIV_ALG_ECCP256;
-	override->ps_slot = 0x9E;
-	cmd_generate(override->ps_slot, override->ps_alg);
-	override->ps_slot = 0x9A;
-	cmd_generate(override->ps_slot, override->ps_alg);
+	override = piv_force_slot(selk, 0x9E, PIV_ALG_ECCP256);
+	if ((err = cmd_generate(piv_slot_id(override), piv_slot_alg(override))))
+		return (err);
+	override = piv_force_slot(selk, 0x9A, PIV_ALG_ECCP256);
+	if ((err = cmd_generate(piv_slot_id(override), piv_slot_alg(override))))
+		return (err);
 
-	override->ps_alg = PIV_ALG_RSA2048;
-	override->ps_slot = 0x9C;
-	cmd_generate(override->ps_slot, override->ps_alg);
+	override = piv_force_slot(selk, 0x9C, PIV_ALG_RSA2048);
+	if ((err = cmd_generate(piv_slot_id(override), piv_slot_alg(override))))
+		return (err);
 
 	if (usetouch) {
 		touchpolicy = YKPIV_TOUCH_CACHED;
 		fprintf(stderr, "Using touch button confirmation for 9D key\n");
 		fprintf(stderr, "Please touch YubiKey when it is flashing\n");
 	}
-	override->ps_alg = PIV_ALG_ECCP256;
-	override->ps_slot = 0x9D;
-	cmd_generate(override->ps_slot, override->ps_alg);
+again9d:
+	override = piv_force_slot(selk, 0x9D, PIV_ALG_ECCP256);
+	err = cmd_generate(piv_slot_id(override), piv_slot_alg(override));
+	if (errf_caused_by(err, "ArgumentError") ||
+	    errf_caused_by(err, "NotSupportedError") ||
+	    errf_caused_by(err, "APDUError")) {
+		touchpolicy = YKPIV_TOUCH_DEFAULT;
+		usetouch = B_FALSE;
+		goto again9d;
+	}
+	if (err)
+		return (err);
 
 	touchpolicy = YKPIV_TOUCH_DEFAULT;
 
 	fprintf(stderr, "Changing PIN and PUK...\n");
-	cmd_change_pin(PIV_PIN);
+	if ((err = cmd_change_pin(PIV_PIN)))
+		return (err);
 	pin = "12345678";
-	cmd_change_pin(PIV_PUK);
+	if ((err = cmd_change_pin(PIV_PUK)))
+		return (err);
 
 	fprintf(stderr, "Generating final admin 3DES key...\n");
 	uint8_t *admin_key = malloc(24);
@@ -1794,9 +1859,12 @@ cmd_setup(SCARDCONTEXT ctx)
 	    "change certificates in future. If you don't intend to do either "
 	    "you can simply forget about this key and the Yubikey will be "
 	    "sealed.\n");
-	cmd_set_admin(admin_key);
+	if ((err = cmd_set_admin(admin_key)))
+		return (err);
 
 	fprintf(stderr, "Done!\n");
+
+	return (ERRF_OK);
 }
 
 const char *
@@ -1872,7 +1940,7 @@ usage(void)
 	    "Options for 'box'/'unbox':\n"
 	    "  -k <pubkey>            Use a public key for box operation\n"
 	    "                         instead of a slot\n");
-	exit(3);
+	exit(EXIT_BAD_ARGS);
 }
 
 /*const char *optstring =
@@ -1890,7 +1958,7 @@ int
 main(int argc, char *argv[])
 {
 	LONG rv;
-	SCARDCONTEXT ctx;
+	errf_t *err = ERRF_OK;
 	extern char *optarg;
 	extern int optind;
 	int c;
@@ -1898,6 +1966,8 @@ main(int argc, char *argv[])
 	char *ptr;
 	uint8_t *buf;
 	uint d_level = 0;
+	enum piv_alg overalg = 0;
+	boolean_t hasover = B_FALSE;
 
 	bunyan_init();
 	bunyan_set_name("pivtool");
@@ -1924,9 +1994,8 @@ main(int argc, char *argv[])
 				admin_key = parse_hex(optarg, &len);
 			}
 			if (len != 24) {
-				fprintf(stderr, "error: admin key must be "
-				    "24 bytes in length (you gave %d)\n", len);
-				exit(3);
+				errx(EXIT_BAD_ARGS, "admin key must be "
+				    "24 bytes in length (%d given)", len);
 			}
 			break;
 		case 'n':
@@ -1954,20 +2023,20 @@ main(int argc, char *argv[])
 			}
 			break;
 		case 'a':
-			override = calloc(1, sizeof (struct piv_slot));
+			hasover = B_TRUE;
 			if (strcasecmp(optarg, "rsa1024") == 0) {
-				override->ps_alg = PIV_ALG_RSA1024;
+				overalg = PIV_ALG_RSA1024;
 			} else if (strcasecmp(optarg, "rsa2048") == 0) {
-				override->ps_alg = PIV_ALG_RSA2048;
+				overalg = PIV_ALG_RSA2048;
 			} else if (strcasecmp(optarg, "eccp256") == 0) {
-				override->ps_alg = PIV_ALG_ECCP256;
+				overalg = PIV_ALG_ECCP256;
 			} else if (strcasecmp(optarg, "eccp384") == 0) {
-				override->ps_alg = PIV_ALG_ECCP384;
+				overalg = PIV_ALG_ECCP384;
 			} else if (strcasecmp(optarg, "3des") == 0) {
-				override->ps_alg = PIV_ALG_3DES;
+				overalg = PIV_ALG_3DES;
 			} else {
-				fprintf(stderr, "error: invalid algorithm\n");
-				exit(3);
+				errx(EXIT_BAD_ARGS, "invalid algorithm: '%s'",
+				    optarg);
 			}
 			/* ps_slot will be set after we've parsed the slot */
 			break;
@@ -1975,9 +2044,8 @@ main(int argc, char *argv[])
 			guid = parse_hex(optarg, &len);
 			guid_len = len;
 			if (len > 16) {
-				fprintf(stderr, "error: GUID must be <=16 bytes"
-				    " in length (you gave %d)\n", len);
-				exit(3);
+				errx(EXIT_BAD_ARGS, "GUID must be <=16 bytes "
+				    "(%d given)", len);
 			}
 			break;
 		case 'P':
@@ -1992,16 +2060,15 @@ main(int argc, char *argv[])
 			ptr = optarg;
 			rv = sshkey_read(opubkey, &ptr);
 			if (rv != 0) {
-				fprintf(stderr, "error: failed to parse public "
-				    "key: %ld\n", rv);
-				exit(3);
+				errfx(EXIT_BAD_ARGS, ssherrf("sshkey_read",
+				    rv), "failed to parse public key in -k");
 			}
 			break;
 		}
 	}
 
 	if (optind >= argc) {
-		fprintf(stderr, "error: operation required\n");
+		warnx("operation required");
 		usage();
 	}
 
@@ -2009,12 +2076,9 @@ main(int argc, char *argv[])
 
 	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
 	if (rv != SCARD_S_SUCCESS) {
-		fprintf(stderr, "SCardEstablishContext failed: %s\n",
-		    pcsc_stringify_error(rv));
-		return (1);
+		errfx(EXIT_IO_ERROR, pcscerrf("SCardEstablishContext", rv),
+		    "failed to initialise libpcsc");
 	}
-
-	ks = piv_enumerate(ctx);
 
 #if 0
 	if (piv_system_token_find(ks, &sysk) != 0)
@@ -2022,17 +2086,20 @@ main(int argc, char *argv[])
 #endif
 
 	if (strcmp(op, "list") == 0) {
+		err = piv_enumerate(ctx, &ks);
+		if (err)
+			errfx(1, err, "failed to enumerate PIV tokens");
 		if (optind < argc)
 			usage();
-		cmd_list(ctx);
+		err = cmd_list();
 
 	} else if (strcmp(op, "init") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
-		cmd_init();
+		err = cmd_init();
 
 #if 0
 	} else if (strcmp(op, "set-system") == 0) {
@@ -2046,11 +2113,11 @@ main(int argc, char *argv[])
 
 	} else if (strcmp(op, "change-pin") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
-		cmd_change_pin(selk->pt_auth);
+		err = cmd_change_pin(piv_token_default_auth(selk));
 
 	} else if (strcmp(op, "set-admin") == 0) {
 		uint8_t *new_admin;
@@ -2059,7 +2126,7 @@ main(int argc, char *argv[])
 			usage();
 
 		if (strcmp(argv[optind], "default") == 0) {
-			new_admin = DEFAULT_ADMIN_KEY;
+			new_admin = (uint8_t *)DEFAULT_ADMIN_KEY;
 		} else if (argv[optind][0] == '@') {
 			buf = read_key_file(&argv[optind][1], &len);
 			if (len > 24 && sniff_hex(buf, len)) {
@@ -2073,148 +2140,153 @@ main(int argc, char *argv[])
 		}
 
 		if (++optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
 		if (len != 24) {
-			fprintf(stderr, "error: admin key must be "
-			    "24 bytes in length (you gave %d)\n", len);
-			exit(3);
+			errx(EXIT_BAD_ARGS, "admin key must be 24 bytes in "
+			    "length (%d given)", len);
 		}
 		check_select_key();
-		cmd_set_admin(new_admin);
+		err = cmd_set_admin(new_admin);
 
 	} else if (strcmp(op, "change-puk") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
-		cmd_change_pin(PIV_PUK);
+		err = cmd_change_pin(PIV_PUK);
 
 	} else if (strcmp(op, "reset-pin") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
-		cmd_reset_pin();
+		err = cmd_reset_pin();
 
 	} else if (strcmp(op, "sign") == 0) {
 		uint slotid;
 
-		if (optind >= argc)
+		if (optind >= argc) {
+			warnx("not enough arguments for %s", op);
 			usage();
+		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
-		if (optind < argc)
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
 			usage();
-
-		if (override != NULL)
-			override->ps_slot = slotid;
+		}
 
 		check_select_key();
-		cmd_sign(slotid);
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_sign(slotid);
 
 	} else if (strcmp(op, "pubkey") == 0) {
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
 		check_select_key();
-		cmd_pubkey(slotid);
+		err = cmd_pubkey(slotid);
 
 	} else if (strcmp(op, "attest") == 0) {
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
 		check_select_key();
-		cmd_attest(slotid);
+		err = cmd_attest(slotid);
 
 	} else if (strcmp(op, "setup") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
-		cmd_setup(ctx);
+		err = cmd_setup(ctx);
 
 	} else if (strcmp(op, "cert") == 0) {
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
 		check_select_key();
-		cmd_cert(slotid);
+		err = cmd_cert(slotid);
 
 	} else if (strcmp(op, "ecdh") == 0) {
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
-		if (override != NULL)
-			override->ps_slot = slotid;
-
 		check_select_key();
-		cmd_ecdh(slotid);
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_ecdh(slotid);
 
 	} else if (strcmp(op, "auth") == 0) {
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
-		if (override != NULL)
-			override->ps_slot = slotid;
-
 		check_select_key();
-		cmd_auth(slotid);
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_auth(slotid);
 
 	} else if (strcmp(op, "box") == 0) {
 		uint slotid;
@@ -2231,61 +2303,66 @@ main(int argc, char *argv[])
 		}
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
-		cmd_box(slotid);
+		err = cmd_box(slotid);
 
 	} else if (strcmp(op, "unbox") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
-		cmd_unbox();
+		err = cmd_unbox();
 
 	} else if (strcmp(op, "box-info") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
-		cmd_box_info();
+		err = cmd_box_info();
 
 	} else if (strcmp(op, "sgdebug") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
-		cmd_sgdebug();
+		err = cmd_sgdebug();
 
 	} else if (strcmp(op, "generate") == 0) {
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
-		if (override == NULL) {
-			fprintf(stderr, "error: algorithm required\n");
+		if (!hasover) {
+			warnx("%s requires the -a (algorithm) option", op);
 			usage();
 		}
-		override->ps_slot = slotid;
 
 		check_select_key();
-		cmd_generate(slotid, override->ps_alg);
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_generate(slotid, overalg);
 
 	} else {
-		fprintf(stderr, "error: invalid operation '%s'\n", op);
+		warnx("invalid operation '%s'", op);
 		usage();
 	}
+
+	if (err)
+		errfx(1, err, "error occurred while executing '%s'", op);
 
 	return (0);
 }

@@ -1399,7 +1399,7 @@ sshkey_format_rsa1(const struct sshkey *key, struct sshbuf *b)
 	return r;
 }
 
-static int
+int
 sshkey_format_text(const struct sshkey *key, struct sshbuf *b)
 {
 	int r = SSH_ERR_INTERNAL_ERROR;

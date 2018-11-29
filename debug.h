@@ -11,6 +11,11 @@ extern "C" {
 typedef uint64_t uintmax_t;
 #endif
 
+#if !defined(__sun) && !defined(USING_SPL)
+typedef /*@concrete@*/ enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
+typedef /*@concrete@*/ unsigned int uint;
+#endif
+
 #undef VERIFY
 #undef ASSERT
 
@@ -21,7 +26,7 @@ typedef uint64_t uintmax_t;
  * ASSERT and is evaluated on both debug and non-debug kernels.
  */
 
-extern int assfail(const char *, const char *, int);
+extern boolean_t assfail(const char *, const char *, int);
 #define VERIFY(EX) ((void)((EX) || assfail(#EX, __FILE__, __LINE__)))
 #if DEBUG
 #define ASSERT(EX) ((void)((EX) || assfail(#EX, __FILE__, __LINE__)))

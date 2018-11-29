@@ -65,6 +65,43 @@
     (x == SSH_COM_AGENT2_FAILURE) || \
     (x == SSH2_AGENT_FAILURE))
 
+/* Returns the number of the authentication fd, or -1 if there is none. */
+int
+ssh_get_authentication_socket(int *fdp)
+{
+	const char *authsocket;
+	int sock, oerrno;
+	struct sockaddr_un sunaddr;
+
+	if (fdp != NULL)
+		*fdp = -1;
+
+	authsocket = getenv(SSH_AUTHSOCKET_ENV_NAME);
+	if (!authsocket)
+		return SSH_ERR_AGENT_NOT_PRESENT;
+
+	memset(&sunaddr, 0, sizeof(sunaddr));
+	sunaddr.sun_family = AF_UNIX;
+	strlcpy(sunaddr.sun_path, authsocket, sizeof(sunaddr.sun_path));
+
+	if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
+		return SSH_ERR_SYSTEM_ERROR;
+
+	/* close on exec */
+	if (fcntl(sock, F_SETFD, FD_CLOEXEC) == -1 ||
+	    connect(sock, (struct sockaddr *)&sunaddr, sizeof(sunaddr)) < 0) {
+		oerrno = errno;
+		close(sock);
+		errno = oerrno;
+		return SSH_ERR_SYSTEM_ERROR;
+	}
+	if (fdp != NULL)
+		*fdp = sock;
+	else
+		close(sock);
+	return 0;
+}
+
 static inline uint32_t
 get_u32(const void *vp)
 {
@@ -91,7 +128,7 @@ put_u32(void *vp, uint32_t v)
 }
 
 /* Communicate with agent: send request and read reply */
-static int
+int
 ssh_request_reply(int sock, struct sshbuf *request, struct sshbuf *reply)
 {
 	int r;

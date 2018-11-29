@@ -62,7 +62,7 @@ ultos(uint64_t n, int base, char *s)
 	*s = '\0';
 }
 
-int
+boolean_t
 assfail(const char *assertion, const char *filename, int line_num)
 {
 	char buf[800];
@@ -86,7 +86,7 @@ assfail(const char *assertion, const char *filename, int line_num)
 	rc = write(2, buf, strlen(buf));
 	(void)rc;
 	abort();
-	return (0);
+	return (B_TRUE);
 }
 
 void

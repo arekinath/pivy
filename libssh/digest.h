@@ -35,6 +35,10 @@ enum sshdigest_types {
 struct sshbuf;
 struct ssh_digest_ctx;
 
+#if defined(LINT) || defined(S_SPLINT_S)
+typedef /*@concrete@*/ unsigned char u_char;
+#endif
+
 /* Looks up a digest algorithm by name */
 int ssh_digest_alg_by_name(const char *name);
 
