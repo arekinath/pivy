@@ -849,8 +849,8 @@ static void
 process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 {
 	int r;
-	struct sshbuf *msg, *boxbuf, *guid;
-	struct sshkey *partner;
+	struct sshbuf *msg, *boxbuf = NULL, *guid = NULL;
+	struct sshkey *partner = NULL;
 	struct piv_ecdh_box *box = NULL, *newbox = NULL;
 	uint8_t slotid;
 	uint flags;
@@ -1074,7 +1074,7 @@ process_extension(SocketEntry *e)
 	int r;
 	char *extname;
 	size_t enlen;
-	struct sshbuf *inner;
+	struct sshbuf *inner = NULL;
 	struct exthandler *h, *hdlr = NULL;
 
 	if ((r = sshbuf_get_cstring(e->request, &extname, &enlen)) != 0 ||

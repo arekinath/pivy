@@ -520,7 +520,7 @@ piv_read_chuid(struct piv_token *pk)
 struct piv_token *
 piv_enumerate(SCARDCONTEXT ctx)
 {
-	DWORD rv, readersLen;
+	DWORD rv, readersLen = 0;
 	LPTSTR readers, thisrdr;
 	struct piv_token *ks = NULL;
 
@@ -926,7 +926,7 @@ piv_txn_begin(struct piv_token *key)
 {
 	VERIFY(key->pt_intxn == B_FALSE);
 	LONG rv;
-	DWORD activeProtocol;
+	DWORD activeProtocol = 0;
 retry:
 	rv = SCardBeginTransaction(key->pt_cardhdl);
 	if (rv == SCARD_W_RESET_CARD) {
