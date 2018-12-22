@@ -136,6 +136,50 @@ piv-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 piv-tool: $(PIVTOOL_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
 
+EBOX_SOURCES=			\
+	ebox-cmd.c		\
+	ebox.c			\
+	tlv.c			\
+	piv.c			\
+	debug.c			\
+	bunyan.c		\
+	$(LIBSSH_SOURCES)	\
+	$(SSS_SOURCES)
+EBOX_HEADERS=			\
+	ebox.h			\
+	tlv.h			\
+	piv.h			\
+	bunyan.h		\
+	debug.h
+
+EBOX_OBJS=		$(EBOX_SOURCES:%.c=%.o)
+EBOX_CFLAGS=		$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(RDLINE_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			-fstack-protector-all \
+			-O2 -g -m64 -fwrapv \
+			-fPIC -D_FORTIFY_SOURCE=2 \
+			-Wall -D_GNU_SOURCE -std=gnu99
+EBOX_LDFLAGS=		-m64
+EBOX_LIBS=		$(PCSC_LIBS) \
+			$(CRYPTO_LIBS) \
+			$(ZLIB_LIBS) \
+			$(RDLINE_LIBS) \
+			$(SYSTEM_LIBS)
+
+ebox :		CFLAGS=		$(EBOX_CFLAGS)
+ebox :		LIBS+=		$(EBOX_LIBS)
+ebox :		LDFLAGS+=	$(EBOX_LDFLAGS)
+ebox :		HEADERS=	$(EBOX_HEADERS)
+
+ebox: $(EBOX_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+	$(CC) $(LDFLAGS) -o $@ $(EBOX_OBJS) $(LIBS)
+
+all: ebox
+
+
 PIVZFS_SOURCES=			\
 	piv-zfs.c		\
 	tlv.c			\

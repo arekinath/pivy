@@ -24,12 +24,25 @@
 #include <openssl/x509v3.h>
 
 #include "piv.h"
-#include "words.h"
 #include "libssh/digest.h"
+
+enum ebox_type {
+	EBOX_TEMPLATE = 0x01,
+	EBOX_KEYONLY = 0x02,
+	EBOX_STREAM = 0x03
+};
 
 enum ebox_config_type {
 	EBOX_PRIMARY = 0x01,
 	EBOX_RECOVERY = 0x02
+};
+
+enum ebox_part_tag {
+	EBOX_PART_END = 0,
+	EBOX_PART_PUBKEY = 1,
+	EBOX_PART_NAME = 2,
+	EBOX_PART_CAK = 3,
+	EBOX_PART_GUID = 4
 };
 
 struct ebox_tpl {
@@ -40,8 +53,8 @@ struct ebox_tpl {
 struct ebox_tpl_config {
 	struct ebox_tpl_config *etc_next;
 	enum ebox_config_type etc_type;
-	int etc_n;
-	int etc_m;
+	uint8_t etc_n;
+	uint8_t etc_m;
 	struct ebox_tpl_part *etc_parts;
 	void *etc_priv;
 };
@@ -109,17 +122,21 @@ struct ebox_challenge {
 	struct piv_ecdh_box *c_keybox;
 };
 
+void ebox_tpl_free(struct ebox_tpl *tpl);
+void ebox_tpl_config_free(struct ebox_tpl_config *config);
+void ebox_tpl_part_free(struct ebox_tpl_part *part);
+
 int ebox_tpl_to_binary(struct ebox_tpl *tpl, uint8_t **output, size_t *len);
 int ebox_tpl_from_binary(const uint8_t *input, size_t len,
     struct ebox_tpl **tpl);
+int sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
+int sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
 
 int ebox_to_binary(struct ebox *ebox, uint8_t **output, size_t *len);
 int ebox_from_binary(const uint8_t *input, size_t len, struct ebox **ebox);
 
 int ebox_gen_challenge(struct ebox_part *part, const char *descfmt, ...);
-int ebox_part_unlock
 int ebox_challenge_to_binary(struct ebox_challenge *chal, uint8_t **output,
     size_t *len);
 int ebox_challenge_response(struct ebox_part *part,
     struct piv_ecdh_box *respbox);
-int ebox_
