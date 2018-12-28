@@ -1,4 +1,5 @@
 *.o
+.dist
 /libressl/
 /piv-agent
 /piv-tool

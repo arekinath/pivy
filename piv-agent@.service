@@ -1,0 +1,15 @@
+[Unit]
+Description=PIV SSH Agent
+
+[Service]
+Type=forking
+Environment=SSH_AUTH_SOCK=%t/piv-ssh-%I.socket
+EnvironmentFile=%h/.config/piv-agent/%I
+ExecStartPre=/bin/rm -f $SSH_AUTH_SOCK
+ExecStart=@@BINDIR@@/piv-agent -a $SSH_AUTH_SOCK -g $PIV_AGENT_GUID -K ${PIV_AGENT_CAK}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+DefaultInstance=default

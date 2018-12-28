@@ -3,14 +3,17 @@ all: piv-tool piv-agent
 LIBRESSL_VER	= 2.7.4
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
-LIBRESSL_INC	= $(PWD)/libressl/include
-LIBRESSL_LIB	= $(PWD)/libressl/crypto/.libs
+LIBRESSL_INC	= $(CURDIR)/libressl/include
+LIBRESSL_LIB	= $(CURDIR)/libressl/crypto/.libs
 
 HAVE_ZFS	:= no
 USE_ZFS		?= no
 
 TAR		= tar
 CURL		= curl -k
+
+prefix		?= /opt/piv-agent
+bindir		?= $(prefix)/bin
 
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
@@ -32,6 +35,7 @@ ifeq ($(SYSTEM), Linux)
 	else
 		HAVE_ZFS	:= no
 	endif
+	SYSTEMDDIR	?= /usr/lib/systemd/user
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
@@ -235,6 +239,11 @@ piv-zfs: $(PIVZFS_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 
 all: piv-zfs
 
+install_pivzfs: piv-zfs install_common
+	install -o root -g wheel -m 0755 piv-zfs $(DESTDIR)$(bindir)
+install: install_pivzfs
+.PHONY: install_pivzfs
+
 endif
 
 AGENT_SOURCES=			\
@@ -296,12 +305,20 @@ $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	    ./configure --enable-static && \
 	    $(MAKE)
 
-.PHONY: install
+.PHONY: install install_common setup
 
 .dist:
 	@mkdir .dist
 
+
+install_common: piv-tool piv-agent
+	install -o root -g wheel -m 0755 -d $(DESTDIR)$(bindir)
+	install -o root -g wheel -m 0755 piv-agent $(DESTDIR)$(bindir)
+	install -o root -g wheel -m 0755 piv-tool $(DESTDIR)$(bindir)
+
 ifeq ($(SYSTEM), Darwin)
+install: install_common
+
 .dist/net.cooperi.piv-agent.plist: net.cooperi.piv-agent.plist .dist piv-tool
 	@./piv-tool list
 	@printf "Enter a GUID to use for piv-agent: "
@@ -312,9 +329,7 @@ ifeq ($(SYSTEM), Darwin)
 	    sed "s|@@CAK@@|$${pkey}|g" | \
 	    sed "s|@@HOME@@|$${HOME}|g" > $@
 
-install: .dist/net.cooperi.piv-agent.plist piv-tool piv-agent
-	sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
-	sudo install -o root -g wheel -m 0755 piv-agent piv-tool  /opt/piv-agent/bin
+setup: .dist/net.cooperi.piv-agent.plist
 	install .dist/net.cooperi.piv-agent.plist $(HOME)/Library/LaunchAgents
 	launchctl load $(HOME)/Library/LaunchAgents/net.cooperi.piv-agent.plist
 	launchctl start net.cooperi.piv-agent
@@ -326,25 +341,29 @@ install: .dist/net.cooperi.piv-agent.plist piv-tool piv-agent
 endif
 
 ifeq ($(SYSTEM), Linux)
-.dist/piv-agent.service: piv-agent.service .dist piv-tool
+.dist/piv-agent@.service: piv-agent@.service .dist
+	sed -e 's!@@BINDIR@@!$(bindir)!' < $< > $@
+all: .dist/piv-agent@.service
+
+install: install_common .dist/piv-agent@.service
+	install -d $(DESTDIR)$(SYSTEMDDIR)
+	install .dist/piv-agent\@.service $(DESTDIR)$(SYSTEMDDIR)
+
+.dist/default_config: .dist piv-tool
 	@./piv-tool list
 	@printf "Enter a GUID to use for piv-agent: "
-	@read guid && \
-	pkey=$$(./piv-tool -g $${guid} pubkey 9e) && \
-	cat $< | \
-	    sed "s/@@GUID@@/$${guid}/g" | \
-	    sed "s|@@CAK@@|$${pkey}|g" > $@
+	read guid && \
+	pkey=$$(./piv-tool -g $${guid} pubkey 9e | awk '{ print $$1,$$2,$$3 }') && \
+	echo -e "PIV_AGENT_GUID=$${guid}\nPIV_AGENT_CAK=\"$${pkey}\"" > $@
 
-install: .dist/piv-agent.service piv-tool piv-agent
-	sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
-	sudo install -o root -g wheel -m 0755 piv-agent piv-tool  /opt/piv-agent/bin
-	install -d $(HOME)/.config/systemd/user
-	install .dist/piv-agent.service $(HOME)/.config/systemd/user
-	systemctl --user enable piv-agent.service
-	systemctl --user start piv-agent.service
+setup: .dist/default_config
+	install -d $(HOME)/.config/piv-agent
+	install .dist/default_config $(HOME)/.config/piv-agent/default
+	systemctl --user enable piv-agent@default.service
+	systemctl --user start piv-agent@default.service
 	@echo "Add the following lines to your .profile or .bashrc:"
-	@echo '  export PATH=/opt/piv-agent/bin:$$PATH'
+	@echo '  export PATH=$(bindir):$$PATH'
 	@echo '  if [[ ! -e "$$SSH_AUTH_SOCK" || "$$SSH_AUTH_SOCK" == *"/keyring/"* ]]; then'
-	@echo '    export SSH_AUTH_SOCK="$$XDG_RUNTIME_DIR/ssh-agent.socket"'
+	@echo '    export SSH_AUTH_SOCK="$$XDG_RUNTIME_DIR/piv-ssh-default.socket"'
 	@echo '  fi'
 endif
