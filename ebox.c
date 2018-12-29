@@ -28,23 +28,13 @@
 
 #include "words.h"
 
-int
-ebox_tpl_to_binary(struct ebox_tpl *tpl, uint8_t **output, size_t *len)
-{
-}
-
-int
-ebox_tpl_from_binary(const uint8_t *input, size_t len, struct ebox_tpl **tpl)
-{
-}
-
 void
 ebox_tpl_free(struct ebox_tpl *tpl)
 {
 	struct ebox_tpl_config *config, *nconfig;
 	if (tpl == NULL)
 		return;
-	VERIFY(tpl->et_priv == NULL);
+	free(tpl->et_priv);
 	for (config = tpl->et_configs; config != NULL; config = nconfig) {
 		nconfig = config->etc_next;
 		ebox_tpl_config_free(config);
@@ -58,7 +48,7 @@ ebox_tpl_config_free(struct ebox_tpl_config *config)
 	struct ebox_tpl_part *part, *npart;
 	if (config == NULL)
 		return;
-	VERIFY(config->etc_priv == NULL);
+	free(config->etc_priv);
 	for (part = config->etc_parts; part != NULL; part = npart) {
 		npart = part->etp_next;
 		ebox_tpl_part_free(part);
@@ -71,11 +61,65 @@ ebox_tpl_part_free(struct ebox_tpl_part *part)
 {
 	if (part == NULL)
 		return;
-	VERIFY(part->etp_priv == NULL);
+	free(part->etp_priv);
 	free(part->etp_name);
 	sshkey_free(part->etp_pubkey);
 	sshkey_free(part->etp_cak);
 	free(part);
+}
+
+struct ebox_tpl *
+ebox_tpl_clone(struct ebox_tpl *tpl)
+{
+	struct ebox_tpl *ntpl;
+	struct ebox_tpl_config *pconfig, *nconfig, *config;
+	struct ebox_tpl_part *ppart, *npart, *part;
+
+	ntpl = calloc(1, sizeof (struct ebox_tpl));
+	VERIFY(ntpl != NULL);
+
+	pconfig = NULL;
+	config = tpl->et_configs;
+	for (; config != NULL; config = config->etc_next) {
+		nconfig = calloc(1, sizeof (struct ebox_tpl_config));
+		VERIFY(nconfig != NULL);
+		if (pconfig != NULL)
+			pconfig->etc_next = nconfig;
+		else
+			ntpl->et_configs = nconfig;
+		nconfig->etc_type = config->etc_type;
+		nconfig->etc_n = config->etc_n;
+		nconfig->etc_m = config->etc_m;
+
+		ppart = NULL;
+		part = config->etc_parts;
+		for (; part != NULL; part = part->etp_next) {
+			npart = calloc(1, sizeof (struct ebox_tpl_part));
+			VERIFY(npart != NULL);
+			if (ppart != NULL)
+				ppart->etp_next = npart;
+			else
+				nconfig->etc_parts = npart;
+			npart->etp_name = strdup(part->etp_name);
+			bcopy(part->etp_guid, npart->etp_guid,
+			    sizeof (npart->etp_guid));
+			if (part->etp_pubkey != NULL) {
+				VERIFY0(sshkey_demote(part->etp_pubkey,
+				    &npart->etp_pubkey));
+			}
+			if (part->etp_cak != NULL) {
+				VERIFY0(sshkey_demote(part->etp_cak,
+				    &npart->etp_cak));
+			}
+
+			ppart = npart;
+		}
+
+		pconfig = nconfig;
+	}
+
+
+	return (ntpl);
 }
 
 static int
@@ -230,13 +274,13 @@ sshbuf_get_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config **pconfig)
 	config->etc_type = (enum ebox_config_type)type;
 	if (config->etc_type != EBOX_PRIMARY &&
 	    config->etc_type != EBOX_RECOVERY) {
-	    	fprintf(stderr, "bad etc_type\n");
+		fprintf(stderr, "bad etc_type\n");
 		rc = EBADF;
 		goto out;
 	}
 	if (config->etc_type == EBOX_PRIMARY &&
 	    config->etc_n > 1) {
-	    	fprintf(stderr, "primary n>1\n");
+		fprintf(stderr, "primary n>1\n");
 		rc = EBADF;
 		goto out;
 	}
@@ -345,4 +389,202 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 out:
 	ebox_tpl_free(tpl);
 	return (rc);
+}
+
+void
+ebox_free(struct ebox *box)
+{
+	struct ebox_config *config, *nconfig;
+	if (box == NULL)
+		return;
+	free(box->e_priv);
+	freezero(box->e_key, box->e_keylen);
+	freezero(box->e_token, box->e_tokenlen);
+	piv_box_free(box->e_recovbox);
+	for (config = box->e_configs; config != NULL; config = nconfig) {
+		nconfig = config->ec_next;
+		ebox_config_free(config);
+	}
+	ebox_tpl_free(box->e_tpl);
+	free(box);
+}
+
+void
+ebox_config_free(struct ebox_config *config)
+{
+	struct ebox_part *part, *npart;
+	if (config == NULL)
+		return;
+	free(config->ec_priv);
+	for (part = config->ec_parts; part != NULL; part = npart) {
+		npart = part->ep_next;
+		ebox_part_free(part);
+	}
+	free(config);
+}
+
+void
+ebox_part_free(struct ebox_part *part)
+{
+	if (part == NULL)
+		return;
+	piv_box_free(part->ep_box);
+	ebox_challenge_free(part->ep_chal);
+	piv_box_free(part->ep_resp);
+	freezero(part->ep_share, part->ep_sharelen);
+	free(part->ep_priv);
+	free(part);
+}
+
+struct ebox_stream *
+ebox_stream_init(enum ebox_stream_mode mode)
+{
+	struct ebox_stream *es;
+
+	es = calloc(1, sizeof (struct ebox_stream));
+	VERIFY(es != NULL);
+	es->es_mode = mode;
+	es->es_vecs = calloc(IOV_MAX, sizeof (struct iovec));
+	VERIFY(es->es_vecs != NULL);
+
+	return (es);
+}
+
+static int
+sshbuf_get_ebox_config(struct sshbuf *buf, struct ebox_config **pconfig)
+{
+	struct ebox_config *config;
+	struct ebox_tpl_config *tconfig;
+	struct ebox_part *part;
+	struct ebox_tpl_part *tpart;
+	int rc = 0;
+	uint8_t type;
+	uint i;
+
+	config = calloc(1, sizeof (struct ebox_config));
+	VERIFY(config != NULL);
+
+	config->ec_tpl = calloc(1, sizeof (struct ebox_tpl_config));
+	VERIFY(config->ec_tpl != NULL);
+	tconfig = config->ec_tpl;
+
+	if ((rc = sshbuf_get_u8(buf, &type)) ||
+	    (rc = sshbuf_get_u8(buf, &tconfig->etc_n)) ||
+	    (rc = sshbuf_get_u8(buf, &tconfig->etc_m)))
+		goto out;
+	tconfig->etc_type = (enum ebox_config_type)type;
+	if (tconfig->etc_type != EBOX_PRIMARY &&
+	    tconfig->etc_type != EBOX_RECOVERY) {
+		fprintf(stderr, "bad etc_type\n");
+		rc = EBADF;
+		goto out;
+	}
+	if (tconfig->etc_type == EBOX_PRIMARY &&
+	    tconfig->etc_n > 1) {
+		fprintf(stderr, "primary n>1\n");
+		rc = EBADF;
+		goto out;
+	}
+	// XXX
+	if ((rc = sshbuf_get_ebox_part(buf, &part)))
+		goto out;
+	config->etc_parts = part;
+
+	for (i = 1; i < config->etc_m; ++i) {
+		if ((rc = sshbuf_get_ebox_tpl_part(buf, &part->etp_next)))
+			goto out;
+		part = part->etp_next;
+	}
+
+	*pconfig = config;
+	config = NULL;
+
+out:
+	ebox_tpl_config_free(config);
+	return (rc);
+}
+
+int
+sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
+{
+	struct ebox *box;
+	struct ebox_config *config;
+	struct ebox_tpl_config *tconfig;
+	int rc = 0;
+	uint8_t ver, magic[2], type, nconfigs;
+	uint i;
+
+	box = calloc(1, sizeof (struct ebox));
+	VERIFY(box != NULL);
+
+	box->e_tpl = calloc(1, sizeof (struct ebox_tpl));
+	VERIFY(box->e_tpl != NULL);
+
+	if ((rc = sshbuf_get_u8(buf, &magic[0])) ||
+	    (rc = sshbuf_get_u8(buf, &magic[1])))
+		goto out;
+	if (magic[0] != 0xEB && magic[1] != 0x0C) {
+		bunyan_log(TRACE, "bad ebox magic",
+		    "magic[0]", BNY_UINT, (uint)magic[0],
+		    "magic[1]", BNY_UINT, (uint)magic[1], NULL);
+		rc = ENOTSUP;
+		goto out;
+	}
+	if ((rc = sshbuf_get_u8(buf, &ver)) ||
+	    (rc = sshbuf_get_u8(buf, &type)))
+		goto out;
+	if (ver != 0x01) {
+		bunyan_log(TRACE, "bad ebox version",
+		    "version", BNY_UINT, (uint)ver, NULL);
+		rc = ENOTSUP;
+		goto out;
+	}
+	if (type != EBOX_KEY && type != EBOX_STREAM) {
+		bunyan_log(TRACE, "not an ebox",
+		    "type", BNY_UINT, (uint)type, NULL);
+		rc = EDOM;
+		goto out;
+	}
+
+	if ((rc = sshbuf_get_piv_box(buf, &box->e_recovbox)))
+		goto out;
+
+	if ((rc = sshbuf_get_u8(buf, &nconfigs)))
+		goto out;
+
+	if ((rc = sshbuf_get_ebox_config(buf, &config)))
+		goto out;
+	box->e_configs = config;
+	tconfig = config->ec_tpl;
+	box->e_tpl->et_configs = tconfig;
+
+	for (i = 1; i < nconfigs; ++i) {
+		if ((rc = sshbuf_get_ebox_config(buf, &config->ec_next)))
+			goto out;
+		config = config->ec_next;
+		tconfig->etc_next = config->ec_tpl;
+		tconfig = config->ec_tpl;
+	}
+
+	*pbox = box;
+	box = NULL;
+
+out:
+	ebox_free(box);
+	return (rc);
+}
+
+int
+sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
+{
+}
+
+int
+ebox_stream_put(struct ebox_stream *es, struct iovec *vecs, size_t nvecs)
+{
+}
+
+int
+ebox_stream_get(struct ebox_stream *es, struct iovec *vecs, size_t nvecs)
+{
 }

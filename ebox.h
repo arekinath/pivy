@@ -19,6 +19,7 @@
 #endif
 
 #include <sys/types.h>
+#include <sys/uio.h>
 
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -28,13 +29,18 @@
 
 enum ebox_type {
 	EBOX_TEMPLATE = 0x01,
-	EBOX_KEYONLY = 0x02,
+	EBOX_KEY = 0x02,
 	EBOX_STREAM = 0x03
 };
 
 enum ebox_config_type {
 	EBOX_PRIMARY = 0x01,
 	EBOX_RECOVERY = 0x02
+};
+
+enum ebox_stream_mode {
+	EBOX_MODE_ENCRYPT = 0x01,
+	EBOX_MODE_DECRYPT = 0x02
 };
 
 enum ebox_part_tag {
@@ -122,18 +128,55 @@ struct ebox_challenge {
 	struct piv_ecdh_box *c_keybox;
 };
 
+struct ebox_stream {
+	struct ebox *es_ebox;
+	char *es_cipher;
+	char *es_mac;
+	struct iovec *es_vecs;
+	size_t es_veclen;
+	enum ebox_stream_mode es_mode;
+};
+
+struct ebox_stream_chunk {
+	uint32_t esc_len;
+	uint8_t *esc_data;
+
+	uint32_t esc_enclen;
+	uint8_t *esc_encdata;
+
+	uint8_t *esc_nextk;
+	uint32_t esc_nextklen;
+};
+
 void ebox_tpl_free(struct ebox_tpl *tpl);
 void ebox_tpl_config_free(struct ebox_tpl_config *config);
 void ebox_tpl_part_free(struct ebox_tpl_part *part);
 
-int ebox_tpl_to_binary(struct ebox_tpl *tpl, uint8_t **output, size_t *len);
-int ebox_tpl_from_binary(const uint8_t *input, size_t len,
-    struct ebox_tpl **tpl);
+struct ebox_tpl *ebox_tpl_clone(struct ebox_tpl *tpl);
+
 int sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
 int sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
 
-int ebox_to_binary(struct ebox *ebox, uint8_t **output, size_t *len);
-int ebox_from_binary(const uint8_t *input, size_t len, struct ebox **ebox);
+void ebox_free(struct ebox *box);
+void ebox_config_free(struct ebox_config *config);
+void ebox_part_free(struct ebox_part *part);
+
+int sshbuf_get_ebox(struct sshbuf *buf, struct ebox **box);
+int sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
+
+void ebox_stream_free(struct ebox_stream *str);
+void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
+
+int sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
+int sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
+int sshbuf_get_ebox_stream_chunk(struct sshbuf *buf,
+    struct ebox_stream_chunk **chunk);
+int sshbuf_put_ebox_stream_chunk(struct sshbuf *buf,
+    struct ebox_stream_chunk *chunk);
+
+struct ebox_stream *ebox_stream_init(enum ebox_stream_mode mode);
+int ebox_stream_put(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
+int ebox_stream_get(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
 
 int ebox_gen_challenge(struct ebox_part *part, const char *descfmt, ...);
 int ebox_challenge_to_binary(struct ebox_challenge *chal, uint8_t **output,

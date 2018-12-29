@@ -2630,6 +2630,8 @@ piv_box_new(void)
 void
 piv_box_free(struct piv_ecdh_box *box)
 {
+	if (box == NULL)
+		return;
 	sshkey_free(box->pdb_ephem_pub);
 	sshkey_free(box->pdb_pub);
 	if (box->pdb_free_str) {
@@ -3230,8 +3232,7 @@ sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	box = NULL;
 
 out:
-	if (box != NULL)
-		piv_box_free(box);
+	piv_box_free(box);
 	if (k != NULL)
 		sshkey_free(k);
 	free(tname);
