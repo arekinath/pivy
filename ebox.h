@@ -33,6 +33,11 @@ enum ebox_type {
 	EBOX_STREAM = 0x03
 };
 
+enum ebox_recov_tag {
+	EBOX_RECOV_TOKEN = 0x01,
+	EBOX_RECOV_KEY = 0x02
+};
+
 enum ebox_config_type {
 	EBOX_PRIMARY = 0x01,
 	EBOX_RECOVERY = 0x02
@@ -48,7 +53,13 @@ enum ebox_part_tag {
 	EBOX_PART_PUBKEY = 1,
 	EBOX_PART_NAME = 2,
 	EBOX_PART_CAK = 3,
-	EBOX_PART_GUID = 4
+	EBOX_PART_GUID = 4,
+	EBOX_PART_BOX = 5
+};
+
+struct buf {
+	size_t b_len;
+	uint8_t *b_data;
 };
 
 struct ebox_tpl {
@@ -77,11 +88,22 @@ struct ebox_tpl_part {
 struct ebox {
 	struct ebox_tpl *e_tpl;
 	struct ebox_config *e_configs;
-	struct piv_ecdh_box *e_recovbox;
+
+	/* main key */
 	size_t e_keylen;
 	uint8_t *e_key;
+
+	/* recovery box */
+	char *e_rcv_cipher;
+	struct buf e_rcv_key;
+	struct buf e_rcv_iv;
+	struct buf e_rcv_enc;
+	struct buf e_rcv_plain;
+
+	/* recovery token */
 	size_t e_tokenlen;
 	uint8_t *e_token;
+
 	void *e_priv;
 };
 
@@ -132,8 +154,7 @@ struct ebox_stream {
 	struct ebox *es_ebox;
 	char *es_cipher;
 	char *es_mac;
-	struct iovec *es_vecs;
-	size_t es_veclen;
+	struct sshbuf *es_buf;
 	enum ebox_stream_mode es_mode;
 };
 
@@ -167,6 +188,13 @@ int sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
 void ebox_stream_free(struct ebox_stream *str);
 void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
 
+/*
+ * Creates a new ebox based on a given template, sealing up the provided key
+ * and (optional) recovery token.
+ */
+struct ebox *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
+    size_t keylen, const uint8_t *token, size_t tokenlen);
+
 int sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
 int sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
 int sshbuf_get_ebox_stream_chunk(struct sshbuf *buf,
@@ -174,7 +202,8 @@ int sshbuf_get_ebox_stream_chunk(struct sshbuf *buf,
 int sshbuf_put_ebox_stream_chunk(struct sshbuf *buf,
     struct ebox_stream_chunk *chunk);
 
-struct ebox_stream *ebox_stream_init(enum ebox_stream_mode mode);
+struct ebox_stream *ebox_stream_init_decrypt(void);
+struct ebox_stream *ebox_stream_init_encrypt(struct ebox_tpl *tpl);
 int ebox_stream_put(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
 int ebox_stream_get(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
 

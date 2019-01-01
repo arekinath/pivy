@@ -63,7 +63,9 @@ main(int argc, char *argv[])
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *config;
 	struct ebox_tpl_part *part;
+	struct ebox *ebox;
 	struct sshbuf *buf, *rbuf;
+	uint8_t key[8] = {1,2,3,4,5,6,7,8};
 
 	tpl = calloc(1, sizeof (struct ebox_tpl));
 	config = calloc(1, sizeof (struct ebox_tpl_config));
@@ -81,16 +83,26 @@ main(int argc, char *argv[])
 
 	tpl->et_configs = config;
 
+	config = (config->etc_next = calloc(1, sizeof (struct ebox_tpl_config)));
+	config->etc_n = 2;
+	config->etc_m = 2;
+	config->etc_type = EBOX_RECOVERY;
+	part = calloc(1, sizeof (struct ebox_tpl_part));
+	part->etp_name = strdup("k1");
+	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &part->etp_pubkey));
+	part->etp_guid[0] = 0x21;
+	part->etp_guid[1] = 0x43;
+	config->etc_parts = part;
+	part = (part->etp_next = calloc(1, sizeof (struct ebox_tpl_part)));
+	part->etp_name = strdup("k2");
+	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &part->etp_pubkey));
+	part->etp_guid[0] = 0x44;
+	part->etp_guid[1] = 0x55;
+
+	ebox = ebox_create(tpl, key, sizeof (key), NULL, 0);
+
 	buf = sshbuf_new();
-	VERIFY0(sshbuf_put_ebox_tpl(buf, tpl));
-
-	rbuf = sshbuf_fromb(buf);
-	VERIFY0(sshbuf_get_ebox_tpl(rbuf, &tpl));
-
-	VERIFY3U(tpl->et_configs->etc_n, ==, 1);
-	VERIFY3U(tpl->et_configs->etc_m, ==, 1);
-	VERIFY3S(tpl->et_configs->etc_type, ==, EBOX_PRIMARY);
-	VERIFY0(strcmp("testing", tpl->et_configs->etc_parts->etp_name));
+	VERIFY0(sshbuf_put_ebox(buf, ebox));
 
 	fprintf(stdout, "%s\n", sshbuf_dtob64(buf));
 
