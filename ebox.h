@@ -88,6 +88,7 @@ struct ebox_tpl_part {
 struct ebox {
 	struct ebox_tpl *e_tpl;
 	struct ebox_config *e_configs;
+	enum ebox_type e_type;
 
 	/* main key */
 	size_t e_keylen;

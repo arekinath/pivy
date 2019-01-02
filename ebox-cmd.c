@@ -63,7 +63,7 @@ main(int argc, char *argv[])
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *config;
 	struct ebox_tpl_part *part;
-	struct ebox *ebox;
+	struct ebox *ebox, *ebox2;
 	struct sshbuf *buf, *rbuf;
 	uint8_t key[8] = {1,2,3,4,5,6,7,8};
 
@@ -105,6 +105,9 @@ main(int argc, char *argv[])
 	VERIFY0(sshbuf_put_ebox(buf, ebox));
 
 	fprintf(stdout, "%s\n", sshbuf_dtob64(buf));
+
+	rbuf = sshbuf_fromb(buf);
+	VERIFY0(sshbuf_get_ebox(rbuf, &ebox2));
 
 	return (0);
 }

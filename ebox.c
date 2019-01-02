@@ -223,7 +223,8 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 			guid = NULL;
 			break;
 		default:
-			fprintf(stderr, "unknown tag %d\n", tag);
+			fprintf(stderr, "unknown tag %d at +%lx\n", tag,
+			    buf->off);
 			rc = EBADF;
 			goto out;
 		}
@@ -572,7 +573,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 				goto out;
 			break;
 		default:
-			fprintf(stderr, "unknown tag %d\n", tag);
+			fprintf(stderr, "unknown tag %d at +%lx\n", tag,
+			    buf->off);
 			rc = EBADF;
 			goto out;
 		}
@@ -690,6 +692,7 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		rc = EDOM;
 		goto out;
 	}
+	box->e_type = (enum ebox_type)type;
 
 	if ((rc = sshbuf_get_cstring8(buf, &box->e_rcv_cipher, NULL)))
 		goto out;
@@ -728,9 +731,119 @@ out:
 	return (rc);
 }
 
+static int
+sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox_part *part)
+{
+	struct ebox_tpl_part *tpart;
+	struct sshbuf *kbuf;
+	int rc = 0;
+
+	tpart = part->ep_tpl;
+
+	kbuf = sshbuf_new();
+	VERIFY(kbuf != NULL);
+
+	if ((rc = sshbuf_put_u8(buf, EBOX_PART_PUBKEY)) ||
+	    (rc = sshkey_putb(tpart->etp_pubkey, kbuf)) ||
+	    (rc = sshbuf_put_stringb(buf, kbuf)))
+		goto out;
+
+	if ((rc = sshbuf_put_u8(buf, EBOX_PART_GUID)) ||
+	    (rc = sshbuf_put_string8(buf, tpart->etp_guid,
+	    sizeof (tpart->etp_guid))))
+		goto out;
+
+	if (tpart->etp_name != NULL) {
+		if ((rc = sshbuf_put_u8(buf, EBOX_PART_NAME)) ||
+		    (rc = sshbuf_put_cstring8(buf, tpart->etp_name)))
+			goto out;
+	}
+
+	if (tpart->etp_cak != NULL) {
+		sshbuf_reset(kbuf);
+		if ((rc = sshbuf_put_u8(buf, EBOX_PART_CAK)) ||
+		    (rc = sshkey_putb(tpart->etp_cak, buf)) ||
+		    (rc = sshbuf_put_stringb(buf, kbuf)))
+			goto out;
+	}
+
+	if ((rc = sshbuf_put_u8(buf, EBOX_PART_BOX)) ||
+	    (rc = sshbuf_put_piv_box(buf, part->ep_box)))
+		goto out;
+
+	if ((rc = sshbuf_put_u8(buf, EBOX_PART_END)))
+		goto out;
+
+	rc = 0;
+
+out:
+	sshbuf_free(kbuf);
+	return (rc);
+}
+
+static int
+sshbuf_put_ebox_config(struct sshbuf *buf, struct ebox_config *config)
+{
+	struct ebox_tpl_config *tconfig;
+	struct ebox_part *part;
+	int rc;
+
+	tconfig = config->ec_tpl;
+
+	if ((rc = sshbuf_put_u8(buf, tconfig->etc_type)) ||
+	    (rc = sshbuf_put_u8(buf, tconfig->etc_n)) ||
+	    (rc = sshbuf_put_u8(buf, tconfig->etc_m)))
+		return (rc);
+
+	part = config->ec_parts;
+	for (; part != NULL; part = part->ep_next) {
+		if ((rc = sshbuf_put_ebox_part(buf, part)))
+			return (rc);
+	}
+
+	return (0);
+}
+
 int
 sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
 {
+	uint8_t nconfigs = 0;
+	int rc = 0;
+	struct ebox_config *config;
+
+	config = ebox->e_configs;
+	for (; config != NULL; config = config->ec_next) {
+		++nconfigs;
+	}
+
+	if ((rc = sshbuf_put_u8(buf, 0xEB)) ||
+	    (rc = sshbuf_put_u8(buf, 0x0C)) ||
+	    (rc = sshbuf_put_u8(buf, 0x01)) ||
+	    (rc = sshbuf_put_u8(buf, ebox->e_type)))
+		return (rc);
+
+	if ((rc = sshbuf_put_cstring8(buf, ebox->e_rcv_cipher)))
+		return (rc);
+
+	rc = sshbuf_put_string8(buf, ebox->e_rcv_iv.b_data,
+	    ebox->e_rcv_iv.b_len);
+	if (rc)
+		return (rc);
+	rc = sshbuf_put_string8(buf, ebox->e_rcv_enc.b_data,
+	    ebox->e_rcv_enc.b_len);
+	if (rc)
+		return (rc);
+
+	if ((rc = sshbuf_put_u8(buf, nconfigs)))
+		return (rc);
+
+	config = ebox->e_configs;
+	for (; config != NULL; config = config->ec_next) {
+		if ((rc = sshbuf_put_ebox_config(buf, config)))
+			return (rc);
+	}
+
+	return (0);
 }
 
 static void
@@ -861,6 +974,8 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 
 	box = calloc(1, sizeof (struct ebox));
 	VERIFY(box != NULL);
+
+	box->e_type = EBOX_KEY;
 
 	/* Need a cipher with a 32-byte key, AES256-GCM is the easiest. */
 	box->e_rcv_cipher = strdup("aes256-gcm");
