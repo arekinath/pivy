@@ -12,6 +12,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 #include <limits.h>
 #include <sys/errno.h>
 
@@ -1153,7 +1154,8 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 
 	ebox->e_rcv_key.b_data = calloc(1, sizeof (sss_Keyshare));
 	ebox->e_rcv_key.b_len = sizeof (sss_Keyshare);
-	sss_combine_keyshares(key, (const sss_Keyshare *)shares, n);
+	sss_combine_keyshares(ebox->e_rcv_key.b_data,
+	    (const sss_Keyshare *)shares, n);
 
 	rc = ebox_decrypt_recovery(ebox);
 	if (rc) {
@@ -1167,7 +1169,7 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 	if ((rc = sshbuf_get_u8(buf, &tag)))
 		goto out;
 	if (tag == EBOX_RECOV_TOKEN) {
-		rc = sshbuf_get_string8(buf, &box->e_token, &box->e_tokenlen);
+		rc = sshbuf_get_string8(buf, &ebox->e_token, &ebox->e_tokenlen);
 		if (rc)
 			goto out;
 		if ((rc = sshbuf_get_u8(buf, &tag)))
@@ -1177,7 +1179,7 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 		rc = EBADF;
 		goto out;
 	}
-	rc = sshbuf_get_string8(buf, &box->e_key, &box->e_keylen);
+	rc = sshbuf_get_string8(buf, &ebox->e_key, &ebox->e_keylen);
 	if (rc)
 		goto out;
 
@@ -1221,7 +1223,7 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 		VERIFY3S(config->ec_chalkey->ecdsa_nid, ==,
 		    part->ep_box->pdb_pub->ecdsa_nid);
 	}
-	VERIFY0(sshkey_demote(config->ec_chalkey, chal->c_destkey));
+	VERIFY0(sshkey_demote(config->ec_chalkey, &chal->c_destkey));
 
 	va_start(ap, descfmt);
 	wrote = vsnprintf(desc, sizeof (desc), descfmt, ap);
@@ -1244,6 +1246,9 @@ static int
 sshbuf_put_ebox_challenge_raw(struct sshbuf *buf, struct ebox_challenge *chal)
 {
 	int rc = 0;
+	struct piv_ecdh_box *kb = chal->c_keybox;
+	struct apdubuf *iv = &kb->pdb_iv;
+	struct apdubuf *enc = &kb->pdb_enc;
 
 	if ((rc = sshbuf_put_u8(buf, chal->c_version)) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_type)) ||
@@ -1314,8 +1319,11 @@ sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
     struct ebox_challenge **pchal)
 {
 	int rc = 0;
-	struct sshbuf *buf;
+	struct sshbuf *buf = NULL, *kbuf = NULL;
 	struct ebox_challenge *chal;
+	uint8_t type;
+	struct sshkey *k;
+	size_t len;
 
 	VERIFY0(piv_box_take_datab(box, &buf));
 
@@ -1415,6 +1423,7 @@ sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
 
 out:
 	sshbuf_free(buf);
+	sshbuf_free(kbuf);
 	ebox_challenge_free(chal);
 	return (rc);
 }
@@ -1450,7 +1459,7 @@ ebox_challenge_free(struct ebox_challenge *chal)
 	free(chal->c_description);
 	free(chal->c_hostname);
 	sshkey_free(chal->c_destkey);
-	piv_ecdh_box_free(chal->c_keybox);
+	piv_box_free(chal->c_keybox);
 	explicit_bzero(chal->c_words, sizeof (chal->c_words));
 	free(chal);
 }

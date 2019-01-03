@@ -548,7 +548,7 @@ int piv_ecdh(struct piv_token *tk, struct piv_slot *slot,
     struct sshkey *pubkey, uint8_t **secret, size_t *seclen);
 
 struct piv_ecdh_box *piv_box_new(void);
-struct piv_ecdh_box *piv_box_clone(const piv_ecdh_box *box);
+struct piv_ecdh_box *piv_box_clone(const struct piv_ecdh_box *box);
 int piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len);
 int piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf);
 int piv_box_seal(struct piv_token *tk, struct piv_slot *slot,

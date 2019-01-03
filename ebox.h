@@ -217,6 +217,8 @@ struct ebox *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
 int ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
     const char *descfmt, ...);
 
+void ebox_challenge_free(struct ebox_challenge *chal);
+
 /*
  * Serializes an ebox challenge inside a piv_ecdh_box as a one-step process.
  *
