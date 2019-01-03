@@ -437,6 +437,8 @@ ebox_config_free(struct ebox_config *config)
 	struct ebox_part *part, *npart;
 	if (config == NULL)
 		return;
+	if (config->ec_chalkey != NULL)
+		sshkey_free(config->ec_chalkey);
 	free(config->ec_priv);
 	for (part = config->ec_parts; part != NULL; part = npart) {
 		npart = part->ep_next;
@@ -451,8 +453,7 @@ ebox_part_free(struct ebox_part *part)
 	if (part == NULL)
 		return;
 	piv_box_free(part->ep_box);
-	//ebox_challenge_free(part->ep_chal);
-	piv_box_free(part->ep_resp);
+	ebox_challenge_free(part->ep_chal);
 	if (part->ep_share != NULL) {
 		explicit_bzero(part->ep_share, part->ep_sharelen);
 		free(part->ep_share);
@@ -580,6 +581,21 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 		}
 		if ((rc = sshbuf_get_u8(buf, &tag)))
 			goto out;
+	}
+
+	if (part->ep_box == NULL) {
+		rc = EINVAL;
+		goto out;
+	}
+
+	if (tpart->etp_pubkey == NULL) {
+		VERIFY0(sshkey_demote(part->ep_box->pdb_pub,
+		    &tpart->etp_pubkey));
+	}
+
+	if (!sshkey_equal_public(tpart->etp_pubkey, part->ep_box->pdb_pub)) {
+		rc = EINVAL;
+		goto out;
 	}
 
 	*ppart = part;
@@ -743,11 +759,6 @@ sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox_part *part)
 	kbuf = sshbuf_new();
 	VERIFY(kbuf != NULL);
 
-	if ((rc = sshbuf_put_u8(buf, EBOX_PART_PUBKEY)) ||
-	    (rc = sshkey_putb(tpart->etp_pubkey, kbuf)) ||
-	    (rc = sshbuf_put_stringb(buf, kbuf)))
-		goto out;
-
 	if ((rc = sshbuf_put_u8(buf, EBOX_PART_GUID)) ||
 	    (rc = sshbuf_put_string8(buf, tpart->etp_guid,
 	    sizeof (tpart->etp_guid))))
@@ -846,7 +857,7 @@ sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
 	return (0);
 }
 
-static void
+static int
 ebox_decrypt_recovery(struct ebox *box)
 {
 	const struct sshcipher *cipher;
@@ -856,9 +867,11 @@ ebox_decrypt_recovery(struct ebox *box)
 	size_t enclen, reallen;
 	uint8_t *iv, *enc, *plain, *key;
 	size_t i;
+	int rc = 0;
 
 	cipher = cipher_by_name(box->e_rcv_cipher);
-	VERIFY(cipher != NULL);
+	if (cipher == NULL)
+		return (ENOTSUP);
 	ivlen = cipher_ivlen(cipher);
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
@@ -882,9 +895,13 @@ ebox_decrypt_recovery(struct ebox *box)
 	VERIFY(plain != NULL);
 
 	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
-	VERIFY0(cipher_crypt(cctx, 0, plain, enc, enclen - authlen, 0,
-	    authlen));
+	rc = cipher_crypt(cctx, 0, plain, enc, enclen - authlen, 0, authlen);
 	cipher_free(cctx);
+	if (rc) {
+		explicit_bzero(plain, plainlen);
+		free(plain);
+		return (rc);
+	}
 
 	/* Strip off the pkcs#7 padding and verify it. */
 	padding = plain[plainlen - 1];
@@ -1081,6 +1098,361 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 
 
 	return (box);
+}
+
+int
+ebox_unlock(struct ebox *ebox, struct ebox_config *config)
+{
+	struct ebox_part *part;
+
+	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
+		struct piv_ecdh_box *box = part->ep_box;
+		if (box->pdb_plain.b_data == NULL)
+			continue;
+		if (box->pdb_plain.b_len < 1)
+			continue;
+		return (piv_box_take_data(box, &ebox->e_key, &ebox->e_keylen));
+	}
+
+	return (EINVAL);
+}
+
+int
+ebox_recover(struct ebox *ebox, struct ebox_config *config)
+{
+	struct ebox_part *part;
+	struct ebox_tpl_config *tconfig = config->ec_tpl;
+	struct sshbuf *buf;
+	uint n = tconfig->etc_n, m = tconfig->etc_m;
+	uint i = 0, j;
+	int rc = 0;
+	uint8_t tag;
+	sss_Keyshare *share, *shares = NULL;
+
+	if (ebox->e_key != NULL || ebox->e_keylen > 0)
+		return (EAGAIN);
+	if (ebox->e_token != NULL || ebox->e_tokenlen > 0)
+		return (EAGAIN);
+	if (ebox->e_rcv_key.b_data != NULL || ebox->e_rcv_key.b_len > 0)
+		return (EAGAIN);
+
+	shares = calloc(m, sizeof (sss_Keyshare));
+
+	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
+		if (part->ep_share == NULL || part->ep_sharelen < 1)
+			continue;
+		VERIFY3U(part->ep_sharelen, ==, sizeof (sss_Keyshare));
+		share = &shares[i++];
+		bcopy(part->ep_share, share, sizeof (sss_Keyshare));
+	}
+
+	if (i != n) {
+		rc = EINVAL;
+		goto out;
+	}
+
+	ebox->e_rcv_key.b_data = calloc(1, sizeof (sss_Keyshare));
+	ebox->e_rcv_key.b_len = sizeof (sss_Keyshare);
+	sss_combine_keyshares(key, (const sss_Keyshare *)shares, n);
+
+	rc = ebox_decrypt_recovery(ebox);
+	if (rc) {
+		rc = EBADF;
+		goto out;
+	}
+
+	buf = sshbuf_from(ebox->e_rcv_plain.b_data, ebox->e_rcv_plain.b_len);
+	VERIFY(buf != NULL);
+
+	if ((rc = sshbuf_get_u8(buf, &tag)))
+		goto out;
+	if (tag == EBOX_RECOV_TOKEN) {
+		rc = sshbuf_get_string8(buf, &box->e_token, &box->e_tokenlen);
+		if (rc)
+			goto out;
+		if ((rc = sshbuf_get_u8(buf, &tag)))
+			goto out;
+	}
+	if (tag != EBOX_RECOV_KEY) {
+		rc = EBADF;
+		goto out;
+	}
+	rc = sshbuf_get_string8(buf, &box->e_key, &box->e_keylen);
+	if (rc)
+		goto out;
+
+out:
+	sshbuf_free(buf);
+	for (j = 0; j < m; ++j)
+		explicit_bzero(&shares[j], sizeof (sss_Keyshare));
+	free(shares);
+	return (rc);
+}
+
+int
+ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
+    const char *descfmt, ...)
+{
+	struct ebox_challenge *chal;
+	int rc = 0;
+	char hostname[HOST_NAME_MAX] = {0};
+	char desc[255] = {0};
+	va_list ap;
+	size_t wrote;
+
+	chal = calloc(1, sizeof (struct ebox_challenge));
+	VERIFY(chal != NULL);
+
+	chal->c_version = 1;
+	chal->c_type = CHAL_RECOVERY;
+	chal->c_id = part->ep_id;
+	VERIFY0(gethostname(hostname, sizeof (hostname)));
+	chal->c_hostname = strdup(hostname);
+	chal->c_ctime = time(NULL);
+	chal->c_keybox = piv_box_clone(part->ep_box);
+
+	if (config->ec_chalkey == NULL) {
+		uint bits;
+		VERIFY3S(part->ep_box->pdb_pub->type, ==, KEY_ECDSA);
+		bits = sshkey_size(part->ep_box->pdb_pub);
+		VERIFY0(sshkey_generate(KEY_ECDSA, bits, &config->ec_chalkey));
+	} else {
+		VERIFY3S(part->ep_box->pdb_pub->type, ==, KEY_ECDSA);
+		VERIFY3S(config->ec_chalkey->ecdsa_nid, ==,
+		    part->ep_box->pdb_pub->ecdsa_nid);
+	}
+	VERIFY0(sshkey_demote(config->ec_chalkey, chal->c_destkey));
+
+	va_start(ap, descfmt);
+	wrote = vsnprintf(desc, sizeof (desc), descfmt, ap);
+	if (wrote >= sizeof (desc)) {
+		rc = ENOMEM;
+		goto out;
+	}
+	va_end(ap);
+	chal->c_description = strdup(desc);
+
+	part->ep_chal = chal;
+	chal = NULL;
+
+out:
+	ebox_challenge_free(chal);
+	return (rc);
+}
+
+static int
+sshbuf_put_ebox_challenge_raw(struct sshbuf *buf, struct ebox_challenge *chal)
+{
+	int rc = 0;
+
+	if ((rc = sshbuf_put_u8(buf, chal->c_version)) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_type)) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_id)))
+		return (rc);
+	if ((rc = sshbuf_put_eckey8(buf, chal->c_destkey->ecdsa)))
+		return (rc);
+	if ((rc = sshbuf_put_eckey8(buf, kb->pdb_ephem_pub->ecdsa)) ||
+	    (rc = sshbuf_put_string8(buf, iv->b_data, iv->b_len)) ||
+	    (rc = sshbuf_put_string8(buf, enc->b_data, enc->b_len)))
+		return (rc);
+	if ((rc = sshbuf_put_u8(buf, CTAG_HOSTNAME)) ||
+	    (rc = sshbuf_put_cstring8(buf, chal->c_hostname)) ||
+	    (rc = sshbuf_put_u8(buf, CTAG_CTIME)) ||
+	    (rc = sshbuf_put_u8(buf, 8)) ||
+	    (rc = sshbuf_put_u64(buf, chal->c_ctime)) ||
+	    (rc = sshbuf_put_u8(buf, CTAG_DESCRIPTION)) ||
+	    (rc = sshbuf_put_cstring8(buf, chal->c_description)) ||
+	    (rc = sshbuf_put_u8(buf, CTAG_WORDS)) ||
+	    (rc = sshbuf_put_u8(buf, 4)) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_words[0])) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_words[1])) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_words[2])) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_words[3])))
+		return (rc);
+
+	return (rc);
+}
+
+int
+sshbuf_put_ebox_challenge(struct sshbuf *buf, struct ebox_challenge *chal)
+{
+	struct piv_ecdh_box *box;
+	struct sshbuf *cbuf;
+	struct piv_ecdh_box *kb = chal->c_keybox;
+	int rc = 0;
+
+	box = piv_box_new();
+	VERIFY(box != NULL);
+
+	cbuf = sshbuf_new();
+	VERIFY(cbuf != NULL);
+
+	if ((rc = sshbuf_put_ebox_challenge_raw(cbuf, chal)))
+		goto out;
+
+	box->pdb_cipher = strdup(kb->pdb_cipher);
+	box->pdb_kdf = strdup(kb->pdb_kdf);
+	bcopy(kb->pdb_guid, box->pdb_guid, sizeof (box->pdb_guid));
+	box->pdb_slot = kb->pdb_slot;
+	box->pdb_guidslot_valid = kb->pdb_guidslot_valid;
+	if ((rc = piv_box_set_datab(box, cbuf)))
+		goto out;
+	if ((rc = piv_box_seal_offline(kb->pdb_pub, box)))
+		goto out;
+	if ((rc = sshbuf_put_piv_box(buf, box)))
+		goto out;
+	rc = 0;
+
+out:
+	sshbuf_free(cbuf);
+	piv_box_free(box);
+	return (rc);
+}
+
+int
+sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
+    struct ebox_challenge **pchal)
+{
+	int rc = 0;
+	struct sshbuf *buf;
+	struct ebox_challenge *chal;
+
+	VERIFY0(piv_box_take_datab(box, &buf));
+
+	chal = calloc(1, sizeof (struct ebox_challenge));
+	VERIFY(chal != NULL);
+
+	if ((rc = sshbuf_get_u8(buf, &chal->c_version)))
+		goto out;
+	if (chal->c_version != 1) {
+		fprintf(stderr, "error: invalid challenge version: v%d "
+		    "(only v1 is supported)\n", (int)chal->c_version);
+		rc = ENOTSUP;
+		goto out;
+	}
+
+	if ((rc = sshbuf_get_u8(buf, &type)))
+		goto out;
+	chal->c_type = (enum chaltype)type;
+
+	if ((rc = sshbuf_get_u8(buf, &chal->c_id)))
+		goto out;
+
+	chal->c_destkey = (k = sshkey_new(KEY_ECDSA));
+	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
+	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(k->ecdsa != NULL);
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa))))
+		goto out;
+
+	chal->c_keybox = piv_box_new();
+	VERIFY(chal->c_keybox != NULL);
+
+	chal->c_keybox->pdb_cipher = strdup(box->pdb_cipher);
+	chal->c_keybox->pdb_kdf = strdup(box->pdb_kdf);
+	chal->c_keybox->pdb_free_str = B_TRUE;
+
+	VERIFY0(sshkey_demote(box->pdb_pub, &chal->c_keybox->pdb_pub));
+
+	chal->c_keybox->pdb_ephem_pub = (k = sshkey_new(KEY_ECDSA));
+	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
+	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(k->ecdsa != NULL);
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
+	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa))))
+		goto out;
+
+	if ((rc = sshbuf_get_string8(buf, &chal->c_keybox->pdb_iv.b_data,
+	    &chal->c_keybox->pdb_iv.b_size)))
+		goto out;
+	chal->c_keybox->pdb_iv.b_len = chal->c_keybox->pdb_iv.b_size;
+	if ((rc = sshbuf_get_string8(buf, &chal->c_keybox->pdb_enc.b_data,
+	    &chal->c_keybox->pdb_enc.b_size)))
+		goto out;
+	chal->c_keybox->pdb_enc.b_len = chal->c_keybox->pdb_enc.b_size;
+
+	kbuf = sshbuf_new();
+	VERIFY(kbuf != NULL);
+
+	while (sshbuf_len(buf) > 0) {
+		uint8_t tag;
+		sshbuf_reset(kbuf);
+		if ((rc = sshbuf_get_u8(buf, &tag)) ||
+		    (rc = sshbuf_get_stringb8(buf, kbuf)))
+			goto out;
+		len = sshbuf_len(kbuf);
+		switch (tag) {
+		case CTAG_HOSTNAME:
+			chal->c_hostname = sshbuf_dup_string(kbuf);
+			VERIFY(chal->c_hostname != NULL);
+			break;
+		case CTAG_CTIME:
+			if ((rc = sshbuf_get_u64(kbuf, &chal->c_ctime)))
+				goto out;
+			break;
+		case CTAG_DESCRIPTION:
+			chal->c_description = sshbuf_dup_string(kbuf);
+			VERIFY(chal->c_description != NULL);
+			break;
+		case CTAG_WORDS:
+			if ((rc = sshbuf_get_u8(kbuf, &chal->c_words[0])) ||
+			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[1])) ||
+			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[2])) ||
+			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[3])))
+				goto out;
+			break;
+		default:
+			/* do nothing */
+			break;
+		}
+	}
+
+	*pchal = chal;
+	chal = NULL;
+
+out:
+	sshbuf_free(buf);
+	ebox_challenge_free(chal);
+	return (rc);
+}
+
+int
+ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
+    struct ebox_part **ppart)
+{
+	int rc = 0;
+	struct ebox_part *part;
+	struct sshbuf *buf = NULL;
+
+	VERIFY(config->ec_chalkey != NULL);
+	rc = piv_box_open_offline(config->ec_chalkey, rbox);
+	if (rc)
+		goto out;
+	rc = piv_box_take_datab(rbox, &buf);
+	if (rc)
+		goto out;
+
+
+out:
+	piv_box_free(rbox);
+	sshbuf_free(buf);
+	return (rc);
+}
+
+void
+ebox_challenge_free(struct ebox_challenge *chal)
+{
+	if (chal == NULL)
+		return;
+	free(chal->c_description);
+	free(chal->c_hostname);
+	sshkey_free(chal->c_destkey);
+	piv_ecdh_box_free(chal->c_keybox);
+	explicit_bzero(chal->c_words, sizeof (chal->c_words));
+	free(chal);
 }
 
 int

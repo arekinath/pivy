@@ -107,12 +107,14 @@ PIVTOOL_SOURCES=		\
 	piv.c			\
 	debug.c			\
 	bunyan.c		\
+	erf.c			\
 	$(LIBSSH_SOURCES)
 PIVTOOL_HEADERS=		\
 	tlv.h			\
 	piv.h			\
 	bunyan.h		\
-	debug.h
+	debug.h			\
+	erf.h
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)
 PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
@@ -143,6 +145,7 @@ EBOX_SOURCES=			\
 	piv.c			\
 	debug.c			\
 	bunyan.c		\
+	erf.c			\
 	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
 EBOX_HEADERS=			\
@@ -150,6 +153,7 @@ EBOX_HEADERS=			\
 	tlv.h			\
 	piv.h			\
 	bunyan.h		\
+	erf.h			\
 	debug.h
 
 EBOX_OBJS=		$(EBOX_SOURCES:%.c=%.o)
@@ -188,6 +192,7 @@ PIVZFS_SOURCES=			\
 	bunyan.c		\
 	json.c			\
 	custr.c			\
+	erf.c			\
 	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
 PIVZFS_HEADERS=			\
@@ -195,6 +200,7 @@ PIVZFS_HEADERS=			\
 	piv.h			\
 	bunyan.h		\
 	json.h			\
+	erf.h			\
 	custr.h			\
 	debug.h
 
@@ -237,11 +243,13 @@ AGENT_SOURCES=			\
 	piv.c			\
 	debug.c			\
 	bunyan.c		\
+	erf.c			\
 	$(LIBSSH_SOURCES)
 AGENT_HEADERS=		\
 	tlv.h			\
 	piv.h			\
 	bunyan.h		\
+	erf.h			\
 	debug.h
 AGENT_OBJS=		$(AGENT_SOURCES:%.c=%.o)
 AGENT_CFLAGS=		$(PCSC_CFLAGS) \

@@ -7,6 +7,9 @@
  * Author: Alex Wilson <alex.wilson@joyent.com>
  */
 
+#if !defined(_EBOX_H)
+#define _EBOX_H
+
 #include <stdint.h>
 #include <assert.h>
 
@@ -111,7 +114,12 @@ struct ebox {
 struct ebox_config {
 	struct ebox_config *ec_next;
 	struct ebox_tpl_config *ec_tpl;
+
 	struct ebox_part *ec_parts;
+
+	/* key for collecting challenge-responses */
+	struct sshkey *ec_chalkey;
+
 	void *ec_priv;
 };
 
@@ -121,7 +129,6 @@ struct ebox_part {
 	struct piv_ecdh_box *ep_box;
 	uint8_t ep_id;
 	struct ebox_challenge *ep_chal;
-	struct piv_ecdh_box *ep_resp;
 	size_t ep_sharelen;
 	uint8_t *ep_share;
 	void *ep_priv;
@@ -196,6 +203,81 @@ void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
 struct ebox *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
     size_t keylen, const uint8_t *token, size_t tokenlen);
 
+/*
+ * Generate a challenge for a given recovery config + part.
+ *
+ * The challenge can then be serialised using sshbuf_put_ebox_challenge() and
+ * sent to the remote side. The "descfmt", ... arguments are given to vsnprintf
+ * to create the "description" field for the challenge (displayed on the
+ * remote end).
+ *
+ * Errors:
+ *  - ENOMEM: description was too long for available space
+ */
+int ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
+    const char *descfmt, ...);
+
+/*
+ * Serializes an ebox challenge inside a piv_ecdh_box as a one-step process.
+ *
+ * The data written in the buf is ready to be transported to a remote machine.
+ */
+int sshbuf_put_ebox_challenge(struct sshbuf *buf, struct ebox_challenge *chal);
+
+/*
+ * De-serializes an ebox challenge from inside a piv_ecdh_box. The piv_ecdh_box
+ * must be already unsealed.
+ */
+int sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
+    struct ebox_challenge **chal);
+
+/*
+ * Serializes a response to an ebox challenge inside a piv_ecdh_box as a
+ * one-step process. The c_keybox on chal must be already unsealed.
+ *
+ * The data written in the buf is ready to be transported to the original
+ * requesting machine.
+ */
+int sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
+    struct ebox_challenge *chal);
+
+/*
+ * Process an incoming response to a recovery challenge for the given config.
+ *
+ * *ppart is set to point at the part that this response was from. Takes
+ * ownership of respbox, and will free it.
+ *
+ * Errors:
+ *  - EAGAIN: this challenge matched a part that is already unlocked
+ */
+int ebox_challenge_response(struct ebox_config *config,
+    struct piv_ecdh_box *respbox, struct ebox_part **ppart);
+
+/*
+ * Unlock an ebox using a primary config.
+ *
+ * One of the primary config's part boxes must have been already unsealed
+ * before calling this.
+ *
+ * Errors:
+ *  - EINVAL: none of the part boxes were unsealed
+ */
+int ebox_unlock(struct ebox *ebox, struct ebox_config *config);
+
+/*
+ * Perform recovery on an ebox using a recovery config.
+ *
+ * N out of M of the parts on this config must have been processed with
+ * ebox_challenge_response() before calling this.
+ *
+ * Errors:
+ *  - EINVAL: insufficient number of parts available on this config that are
+ *            ready for recovery
+ *  - EAGAIN: the ebox is already unlocked or recovered
+ *  - EBADF: the recovery box data was invalid or corrupt
+ */
+int ebox_recover(struct ebox *ebox, struct ebox_config *config);
+
 int sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
 int sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
 int sshbuf_get_ebox_stream_chunk(struct sshbuf *buf,
@@ -208,8 +290,4 @@ struct ebox_stream *ebox_stream_init_encrypt(struct ebox_tpl *tpl);
 int ebox_stream_put(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
 int ebox_stream_get(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
 
-int ebox_gen_challenge(struct ebox_part *part, const char *descfmt, ...);
-int ebox_challenge_to_binary(struct ebox_challenge *chal, uint8_t **output,
-    size_t *len);
-int ebox_challenge_response(struct ebox_part *part,
-    struct piv_ecdh_box *respbox);
+#endif

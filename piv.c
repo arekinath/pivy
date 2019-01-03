@@ -2627,6 +2627,64 @@ piv_box_new(void)
 	return (box);
 }
 
+struct piv_ecdh_box *
+piv_box_clone(const struct piv_ecdh_box *box)
+{
+	struct piv_ecdh_box *nbox;
+	nbox = calloc(1, sizeof (struct piv_ecdh_box));
+	if (nbox == NULL)
+		goto err;
+	nbox->pdb_guidslot_valid = box->pdb_guidslot_valid;
+	if (box->pdb_guidslot_valid) {
+		nbox->pdb_guidslot_valid = B_TRUE;
+		nbox->pdb_slot = box->pdb_slot;
+		bcopy(box->pdb_guid, nbox->pdb_guid, sizeof (nbox->pdb_guid));
+	}
+	if (sshkey_demote(box->pdb_ephem_pub, &nbox->pdb_ephem_pub))
+		goto err;
+	if (sshkey_demote(box->pdb_pub, &nbox->pdb_pub))
+		goto err;
+	if (box->pdb_free_str) {
+		nbox->pdb_free_str = B_TRUE;
+		nbox->pdb_cipher = strdup(box->pdb_cipher);
+		nbox->pdb_kdf = strdup(box->pdb_kdf);
+	} else {
+		nbox->pdb_cipher = box->pdb_cipher;
+		nbox->pdb_kdf = box->pdb_kdf;
+	}
+	if (box->pdb_iv.b_len > 0) {
+		nbox->pdb_iv.b_data = malloc(box->pdb_iv.b_len);
+		if (nbox->pdb_iv.b_data == NULL)
+			goto err;
+		nbox->pdb_iv.b_len = (nbox->pdb_iv.b_size = box->pdb_iv.b_len);
+		bcopy(box->pdb_iv.b_data + box->pdb_iv.b_offset,
+		    nbox->pdb_iv.b_data, box->pdb_iv.b_len);
+	}
+	if (box->pdb_enc.b_len > 0) {
+		nbox->pdb_enc.b_data = malloc(box->pdb_enc.b_len);
+		if (nbox->pdb_enc.b_data == NULL)
+			goto err;
+		nbox->pdb_enc.b_len =
+		    (nbox->pdb_enc.b_size = box->pdb_enc.b_len);
+		bcopy(box->pdb_enc.b_data + box->pdb_enc.b_offset,
+		    nbox->pdb_enc.b_data, box->pdb_enc.b_len);
+	}
+	if (box->pdb_plain.b_len > 0) {
+		nbox->pdb_plain.b_data = malloc(box->pdb_plain.b_len);
+		if (nbox->pdb_plain.b_data == NULL)
+			goto err;
+		nbox->pdb_plain.b_len =
+		    (nbox->pdb_plain.b_size = box->pdb_plain.b_len);
+		bcopy(box->pdb_plain.b_data + box->pdb_plain.b_offset,
+		    nbox->pdb_plain.b_data, box->pdb_plain.b_len);
+	}
+
+	return (nbox);
+err:
+	piv_box_free(nbox);
+	return (NULL);
+}
+
 void
 piv_box_free(struct piv_ecdh_box *box)
 {
@@ -2667,6 +2725,26 @@ piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len)
 }
 
 int
+piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf)
+{
+	uint8_t *data;
+	size_t len;
+	VERIFY3P(box->pdb_plain.b_data, ==, NULL);
+
+	len = sshbuf_len(buf);
+	buf = malloc(len);
+	if (buf == NULL)
+		return (ENOMEM);
+	VERIFY0(sshbuf_get(buf, data, len));
+	box->pdb_plain.b_data = buf;
+	box->pdb_plain.b_size = len;
+	box->pdb_plain.b_len = len;
+	box->pdb_plain.b_offset = 0;
+
+	return (0);
+}
+
+int
 piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len)
 {
 	if (box->pdb_plain.b_data == NULL)
@@ -2683,6 +2761,30 @@ piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len)
 	box->pdb_plain.b_size = 0;
 	box->pdb_plain.b_len = 0;
 	box->pdb_plain.b_offset = 0;
+
+	return (0);
+}
+
+int
+piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **pbuf)
+{
+	struct sshbuf *buf;
+
+	if (box->pdb_plain.b_data == NULL)
+		return (EINVAL);
+
+	buf = sshbuf_new();
+	sshbuf_put(buf, box->pdb_plain.b_data + box->pdb_plain.b_offset,
+	    box->pdb_plain.b_len);
+
+	explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
+	free(box->pdb_plain.b_data);
+	box->pdb_plain.b_data = NULL;
+	box->pdb_plain.b_size = 0;
+	box->pdb_plain.b_len = 0;
+	box->pdb_plain.b_offset = 0;
+
+	*pbuf = buf;
 
 	return (0);
 }
