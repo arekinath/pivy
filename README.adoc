@@ -130,23 +130,21 @@ $ ./piv-tool list
 
 -----
 
-You can run `make install` to install the agent into `/opt/piv-agent` and set
-up a user systemd service to start it automatically at login. The `make install`
-command will also print out lines to add to your `.profile` or `.bashrc` to
-make sure the agent is automatically available in all your shells (while still
-preferring a forwarded SSH agent if you SSH into your machine later).
+You can run `make install` (as root or with sudo) to install the agent into
+`/opt/piv-agent`.  The `make setup` invocation can be used to set up a user
+systemd service to start it automatically at login.  It will also print out
+lines to add to your `.profile` or `.bashrc` to make sure the agent is
+automatically available in all your shells (while still preferring a forwarded
+SSH agent if you SSH into your machine later).
 
 -----
-$ make install
+$ make setup
 Enter a GUID to use for piv-agent: 995E171383029CDA0D9CDBDBAD580813
 
-sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
-Password:
-sudo install -o root -g wheel -m 0755 piv-agent piv-tool  /opt/piv-agent/bin
-install -d /home/alex/.config/systemd/user
-install .dist/piv-agent.service /home/alex/.config/systemd/user
-systemctl --user enable piv-agent.service
-systemctl --user start piv-agent.service
+install -d /home/alex/.config/piv-agent
+install .dist/default_config /home/alex/.config/piv-agent/default
+systemctl --user enable piv-agent@default.service
+systemctl --user start piv-agent@default.service
 
 Add the following lines to your .profile or .bashrc:
   export PATH=/opt/piv-agent/bin:$PATH
@@ -191,16 +189,17 @@ $ ./piv-tool list
            9c   ECDSA   256   /CN=Digital Signature
            9e   ECDSA   256   /CN=Card Authentication
 
-## Install in /opt/piv-agent and add a launchd service for the agent
-$ make install
+## Install in /opt/piv-agent
+$ sudo make install
+install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
+install -o root -g wheel -m 0755 piv-agent /opt/piv-agent/bin
+install -o root -g wheel -m 0755 piv-tool /opt/piv-agent/bin
+## Configure and add a launchd service for the agent
+$ make setup
 Enter a GUID to use for piv-agent: 995E171383029CDA0D9CDBDBAD580813
 
-sudo install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
-Password:
-sudo install -o root -g wheel -m 0755 piv-agent piv-tool  /opt/piv-agent/bin
 install .dist/net.cooperi.piv-agent.plist /Users/alex/Library/LaunchAgents
 launchctl load /Users/alex/Library/LaunchAgents/net.cooperi.piv-agent.plist
-/Users/alex/Library/LaunchAgents/net.cooperi.piv-agent.plist: service already loaded
 launchctl start net.cooperi.piv-agent
 
 Add the following lines to your .profile or .bashrc:
