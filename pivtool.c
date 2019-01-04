@@ -39,6 +39,7 @@
 #include "libssh/sshkey.h"
 #include "libssh/sshbuf.h"
 #include "libssh/digest.h"
+#include "libssh/ssherr.h"
 
 #include <openssl/err.h>
 #include <openssl/x509.h>
@@ -249,7 +250,7 @@ assert_slotid(uint slotid)
 static void
 assert_pin(struct piv_token *pk, boolean_t prompt)
 {
-	int rv;
+	erf_t *err;
 	uint retries = min_retries;
 
 #if 0
@@ -292,8 +293,8 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		pin = strdup(pin);
 		free(guid);
 	}
-	rv = piv_verify_pin(pk, pk->pt_auth, pin, &retries, B_FALSE);
-	if (rv == EACCES) {
+	err = piv_verify_pin(pk, pk->pt_auth, pin, &retries, B_FALSE);
+	if (erfcause(err, "PermissionError")) {
 		piv_txn_end(pk);
 		if (retries == 0) {
 			fprintf(stderr, "error: token is locked due to too "
@@ -303,14 +304,15 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		fprintf(stderr, "error: invalid PIN (%d attempts "
 		    "remaining)\n", retries);
 		exit(4);
-	} else if (rv == EAGAIN) {
+	} else if (erfcause(err, "MinRetriesError")) {
 		piv_txn_end(pk);
 		fprintf(stderr, "error: insufficient retries remaining "
 		    "(%d left)\n", retries);
 		exit(4);
-	} else if (rv != 0) {
+	} else if (err) {
 		piv_txn_end(pk);
-		fprintf(stderr, "error: failed to verify PIN\n");
+		err = erf("verify-pin", err, "Failed to verify PIN");
+		perf(err);
 		exit(4);
 	}
 }
@@ -1101,43 +1103,36 @@ cmd_attest(uint slotid)
 	size_t certlen, chainlen, len;
 	struct tlv_state *tlv;
 	X509 *x509;
-	int rv;
+	erf_t *err;
 	uint tag;
 	uint8_t certinfo;
 
 	assert_slotid(slotid);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		perfexit(err);
 	assert_select(selk);
-	rv = piv_read_cert(selk, slotid);
-	if (rv == 0) {
+	err = piv_read_cert(selk, slotid);
+	if (err == ERF_OK) {
 		slot = piv_get_slot(selk, slotid);
 		VERIFY(slot != NULL);
-		rv = ykpiv_attest(selk, slot, &cert, &certlen);
-		if (rv == 0) {
-			rv = piv_read_file(selk, PIV_TAG_CERT_YK_ATTESTATION,
+		err = ykpiv_attest(selk, slot, &cert, &certlen);
+		if (err == ERF_OK) {
+			err = piv_read_file(selk, PIV_TAG_CERT_YK_ATTESTATION,
 			    &chain, &chainlen);
 		}
 	}
 	piv_txn_end(selk);
 
-	if (rv != 0) {
-		fprintf(stderr, "error: attestation failed: %d (%s)\n",
-		    rv, strerror(rv));
-		exit(1);
-	}
+	if (err != ERF_OK)
+		goto error;
 
 	ptr = cert;
 	x509 = d2i_X509(NULL, (const uint8_t **)&ptr, certlen);
 	if (x509 == NULL) {
-		/* Getting error codes out of OpenSSL is weird. */
-		char errbuf[128];
-		unsigned long err = ERR_peek_last_error();
-		ERR_load_crypto_strings();
-		ERR_error_string(err, errbuf);
-		fprintf(stderr, "error: failed to parse attestation cert: "
-		    "%s\n", errbuf);
-		exit(3);
+		make_sslerf(err, "d2i_X509", "parsing attestation cert "
+		    "for slot %02x", slot->ps_slot);
+		goto error;
 	}
 	PEM_write_X509(stdout, x509);
 	X509_free(x509);
@@ -1148,9 +1143,9 @@ cmd_attest(uint slotid)
 	tlv = tlv_init(chain, 0, chainlen);
 	tag = tlv_read_tag(tlv);
 	if (tag != 0x70) {
-		fprintf(stderr, "error: failed to parse attestation cert: "
-		    "got tlv tag 0x%02x instead of 0x70\n", tag);
-		exit(3);
+		err = erf("PIVTagError", NULL,
+		    "Got TLV tag 0x%x instead of 0x70", tag);
+		goto error;
 	}
 	ptr = tlv_ptr(tlv);
 	len = tlv_rem(tlv);
@@ -1159,20 +1154,18 @@ cmd_attest(uint slotid)
 
 	x509 = d2i_X509(NULL, (const uint8_t **)&ptr, len);
 	if (x509 == NULL) {
-		/* Getting error codes out of OpenSSL is weird. */
-		char errbuf[128];
-		unsigned long err = ERR_peek_last_error();
-		ERR_load_crypto_strings();
-		ERR_error_string(err, errbuf);
-		fprintf(stderr, "error: failed to parse attestation cert: "
-		    "%s\n", errbuf);
-		exit(3);
+		make_sslerf(err, "d2i_X509", "parsing attestation device cert");
+		goto error;
 	}
 	PEM_write_X509(stdout, x509);
 	X509_free(x509);
 
 	free(cert);
 	free(chain);
+	exit(0);
+error:
+	err = erf("attest", err, "Attestation failed");
+	perfexit(err);
 }
 
 static void
@@ -1247,14 +1240,15 @@ cmd_sign(uint slotid)
 	uint8_t *buf, *sig;
 	enum sshdigest_types hashalg;
 	size_t inplen, siglen;
-	int rv;
+	erf_t *err;
 
 	assert_slotid(slotid);
 
 	if (override == NULL) {
-		piv_txn_begin(selk);
+		if ((err = piv_txn_begin(selk)))
+			perfexit(err);
 		assert_select(selk);
-		rv = piv_read_cert(selk, slotid);
+		err = piv_read_cert(selk, slotid);
 		piv_txn_end(selk);
 
 		cert = piv_get_slot(selk, slotid);
@@ -1262,37 +1256,37 @@ cmd_sign(uint slotid)
 		cert = override;
 	}
 
-	if (cert == NULL && rv == ENOENT) {
+	if (cert == NULL && erfcause(err, "NotFoundError")) {
 		fprintf(stderr, "error: PIV slot %02X has no key present\n",
 		    slotid);
 		exit(1);
 	} else if (cert == NULL) {
-		fprintf(stderr, "error: failed to read cert in PIV slot %02X\n",
-		    slotid);
-		exit(1);
+		err = erf("sign", err, "Failed to read cert for signing key");
+		perfexit(err);
 	}
 
 	buf = read_stdin(16384, &inplen);
 	assert(buf != NULL);
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		perfexit(err);
 	assert_select(selk);
 	assert_pin(selk, B_FALSE);
 again:
 	hashalg = 0;
-	rv = piv_sign(selk, cert, buf, inplen, &hashalg, &sig, &siglen);
-	if (rv == EPERM) {
+	err = piv_sign(selk, cert, buf, inplen, &hashalg, &sig, &siglen);
+	if (erfcause(err, "PermissionError")) {
 		assert_pin(selk, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);
-	if (rv == EPERM) {
+	if (erfcause(err, "PermissionError")) {
 		fprintf(stderr, "error: key in slot %02X requires PIN\n",
 		    slotid);
 		exit(4);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: piv_sign_hash returned %d\n", rv);
-		exit(1);
+	} else if (err) {
+		err = erf("sign", err, "Failed to sign data");
+		perfexit(err);
 	}
 
 	fwrite(sig, 1, siglen, stdout);
@@ -1358,7 +1352,7 @@ cmd_unbox(void)
 	struct piv_token *tk;
 	struct piv_slot *sl;
 	struct piv_ecdh_box *box;
-	int rv;
+	erf_t *err;
 	size_t len;
 	uint8_t *buf;
 	char *guid;
@@ -1367,43 +1361,39 @@ cmd_unbox(void)
 	assert(buf != NULL);
 	VERIFY3U(len, >, 0);
 
-	if (piv_box_from_binary(buf, len, &box)) {
-		fprintf(stderr, "error: failed parsing ecdh box\n");
-		exit(1);
-	}
+	if ((err = piv_box_from_binary(buf, len, &box)))
+		perfexit(err);
 	free(buf);
 
-	rv = piv_box_find_token(ks, box, &tk, &sl);
-	if (rv == ENOENT) {
+	err = piv_box_find_token(ks, box, &tk, &sl);
+	if (erfcause(err, "NotFoundError")) {
 		fprintf(stderr, "error: no token found on system that can "
 		    "unlock this box\n");
 		exit(5);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to communicate with token\n");
-		exit(1);
+	} else if (err) {
+		perfexit(err);
 	}
 
-	piv_txn_begin(tk);
+	if ((err = piv_txn_begin(tk)))
+		perfexit(err);
 	assert_select(tk);
 	assert_pin(tk, B_FALSE);
 again:
-	rv = piv_box_open(tk, sl, box);
-	if (rv == EPERM) {
+	err = piv_box_open(tk, sl, box);
+	if (erfcause(err, "PermissionError")) {
 		assert_pin(tk, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(tk);
 
-	if (rv == EPERM) {
+	if (erfcause(err, "PermissionError")) {
 		guid = buf_to_hex(tk->pt_guid, sizeof (tk->pt_guid), B_FALSE);
 		fprintf(stderr, "error: token %s slot %02X requires a PIN\n",
 		    guid, sl->ps_slot);
 		free(guid);
 		exit(4);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to communicate with token "
-		    "(rv = %d)\n", rv);
-		exit(1);
+	} else if (err) {
+		perfexit(err);
 	}
 
 	VERIFY0(piv_box_take_data(box, &buf, &len));
@@ -1479,15 +1469,14 @@ cmd_box_info(void)
 	size_t len;
 	uint8_t *buf;
 	char *hex;
+	erf_t *err;
 
 	buf = read_stdin(8192, &len);
 	assert(buf != NULL);
 	VERIFY3U(len, >, 0);
 
-	if (piv_box_from_binary(buf, len, &box)) {
-		fprintf(stderr, "error: failed parsing ecdh box\n");
-		exit(1);
-	}
+	if ((err = piv_box_from_binary(buf, len, &box)))
+		perfexit(err);
 	free(buf);
 
 	hex = buf_to_hex(box->pdb_guid, sizeof (box->pdb_guid), B_FALSE);
@@ -1517,6 +1506,7 @@ cmd_auth(uint slotid)
 	uint8_t *buf;
 	char *ptr;
 	size_t boff;
+	erf_t *err;
 	int rv;
 
 	switch (slotid) {
@@ -1532,9 +1522,10 @@ cmd_auth(uint slotid)
 	}
 
 	if (override == NULL) {
-		piv_txn_begin(selk);
+		if ((err = piv_txn_begin(selk)))
+			perfexit(err);
 		assert_select(selk);
-		rv = piv_read_cert(selk, slotid);
+		err = piv_read_cert(selk, slotid);
 		piv_txn_end(selk);
 
 		cert = piv_get_slot(selk, slotid);
@@ -1542,14 +1533,13 @@ cmd_auth(uint slotid)
 		cert = override;
 	}
 
-	if (cert == NULL && rv == ENOENT) {
+	if (cert == NULL && erfcause(err, "NotFoundError")) {
 		fprintf(stderr, "error: PIV slot %02X has no key present\n",
 		    slotid);
 		exit(1);
 	} else if (cert == NULL) {
-		fprintf(stderr, "error: failed to read cert in PIV slot %02X\n",
-		    slotid);
-		exit(1);
+		err = erf("auth", err, "Failed to read cert for signing key");
+		perfexit(err);
 	}
 
 	buf = read_stdin(16384, &boff);
@@ -1557,36 +1547,33 @@ cmd_auth(uint slotid)
 	buf[boff] = 0;
 
 	pubkey = sshkey_new(cert->ps_pubkey->type);
-	assert(pubkey != NULL);
+	VERIFY(pubkey != NULL);
 	ptr = (char *)buf;
 	rv = sshkey_read(pubkey, &ptr);
 	if (rv != 0) {
-		fprintf(stderr, "error: failed to parse public key: %d\n",
-		    rv);
-		exit(1);
+		err = erf("auth", ssherf("sshkey_read", rv),
+		    "Failed to parse public key input");
+		perfexit(err);
 	}
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		perfexit(err);
 	assert_select(selk);
 	assert_pin(selk, B_FALSE);
 again:
-	rv = piv_auth_key(selk, cert, pubkey);
-	if (rv == EPERM) {
+	err = piv_auth_key(selk, cert, pubkey);
+	if (erfcause(err, "PermissionError")) {
 		assert_pin(selk, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);
-	if (rv == EPERM) {
+	if (erfcause(err, "PermissionError")) {
 		fprintf(stderr, "error: key in slot %02X requires PIN\n",
 		    slotid);
 		exit(4);
-	} else if (rv == ESRCH) {
-		fprintf(stderr, "error: keys do not match, or signature "
-		    "validation failed\n");
-		exit(1);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: piv_ecdh returned %d\n", rv);
-		exit(1);
+	} else if (err) {
+		err = erf("auth", err, "Key authentication failed");
+		perfexit(err);
 	}
 }
 

@@ -104,8 +104,8 @@ _erf(const char *name, struct erf *cause, const char *func, const char *file,
 }
 
 struct erf *
-_erfno(int eno, const char *func ,const char *file, uint line,
-    const char *fmt, ...)
+_erfno(const char *enofunc, int eno, const char *func ,const char *file,
+    uint line, const char *fmt, ...)
 {
 	struct erf *e;
 	char *p;
@@ -126,7 +126,8 @@ _erfno(int eno, const char *func ,const char *file, uint line,
 	e->erf_function = func;
 
 	wrote = snprintf(e->erf_message, sizeof (e->erf_message),
-	    "Error %d (%s): %s: ", eno, macro, strerror(eno));
+	    "%s returned error %d (%s): %s: ", enofunc, eno, macro,
+	    strerror(eno));
 	p = &e->erf_message[wrote];
 	va_start(ap, fmt);
 	wrote += vsnprintf(p, sizeof (e->erf_message) - wrote, fmt, ap);

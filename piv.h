@@ -75,6 +75,7 @@ enum iso_sw {
 	SW_WRONG_DATA = 0x6A80,
 	SW_OUT_OF_MEMORY = 0x6A84,
 	SW_WRONG_LENGTH = 0x6700,
+	SW_INS_NOT_SUP = 0x6D00,
 };
 
 enum piv_sel_tag {
@@ -351,10 +352,13 @@ erf_t *piv_read_all_certs(struct piv_token *tk);
  * Authenticates as the card administrator using a 3DES key.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - ENOENT: the card has no 3DES admin key
- *  - EACCES: the key was invalid
- *  - EINVAL: the card rejected the command
+ *  - IOError: general card communication failure
+ *  - NotFoundError: the card has no 3DES admin key
+ *  - NotSupportedError: the card does not support 3DES admin auth
+ *  - InvalidDataError: the card returned unparseable data
+ *  - PermissionError: the key was invalid or admin auth not allowed through
+ *                     this interface (e.g. contactless)
+ *  - APDUError: the card rejected the command
  */
 erf_t *piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
 
@@ -362,12 +366,13 @@ erf_t *piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
  * YubicoPIV-specific: changes the 3DES card administrator key.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - ENOENT: the card has no 3DES admin key
- *  - EPERM: must call piv_auth_admin() first
- *  - EINVAL: the card rejected the command or is not YubicoPIV
+ *  - ArgumentError: tk is not YubicoPIV-compatible or touchpolicy is
+ *                   unsupported on this version of YubicoPIV
+ *  - IOError: general card communication failure
+ *  - PermissionError: must call piv_auth_admin() first
+ *  - APDUError: the card rejected the command
  */
-int ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
+erf_t *ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
     enum ykpiv_touch_policy touchpolicy);
 
 /*
@@ -375,11 +380,15 @@ int ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
  * the public key.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EPERM: the card requires admin authentication before generating keys
- *  - EINVAL: the card rejected the command
+ *  - IOError: general card communication failure
+ *  - ArgumentError: algorithm or slot ID not supported
+ *  - PermissionError: the card requires admin authentication before generating
+ *                     keys
+ *  - InvalidDataError: the card returned invalid data which was unparseable
+ *                      or unsafe to use (e.g. bad EC public point)
+ *  - APDUError: the card rejected the command
  */
-int piv_generate(struct piv_token *tk, enum piv_slotid slotid,
+erf_t *piv_generate(struct piv_token *tk, enum piv_slotid slotid,
     enum piv_alg alg, struct sshkey **pubkey);
 
 /*
@@ -389,12 +398,16 @@ int piv_generate(struct piv_token *tk, enum piv_slotid slotid,
  * YubicoPIV.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EPERM: the card requires admin authentication before generating keys
- *  - EINVAL: the card rejected the command, or you tried to use this on a
- *            non-YubicoPIV card
+ *  - IOError: general card communication failure
+ *  - ArgumentError: algorithm or slot ID not supported, card is not YubicoPIV
+ *                   or version does not support given policies
+ *  - PermissionError: the card requires admin authentication before generating
+ *                     keys
+ *  - InvalidDataError: the card returned invalid data which was unparseable
+ *                      or unsafe to use (e.g. bad EC public point)
+ *  - APDUError: the card rejected the command
  */
-int ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
+erf_t *ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
     enum piv_alg alg, enum ykpiv_pin_policy pinpolicy,
     enum ykpiv_touch_policy touchpolicy, struct sshkey **pubkey);
 
@@ -404,13 +417,13 @@ int ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
  * "flags" should include bits from enum piv_certinfo_flags (and piv_cert_comp).
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - ENOMEM: certificate is too large to fit on card
+ *  - IOError: general card communication failure
+ *  - DeviceOutOfMemoryError: certificate is too large to fit on card
  *  - EPERM: admin authentication required to write a cert
  *  - ENOENT: slot unsupported
  *  - EINVAL: other card error
  */
-int piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
+erf_t *piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
     const uint8_t *data, size_t datalen, uint flags);
 
 /*
@@ -433,14 +446,20 @@ int piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
  * remaining attempts count.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EINVAL: the card rejected the command (e.g. because applet not selected)
- *  - EAGAIN: the PIN has a remaining retries count that is too low
- *  - EACCES: the PIN code was incorrect. If non-NULL, the "retries" argument
- *            will be written with the number of attempts remaining before the
- *            card locks itself (and potentially erases keys)
+ *  - IOError: general card communication failure
+ *  - APDUError: the card rejected the command (e.g. because applet not
+ *               selected)
+ *  - MinRetriesError: the PIN has a remaining retries count that is too low
+ *                     when compared with input value of "retries"
+ *  - NotSupportedError: if pin was given as NULL to do a retry counter check
+ *                       and the card does not support this form of the
+ *                       command
+ *  - PermissionError: the PIN code was incorrect. If non-NULL, the "retries"
+ *                     argument will be written with the number of attempts
+ *                     remaining before the card locks itself (and potentially
+ *                     erases keys)
  */
-int piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
+erf_t *piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
     uint *retries, boolean_t canskip);
 
 /*
@@ -454,7 +473,7 @@ int piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  *  - EINVAL: the card rejected the command (e.g. because applet not selected)
  *  - EACCES: the old PIN code was incorrect.
  */
-int piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
+erf_t *piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
     const char *newpin);
 
 /*
@@ -468,7 +487,7 @@ int piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  *  - EINVAL: the card rejected the command (e.g. because applet not selected)
  *  - EACCES: the PUK was incorrect.
  */
-int piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
+erf_t *piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
     const char *newpin);
 
 /*
@@ -484,7 +503,7 @@ int piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
  *  - EPERM: the necessary auth has not been done before calling
  *            (piv_auth_admin() and piv_verify_pin()).
  */
-int ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
+erf_t *ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
 
 /*
  * Authenticates a PIV key slot by matching its public key against the given
@@ -492,14 +511,16 @@ int ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
  * that the key does match.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EINVAL: the card rejected the command (e.g. because applet not selected)
- *  - EPERM: the key slot in question is locked
- *  - ENOTSUP: the card returned a GEN_AUTH payload type that isn't supported
- *  - ESRCH: the key validation failed (either because it doesn't match the
- *           provided pubkey, or because the signature did not validate)
+ *  - IOError: general card communication failure
+ *  - APDUError: the card rejected the command (e.g. because applet not selected)
+ *  - PermissionError: the key slot in question is locked
+ *  - NotSupportedError: the card returned a GEN_AUTH payload type that isn't
+ *                       supported
+ *  - KeyAuthError: the key validation failed (either because it doesn't match
+ *                  the provided pubkey, or because the signature did not
+ *                  validate)
  */
-int piv_auth_key(struct piv_token *tk, struct piv_slot *slot,
+erf_t *piv_auth_key(struct piv_token *tk, struct piv_slot *slot,
     struct sshkey *pubkey);
 
 /*
@@ -510,7 +531,7 @@ int piv_auth_key(struct piv_token *tk, struct piv_slot *slot,
  *  - EINVAL: the card rejected the command (e.g. because applet not selected,
  *            or the command is unsupported)
  */
-int ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
+erf_t *ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
     uint8_t **data, size_t *len);
 
 /*
@@ -528,16 +549,19 @@ int ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
  * with free().
  *
  * Errors:
- *   - EIO: general card communication failure
- *   - EPERM: the key slot in question is locked and cannot be used. You might
- *            need to unlock the card with piv_verify_pin.
- *   - EINVAL: the card rejected the command (e.g. because applet not selected)
- *   - ENOTSUP: the card returned a GEN_AUTH payload type that isn't supported
+ *   - IOError: general card communication failure
+ *   - PermissionError: the key slot in question is locked and cannot be used.
+ *                      You might need to unlock the card with piv_verify_pin.
+ *   - APDUError: the card rejected the command (e.g. because applet not selected)
+ *   - InvalidDataError: the card returned unparseable or invalid payloads
+ *   - NotFoundError: the given slot has no key in it or is not supported by
+ *                    the card
+ *   - NotSupportedError: algorithm or slot is not supported
  */
-int piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
-    size_t datalen, enum sshdigest_types *hashalgo, uint8_t **signature,
-    size_t *siglen);
-int piv_sign_prehash(struct piv_token *tk, struct piv_slot *slot,
+erf_t *piv_sign(struct piv_token *tk, struct piv_slot *slot,
+    const uint8_t *data, size_t datalen, enum sshdigest_types *hashalgo,
+    uint8_t **signature, size_t *siglen);
+erf_t *piv_sign_prehash(struct piv_token *tk, struct piv_slot *slot,
     const uint8_t *hash, size_t hashlen, uint8_t **signature, size_t *siglen);
 
 /*
@@ -556,7 +580,7 @@ int piv_sign_prehash(struct piv_token *tk, struct piv_slot *slot,
  *   - EINVAL: the card rejected the command (e.g. because applet not selected)
  *   - ENOTSUP: the card returned a GEN_AUTH payload type that isn't supported
  */
-int piv_ecdh(struct piv_token *tk, struct piv_slot *slot,
+erf_t *piv_ecdh(struct piv_token *tk, struct piv_slot *slot,
     struct sshkey *pubkey, uint8_t **secret, size_t *seclen);
 
 struct piv_ecdh_box *piv_box_new(void);
@@ -568,11 +592,11 @@ int piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
 int piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box);
 int piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len);
 
-int piv_box_from_binary(const uint8_t *input, size_t len,
+erf_t *piv_box_from_binary(const uint8_t *input, size_t len,
     struct piv_ecdh_box **box);
-int piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
+erf_t *piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
     struct piv_token **tk, struct piv_slot **slot);
-int piv_box_open(struct piv_token *tk, struct piv_slot *slot,
+erf_t *piv_box_open(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box);
 int piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box);
 int piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
@@ -580,10 +604,11 @@ int piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **buf);
 void piv_box_free(struct piv_ecdh_box *box);
 
 int sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
-int sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
+erf_t *sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 
-int piv_write_file(struct piv_token *pt, uint tag,
+erf_t *piv_write_file(struct piv_token *pt, uint tag,
     const uint8_t *data, size_t len);
-int piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len);
+erf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
+    size_t *len);
 
 #endif

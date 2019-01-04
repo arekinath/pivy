@@ -35,14 +35,20 @@ extern struct erf *ERF_NOMEM;
 struct erf *_erf(const char *name, struct erf *cause, const char *func,
     const char *file, uint line, const char *fmt, ...);
 
-struct erf *_erfno(int eno, const char *func, const char *file, uint line,
-    const char *fmt, ...);
+struct erf *_erfno(const char *enofunc, int eno, const char *func,
+    const char *file, uint line, const char *fmt, ...);
 
 #define erf(name, cause, fmt, ...)	\
     _erf(name, cause, __func__, __FILE__, __LINE__, \
     fmt __VA_OPT__(,) __VA_ARGS__)
 
-#define erfno(eno, fmt, ...)	\
-    _erfno(eno, __func__, __FILE__, __LINE__, fmt __VA_OPT__(,) __VA_ARGS__)
+#define erfno(func, eno, fmt, ...)	\
+    _erfno(func, eno, __func__, __FILE__, __LINE__, \
+    fmt __VA_OPT__(,) __VA_ARGS__)
+
+#define argerf(param, mustbe, butis, ...)	\
+    erf("ArgumentError", NULL, \
+    "Argument " param " must be " mustbe " but is " butis \
+    __VA_OPT__(,) __VA_ARGS__)
 
 #endif
