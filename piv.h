@@ -26,6 +26,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include "erf.h"
 #include "libssh/digest.h"
 
 extern boolean_t piv_full_apdu_debug;
@@ -269,7 +270,15 @@ struct piv_ecdh_box {
 	struct apdubuf pdb_plain;
 };
 
-struct piv_token *piv_enumerate(SCARDCONTEXT ctx);
+/*
+ * Enumerates all PIV tokens attached to the given SCARDCONTEXT.
+ *
+ * Errors:
+ *  - PCSCError: a PCSC call failed in a way that is not retryable
+ */
+erf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
+
+/* Releases a list of tokens acquired from piv_enumerate. */
 void piv_release(struct piv_token *pk);
 
 /*
@@ -282,17 +291,18 @@ struct piv_slot *piv_get_slot(struct piv_token *tk, enum piv_slotid slotid);
 struct apdu *piv_apdu_make(enum iso_class cls, enum iso_ins ins, uint8_t p1,
     uint8_t p2);
 void piv_apdu_free(struct apdu *pdu);
-int piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
-int piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
+
+erf_t *piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
+erf_t *piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
 
 /*
  * Begins a new transaction on the card. Needs to be called before any
  * interaction with the card is possible.
  *
  * Errors:
- *  - EIO: general communication failure
+ *  - IOError: general communication failure
  */
-int piv_txn_begin(struct piv_token *key);
+erf_t *piv_txn_begin(struct piv_token *key);
 
 /*
  * Ends a transaction.
@@ -304,12 +314,12 @@ void piv_txn_end(struct piv_token *key);
  * txn to prepare the card for other PIV commands.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - ENOENT: PIV applet not found on card
- *  - ENOTSUP: applet on card returned invalid or unsupported payload to
- *             select command.
+ *  - IOError: general card communication failure
+ *  - InvalidDataError: device returned invalid or unsupported payload to
+ *                      select command
+ *  - NotFoundError: PIV applet not found on card
  */
-int piv_select(struct piv_token *tk);
+erf_t *piv_select(struct piv_token *tk);
 
 /*
  * Reads the certificate in a given slot on the card, and updates the list
@@ -319,21 +329,23 @@ int piv_select(struct piv_token *tk);
  * (e.g. piv_sign, piv_ecdh).
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - ENOENT: no key/cert is present in this slot
- *  - EPERM: the cert in this slot requires either using a contact interface
- *           (and the card is connected contactless), or requires a PIN
- *  - EINVAL: card rejected the request (e.g. because applet not selected) or
- *            returned an unparseable invalid certificate
- *  - ENOTSUP: type of certificate in this slot is not supported
+ *  - IOError: general card communication failure
+ *  - NotFoundError: no key/cert is present in this slot
+ *  - NotSupportedError: card does not support the use of this slot
+ *  - PermissionError: the cert in this slot requires either using a contact
+ *                     interface (and the card is connected contactless), or
+ *                     requires a PIN
+ *  - InvalidDataError: device returned an invalid payload or unparseable
+ *                      certificate
+ *  - APDUError: card rejected the request (e.g because applet not selected)
  */
-int piv_read_cert(struct piv_token *tk, enum piv_slotid slotid);
+erf_t *piv_read_cert(struct piv_token *tk, enum piv_slotid slotid);
 /*
  * Attempts to read certificates in all supported PIV slots on the card, by
  * calling piv_read_cert repeatedly. Ignores ENOENT and ENOTSUP errors. Any
  * other error will return early and may not try all slots.
  */
-int piv_read_all_certs(struct piv_token *tk);
+erf_t *piv_read_all_certs(struct piv_token *tk);
 
 /*
  * Authenticates as the card administrator using a 3DES key.
@@ -344,7 +356,7 @@ int piv_read_all_certs(struct piv_token *tk);
  *  - EACCES: the key was invalid
  *  - EINVAL: the card rejected the command
  */
-int piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
+erf_t *piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
 
 /*
  * YubicoPIV-specific: changes the 3DES card administrator key.

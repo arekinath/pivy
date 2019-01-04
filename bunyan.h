@@ -30,6 +30,7 @@ enum bunyan_arg_type {
 	BNY_NVLIST,
 	BNY_TIMERS,
 	BNY_BIN_HEX,
+	BNY_ERF,
 };
 
 void bunyan_init(void);

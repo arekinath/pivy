@@ -16,28 +16,33 @@
 struct erf {
 	struct erf *erf_cause;
 	int erf_errno;
-	const char *erf_name;
-	const char *erf_message;
+	char erf_name[128];
+	char erf_message[256];
+	const char *erf_function;
 	const char *erf_file;
 	uint erf_line;
 };
+typedef struct erf erf_t;
 
-void perf(struct erf *e);
-void perfexit(struct erf *e);
+void perf(const struct erf *e);
+void perfexit(const struct erf *e);
+int erfcause(const struct erf *e, const char *name);
+void erfree(struct erf *e);
 
 extern struct erf *ERF_OK;
 extern struct erf *ERF_NOMEM;
 
-struct erf *_erf(const char *name, struct erf *cause, const char *file,
-    uint line, const char *fmt, ...);
+struct erf *_erf(const char *name, struct erf *cause, const char *func,
+    const char *file, uint line, const char *fmt, ...);
 
-struct erf *_erfno(int errno, const char *file, uint line, const char *fmt,
-    ...);
+struct erf *_erfno(int eno, const char *func, const char *file, uint line,
+    const char *fmt, ...);
 
 #define erf(name, cause, fmt, ...)	\
-    do { _erf(name, cause, __FILE__, __LINE__, fmt, __VA_ARGS__) } while (0)
+    _erf(name, cause, __func__, __FILE__, __LINE__, \
+    fmt __VA_OPT__(,) __VA_ARGS__)
 
-#define erfno(errno, fmt, ...)	\
-    do { _erf(errno, __FILE__, __LINE__, fmt, __VA_ARGS__) } while (0)
+#define erfno(eno, fmt, ...)	\
+    _erfno(eno, __func__, __FILE__, __LINE__, fmt __VA_OPT__(,) __VA_ARGS__)
 
 #endif

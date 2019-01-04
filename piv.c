@@ -57,6 +57,77 @@ const uint8_t AID_PIV[] = {
 
 boolean_t piv_full_apdu_debug = B_FALSE;
 
+#define pcscerf(call, rv)	\
+    erf("PCSCError", NULL, call " failed: %d (%s)", \
+    rv, pcsc_stringify_error(rv))
+
+#define pcscrerf(call, reader, rv)	\
+    erf("PCSCError", NULL, call " failed on '%s': %d (%s)", \
+    reader, rv, pcsc_stringify_error(rv))
+
+#define swerf(ins, sw, ...)	\
+    erf("APDUError", NULL, "Card replied with SW=%04x (%s) to " ins, \
+    (uint)sw, sw_to_name(sw) __VA_OPT__(,) __VA_ARGS__)
+
+#define tagerf(ins, tag, ...)	\
+    erf("PIVTagError", NULL, "Invalid tag 0x%x in PIV " ins " response", \
+    (uint)tag __VA_OPT__(,) __VA_ARGS__)
+
+#define ioerf(cause, rdr)	\
+    erf("IOError", cause, "Failed to communicate with PIV device '%s'", rdr)
+
+#define invderf(cause, rdr)	\
+    erf("InvalidDataError", cause, "PIV device '%s' returned invalid or " \
+    "unsupported payload", rdr)
+
+static inline void
+debug_dump(erf_t *err, struct apdu *apdu)
+{
+	bunyan_log(DEBUG, "APDU parsing error",
+	    "data", BNY_BIN_HEX, apdu->a_reply.b_data + apdu->a_reply.b_offset,
+	    apdu->a_reply.b_len,
+	    "error", BNY_ERF, err, NULL);
+}
+
+static const char *
+sw_to_name(enum iso_sw sw)
+{
+	switch (sw) {
+	case SW_NO_ERROR:
+		return ("NO_ERROR");
+	case SW_FUNC_NOT_SUPPORTED:
+		return ("FUNC_NOT_SUPPORTED");
+	case SW_CONDITIONS_NOT_SATISFIED:
+		return ("CONDITIONS_NOT_SATISFIED");
+	case SW_SECURITY_STATUS_NOT_SATISFIED:
+		return ("SECURITY_STATUS_NOT_SATISFIED");
+	case SW_WARNING_EOF:
+		return ("WARNING_EOF");
+	case SW_FILE_NOT_FOUND:
+		return ("FILE_NOT_FOUND");
+	case SW_INCORRECT_PIN:
+		return ("INCORRECT_PIN");
+	case SW_INCORRECT_P1P2:
+		return ("INCORRECT_P1P2");
+	case SW_WRONG_DATA:
+		return ("WRONG_DATA");
+	case SW_OUT_OF_MEMORY:
+		return ("OUT_OF_MEMORY");
+	case SW_WRONG_LENGTH:
+		return ("WRONG_LENGTH");
+	default:
+		/* FALL THROUGH */
+		(void)0;
+	}
+	if ((sw & 0xFF00) == SW_BYTES_REMAINING_00)
+		return ("BYTES_REMAINING");
+	else if ((sw & 0xFF00) == SW_WARNING_NO_CHANGE_00)
+		return ("WARNING_NO_CHANGE");
+	else if ((sw & 0xFF00) == SW_WARNING_00)
+		return ("WARNING_UNKNOWN");
+	return ("UNKNOWN");
+}
+
 int
 piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 {
@@ -109,22 +180,21 @@ out:
 	return (rv);
 }
 
-static int
+static erf_t *
 piv_probe_ykpiv(struct piv_token *pk)
 {
-	int rv;
+	erf_t *err;
 	struct apdu *apdu;
 
 	assert(pk->pt_intxn == B_TRUE);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_VER, 0x00, 0x00);
 
-	rv = piv_apdu_transceive(pk, apdu);
-	if (rv != 0) {
+	err = piv_apdu_transceive(pk, apdu);
+	if (err) {
+		err = ioerf(err, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_probe_ykpiv.transceive_apdu failed",
-		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (EIO);
 	}
@@ -134,23 +204,27 @@ piv_probe_ykpiv(struct piv_token *pk)
 		    &apdu->a_reply.b_data[apdu->a_reply.b_offset];
 		if (apdu->a_reply.b_len < 3) {
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			err = erf("NotSupportedError", NULL,
+			    "PIV device does not support YubicoPIV");
+			return (err);
 		}
 		pk->pt_ykpiv = B_TRUE;
 		bcopy(reply, pk->pt_ykver, 3);
-		rv = 0;
+		err = NULL;
 	} else {
-		rv = ENOTSUP;
+		err = erf("NotSupportedError",
+		    swerf("INS_YK_GET_VER", apdu->a_sw),
+		    "PIV device does not support YubicoPIV");
 	}
 
 	piv_apdu_free(apdu);
-	return (rv);
+	return (err);
 }
 
-static int
+static erf_t *
 piv_read_discov(struct piv_token *pk)
 {
-	int rv;
+	erf_t *err;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag, policy;
@@ -166,15 +240,14 @@ piv_read_discov(struct piv_token *pk)
 	apdu->a_cmd.b_data = tlv_buf(tlv);
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
-	rv = piv_apdu_transceive_chain(pk, apdu);
-	if (rv != 0) {
+	err = piv_apdu_transceive_chain(pk, apdu);
+	if (err) {
+		err = ioerf(err, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_read_chuid.transceive_apdu failed",
-		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
-		return (EIO);
+		return (err);
 	}
 
 	tlv_free(tlv);
@@ -186,18 +259,16 @@ piv_read_discov(struct piv_token *pk)
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
 		if (tag != 0x7E) {
-			bunyan_log(DEBUG, "card returned invalid tag in "
-			    "PIV INS_GET_DATA(DISCOV) response payload",
-			    "reader", BNY_STRING, pk->pt_rdrname,
-			    "tag", BNY_UINT, tag,
-			    "reply", BNY_BIN_HEX, apdu->a_reply.b_data +
-			    apdu->a_reply.b_offset, apdu->a_reply.b_len, NULL);
+			err = invderf(tagerf("INS_GET_DATA(DISCOV)", tag),
+			    pk->pt_rdrname);
+			debug_dump(err, apdu);
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			return (err);
 		}
 		while (!tlv_at_end(tlv)) {
 			tag = tlv_read_tag(tlv);
-			bunyan_log(TRACE, "reading discov tlv tag", "tag", BNY_UINT, (uint)tag, NULL);
+			bunyan_log(TRACE, "reading discov tlv tag",
+			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0x4F:	/* AID */
 				if (tlv_rem(tlv) > sizeof (AID_PIV) ||
@@ -212,7 +283,8 @@ piv_read_discov(struct piv_token *pk)
 				break;
 			case 0x5F2F:	/* PIN and OCC policy */
 				policy = tlv_read_uint(tlv);
-				bunyan_log(TRACE, "policy in discov", "policy", BNY_UINT, policy, NULL);
+				bunyan_log(TRACE, "policy in discov",
+				    "policy", BNY_UINT, policy, NULL);
 				if ((policy & 0x4000))
 					pk->pt_pin_app = B_TRUE;
 				if ((policy & 0x2000))
@@ -243,34 +315,42 @@ piv_read_discov(struct piv_token *pk)
 				tlv_skip(tlv);
 				tlv_free(tlv);
 				piv_apdu_free(apdu);
-				return (ENOTSUP);
+				err = invderf(tagerf("INS_GET_DATA(DISCOV)",
+				    tag), pk->pt_rdrname);
+				return (err);
 			}
 		}
 		tlv_end(tlv);
 		tlv_free(tlv);
-		rv = 0;
+		err = NULL;
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND ||
 	    apdu->a_sw == SW_WRONG_DATA) {
-		rv = ENOENT;
+		err = erf("NotFoundError", swerf("INS_GET_DATA", apdu->a_sw),
+		    "PIV discovery object was not found on device '%s'",
+		    pk->pt_rdrname);
+
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = erf("NotSupportedError", swerf("INS_GET_DATA",
+		    apdu->a_sw), "PIV discovery object not supported on "
+		    "device '%s'", pk->pt_rdrname);
 
 	} else {
-		bunyan_log(DEBUG, "card did not accept INS_GET_DATA for "
-		    "PIV discovery file",
+		err = swerf("INS_GET_DATA", apdu->a_sw);
+		bunyan_log(DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
-		rv = EINVAL;
+		    "error", BNY_ERF, err, NULL);
 	}
 
 	piv_apdu_free(apdu);
 
-	return (rv);
+	return (err);
 }
 
-static int
+static erf_t *
 piv_read_keyhist(struct piv_token *pk)
 {
-	int rv;
+	erf_t *rv;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag;
@@ -288,14 +368,13 @@ piv_read_keyhist(struct piv_token *pk)
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
 	rv = piv_apdu_transceive_chain(pk, apdu);
-	if (rv != 0) {
+	if (rv) {
+		rv = ioerf(rv, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_read_chuid.transceive_apdu failed",
-		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, rv, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
-		return (EIO);
+		return (rv);
 	}
 
 	tlv_free(tlv);
@@ -311,18 +390,16 @@ piv_read_keyhist(struct piv_token *pk)
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
 		if (tag != 0x53) {
-			bunyan_log(DEBUG, "card returned invalid tag in "
-			    "PIV INS_GET_DATA(KEYHIST) response payload",
-			    "reader", BNY_STRING, pk->pt_rdrname,
-			    "tag", BNY_UINT, tag,
-			    "reply", BNY_BIN_HEX, apdu->a_reply.b_data +
-			    apdu->a_reply.b_offset, apdu->a_reply.b_len, NULL);
+			rv = invderf(tagerf("INS_GET_DATA(KEYHIST)", tag),
+			    pk->pt_rdrname);
+			debug_dump(rv, apdu);
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			return (rv);
 		}
 		while (!tlv_at_end(tlv)) {
 			tag = tlv_read_tag(tlv);
-			bunyan_log(TRACE, "reading keyhist tlv tag", "tag", BNY_UINT, (uint)tag, NULL);
+			bunyan_log(TRACE, "reading keyhist tlv tag",
+			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0xC1:	/* # keys with on-card certs */
 				pk->pt_hist_oncard = tlv_read_uint(tlv);
@@ -347,8 +424,11 @@ piv_read_keyhist(struct piv_token *pk)
 				tlv_skip(tlv);
 				tlv_skip(tlv);
 				tlv_free(tlv);
+				rv = invderf(tagerf("INS_GET_DATA(KEYHIST)",
+				    tag), pk->pt_rdrname);
+				debug_dump(rv, apdu);
 				piv_apdu_free(apdu);
-				return (ENOTSUP);
+				return (rv);
 			}
 		}
 		tlv_end(tlv);
@@ -357,14 +437,20 @@ piv_read_keyhist(struct piv_token *pk)
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND ||
 	    apdu->a_sw == SW_WRONG_DATA) {
-		rv = ENOENT;
+		rv = erf("NotFoundError", swerf("INS_GET_DATA", apdu->a_sw),
+		    "PIV key history object not found on device '%s'",
+		    pk->pt_rdrname);
+
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		rv = erf("NotSupportedError", swerf("INS_GET_DATA", apdu->a_sw),
+		    "PIV key history object not supported by device '%s'",
+		    pk->pt_rdrname);
 
 	} else {
-		bunyan_log(DEBUG, "card did not accept INS_GET_DATA for "
-		    "PIV key history file",
+		rv = swerf("INS_GET_DATA", apdu->a_sw);
+		bunyan_log(DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
-		rv = EINVAL;
+		    "error", BNY_ERF, rv, NULL);
 	}
 
 	piv_apdu_free(apdu);
@@ -372,10 +458,10 @@ piv_read_keyhist(struct piv_token *pk)
 	return (rv);
 }
 
-static int
+static erf_t *
 piv_read_chuid(struct piv_token *pk)
 {
-	int rv;
+	erf_t *err;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag, i;
@@ -394,15 +480,14 @@ piv_read_chuid(struct piv_token *pk)
 	apdu->a_cmd.b_data = tlv_buf(tlv);
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
-	rv = piv_apdu_transceive_chain(pk, apdu);
-	if (rv != 0) {
-		bunyan_log(WARN, "piv_read_chuid.transceive_apdu failed",
-		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+	err = piv_apdu_transceive_chain(pk, apdu);
+	if (err) {
+		err = ioerf(err, pk->pt_rdrname);
+		bunyan_log(WARN, "transceive_apdu failed",
+		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
-		return (EIO);
+		return (err);
 	}
 
 	tlv_free(tlv);
@@ -414,18 +499,16 @@ piv_read_chuid(struct piv_token *pk)
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
 		if (tag != 0x53) {
-			bunyan_log(DEBUG, "card returned invalid tag in "
-			    "PIV INS_GET_DATA(CHUID) response payload",
-			    "reader", BNY_STRING, pk->pt_rdrname,
-			    "tag", BNY_UINT, tag,
-			    "reply", BNY_BIN_HEX, apdu->a_reply.b_data +
-			    apdu->a_reply.b_offset, apdu->a_reply.b_len, NULL);
+			err = invderf(tagerf("INS_GET_DATA(CHUID)", tag),
+			    pk->pt_rdrname);
+			debug_dump(err, apdu);
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			return (err);
 		}
 		while (!tlv_at_end(tlv)) {
 			tag = tlv_read_tag(tlv);
-			bunyan_log(TRACE, "reading chuid tlv tag", "tag", BNY_UINT, (uint)tag, NULL);
+			bunyan_log(TRACE, "reading chuid tlv tag",
+			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0x30:	/* FASC-N */
 				pk->pt_fascn_len = tlv_read(tlv, pk->pt_fascn,
@@ -462,15 +545,20 @@ piv_read_chuid(struct piv_token *pk)
 				VERIFY3U(tlv_read(tlv, pk->pt_guid, 0,
 				    sizeof (pk->pt_guid)), ==,
 				    sizeof (pk->pt_guid));
-				bunyan_log(TRACE, "read guid", "guid", BNY_BIN_HEX, pk->pt_guid, sizeof (pk->pt_guid), NULL);
+				bunyan_log(TRACE, "read guid",
+				    "guid", BNY_BIN_HEX, pk->pt_guid,
+				    sizeof (pk->pt_guid), NULL);
 				tlv_end(tlv);
 				break;
 			default:
 				tlv_skip(tlv);
 				tlv_skip(tlv);
 				tlv_free(tlv);
+				err = invderf(tagerf("INS_GET_DATA(CHUID)",
+				    tag), pk->pt_rdrname);
+				debug_dump(err, apdu);
 				piv_apdu_free(apdu);
-				return (ENOTSUP);
+				return (err);
 			}
 		}
 		tlv_end(tlv);
@@ -499,45 +587,41 @@ piv_read_chuid(struct piv_token *pk)
 				ssh_digest_free(hctx);
 			}
 		}
-		rv = 0;
+		err = ERF_OK;
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
-		rv = ENOENT;
+		err = erf("NotFoundError", swerf("INS_GET_DATA", apdu->a_sw),
+		    "PIV CHUID object was not found on device '%s'",
+		    pk->pt_rdrname);
 
 	} else {
-		bunyan_log(DEBUG, "card did not accept INS_GET_DATA for "
-		    "PIV CHUID file",
+		err = swerf("INS_GET_DATA(CHUID)", apdu->a_sw);
+		bunyan_log(DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
-		rv = EINVAL;
+		    "error", BNY_ERF, err, NULL);
 	}
 
 	piv_apdu_free(apdu);
 
-	return (rv);
+	return (err);
 }
 
-struct piv_token *
-piv_enumerate(SCARDCONTEXT ctx)
+erf_t *
+piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 {
 	DWORD rv, readersLen = 0;
 	LPTSTR readers, thisrdr;
 	struct piv_token *ks = NULL;
+	erf_t *err;
 
 	rv = SCardListReaders(ctx, NULL, NULL, &readersLen);
 	if (rv != SCARD_S_SUCCESS) {
-		bunyan_log(ERROR, "SCardListReaders failed",
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
-		return (NULL);
+		return (pcscerf("SCardListReaders", rv));
 	}
 	readers = calloc(1, readersLen);
 	rv = SCardListReaders(ctx, NULL, readers, &readersLen);
 	if (rv != SCARD_S_SUCCESS) {
-		bunyan_log(ERROR, "SCardListReaders failed",
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
-		return (NULL);
+		return (pcscerf("SCardListReaders", rv));
 	}
 
 	for (thisrdr = readers; *thisrdr != 0; thisrdr += strlen(thisrdr) + 1) {
@@ -549,10 +633,10 @@ piv_enumerate(SCARDCONTEXT ctx)
 		    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, &card,
 		    &activeProtocol);
 		if (rv != SCARD_S_SUCCESS) {
+			err = pcscrerf("SCardConnect", thisrdr, rv);
 			bunyan_log(DEBUG, "SCardConnect failed",
-			    "reader", BNY_STRING, thisrdr,
-			    "err", BNY_STRING, pcsc_stringify_error(rv),
-			    NULL);
+			    "error", BNY_ERF, err, NULL);
+			erfree(err);
 			continue;
 		}
 
@@ -569,22 +653,25 @@ piv_enumerate(SCARDCONTEXT ctx)
 			key->pt_sendpci = *SCARD_PCI_T1;
 			break;
 		default:
-			assert(0);
+			VERIFY(0);
 		}
 
 		piv_txn_begin(key);
-		rv = piv_select(key);
-		if (rv == 0) {
-			rv = piv_read_chuid(key);
-			if (rv == ENOENT) {
-				rv = 0;
+		err = piv_select(key);
+		if (err == ERF_OK) {
+			err = piv_read_chuid(key);
+			if (erfcause(err, "NotFoundError")) {
+				erfree(err);
+				err = ERF_OK;
 				key->pt_nochuid = B_TRUE;
 			}
 		}
-		if (rv == 0) {
-			rv = piv_read_discov(key);
-			if (rv == ENOENT || rv == ENOTSUP) {
-				rv = 0;
+		if (err == ERF_OK) {
+			err = piv_read_discov(key);
+			if (erfcause(err, "NotFoundError") ||
+			    erfcause(err, "NotSupportedError")) {
+				erfree(err);
+				err = ERF_OK;
 				/*
 				 * Default to preferring the application PIN if
 				 * we have no discovery object.
@@ -593,28 +680,37 @@ piv_enumerate(SCARDCONTEXT ctx)
 				key->pt_auth = PIV_PIN;
 			}
 		}
-		if (rv == 0) {
-			rv = piv_read_keyhist(key);
-			if (rv == ENOENT || rv == ENOTSUP) {
-				rv = 0;
+		if (err == ERF_OK) {
+			err = piv_read_keyhist(key);
+			if (erfcause(err, "NotFoundError") ||
+			    erfcause(err, "NotSupportedError")) {
+				erfree(err);
+				err = ERF_OK;
 			}
 		}
-		if (rv == 0) {
-			rv = piv_probe_ykpiv(key);
-			if (rv == ENOTSUP)
-				rv = 0;
+		if (err == ERF_OK) {
+			err = piv_probe_ykpiv(key);
+			if (erfcause(err, "NotSupportedError")) {
+				erfree(err);
+				err = ERF_OK;
+			}
 		}
 		piv_txn_end(key);
 
-		if (rv == 0) {
+		if (err == ERF_OK) {
 			key->pt_next = ks;
 			ks = key;
 		} else {
+			bunyan_log(DEBUG, "piv_enumerate() eliminated reader "
+			    "due to error", "reader", BNY_STRING, thisrdr,
+			    "error", BNY_ERF, err, NULL);
+			erfree(err);
 			(void) SCardDisconnect(card, SCARD_RESET_CARD);
 		}
 	}
 
-	return (ks);
+	*tokens = ks;
+	return (ERF_OK);
 }
 
 void
@@ -737,50 +833,12 @@ ins_to_name(enum iso_ins ins)
 	}
 }
 
-static const char *
-sw_to_name(enum iso_sw sw)
-{
-	switch (sw) {
-	case SW_NO_ERROR:
-		return ("NO_ERROR");
-	case SW_FUNC_NOT_SUPPORTED:
-		return ("FUNC_NOT_SUPPORTED");
-	case SW_CONDITIONS_NOT_SATISFIED:
-		return ("CONDITIONS_NOT_SATISFIED");
-	case SW_SECURITY_STATUS_NOT_SATISFIED:
-		return ("SECURITY_STATUS_NOT_SATISFIED");
-	case SW_WARNING_EOF:
-		return ("WARNING_EOF");
-	case SW_FILE_NOT_FOUND:
-		return ("FILE_NOT_FOUND");
-	case SW_INCORRECT_PIN:
-		return ("INCORRECT_PIN");
-	case SW_INCORRECT_P1P2:
-		return ("INCORRECT_P1P2");
-	case SW_WRONG_DATA:
-		return ("WRONG_DATA");
-	case SW_OUT_OF_MEMORY:
-		return ("OUT_OF_MEMORY");
-	case SW_WRONG_LENGTH:
-		return ("WRONG_LENGTH");
-	default:
-		/* FALL THROUGH */
-		(void)0;
-	}
-	if ((sw & 0xFF00) == SW_BYTES_REMAINING_00)
-		return ("BYTES_REMAINING");
-	else if ((sw & 0xFF00) == SW_WARNING_NO_CHANGE_00)
-		return ("WARNING_NO_CHANGE");
-	else if ((sw & 0xFF00) == SW_WARNING_00)
-		return ("WARNING_UNKNOWN");
-	return ("UNKNOWN");
-}
-
-int
+erf_t *
 piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 {
 	uint cmdLen = 0;
 	int rv;
+	erf_t *err;
 
 	boolean_t freedata = B_FALSE;
 	DWORD recvLength;
@@ -792,7 +850,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	cmd = apdu_to_buffer(apdu, &cmdLen);
 	assert(cmd != NULL);
 	if (cmd == NULL || cmdLen < 5)
-		return (ENOMEM);
+		return (ERF_NOMEM);
 
 	if (r->b_data == NULL) {
 		r->b_data = calloc(1, MAX_APDU_SIZE);
@@ -821,15 +879,14 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	}
 
 	if (rv != SCARD_S_SUCCESS) {
+		err = pcscrerf("SCardTransmit", key->pt_rdrname, rv);
 		bunyan_log(DEBUG, "SCardTransmit failed",
-		    "reader", BNY_STRING, key->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, err, NULL);
 		if (freedata) {
 			free(r->b_data);
 			bzero(r, sizeof (struct apdubuf));
 		}
-		return (rv);
+		return (err);
 	}
 	recvLength -= 2;
 
@@ -850,13 +907,13 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	    "lr", BNY_UINT, (uint)r->b_len,
 	    NULL);
 
-	return (0);
+	return (ERF_OK);
 }
 
-int
+erf_t *
 piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 {
-	int rv;
+	erf_t *rv;
 	size_t offset;
 	size_t rem;
 
@@ -874,7 +931,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 			apdu->a_cmd.b_len = rem;
 		}
 		rv = piv_apdu_transceive(pk, apdu);
-		if (rv != 0)
+		if (rv)
 			return (rv);
 		if ((apdu->a_sw & 0xFF00) == SW_NO_ERROR ||
 		    (apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00 ||
@@ -887,7 +944,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 			 * Return any other error straight away -- we can
 			 * only get response chaining on BYTES_REMAINING
 			 */
-			return (0);
+			return (ERF_OK);
 		}
 	} while (rem > 0);
 
@@ -910,7 +967,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 		VERIFY(apdu->a_reply.b_offset < apdu->a_reply.b_size);
 
 		rv = piv_apdu_transceive(pk, apdu);
-		if (rv != 0)
+		if (rv)
 			return (rv);
 	}
 
@@ -918,14 +975,15 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	apdu->a_reply.b_len += apdu->a_reply.b_offset - offset;
 	apdu->a_reply.b_offset = offset;
 
-	return (0);
+	return (ERF_OK);
 }
 
-int
+erf_t *
 piv_txn_begin(struct piv_token *key)
 {
 	VERIFY(key->pt_intxn == B_FALSE);
 	LONG rv;
+	erf_t *err;
 	DWORD activeProtocol = 0;
 retry:
 	rv = SCardBeginTransaction(key->pt_cardhdl);
@@ -936,20 +994,20 @@ retry:
 		if (rv == SCARD_S_SUCCESS) {
 			goto retry;
 		} else {
+			err = ioerf(pcscerf("SCardReconnect", rv),
+			    key->pt_rdrname);
 			bunyan_log(ERROR, "SCardBeginTransaction failed, and "
 			    "attempt to ack reset failed",
-			    "reader", BNY_STRING, key->pt_rdrname,
-			    "err", BNY_STRING, pcsc_stringify_error(rv),
-			    NULL);
-			return (EIO);
+			    "error", BNY_ERF, err, NULL);
+			return (err);
 		}
 	}
 	if (rv != SCARD_S_SUCCESS) {
+		err = ioerf(pcscerf("SCardBeginTransaction", rv),
+		    key->pt_rdrname);
 		bunyan_log(ERROR, "SCardBeginTransaction failed",
-		    "reader", BNY_STRING, key->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
-		return (EIO);
+		    "error", BNY_ERF, err, NULL);
+		return (err);
 	}
 	key->pt_intxn = B_TRUE;
 	return (0);
@@ -972,10 +1030,10 @@ piv_txn_end(struct piv_token *key)
 	key->pt_reset = B_FALSE;
 }
 
-int
+erf_t *
 piv_select(struct piv_token *tk)
 {
-	int rv;
+	erf_t *rv = ERF_OK;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag, idx;
@@ -987,13 +1045,12 @@ piv_select(struct piv_token *tk)
 	apdu->a_cmd.b_len = sizeof (AID_PIV);
 
 	rv = piv_apdu_transceive_chain(tk, apdu);
-	if (rv != 0) {
+	if (rv) {
+		rv = ioerf(rv, tk->pt_rdrname);
 		bunyan_log(WARN, "piv_select.transceive_apdu failed",
-		    "reader", BNY_STRING, tk->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, rv, NULL);
 		piv_apdu_free(apdu);
-		return (EIO);
+		return (rv);
 	}
 
 	if (apdu->a_sw == SW_NO_ERROR || apdu->a_sw == SW_WARNING_EOF) {
@@ -1001,14 +1058,10 @@ piv_select(struct piv_token *tk)
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
 		if (tag != PIV_TAG_APT) {
-			bunyan_log(DEBUG, "card returned invalid tag in "
-			    "PIV INS_SELECT response payload",
-			    "reader", BNY_STRING, tk->pt_rdrname,
-			    "tag", BNY_UINT, tag,
-			    "reply", BNY_BIN_HEX, apdu->a_reply.b_data +
-			    apdu->a_reply.b_offset, apdu->a_reply.b_len, NULL);
+			rv = invderf(tagerf("INS_SELECT", tag), tk->pt_rdrname);
+			debug_dump(rv, apdu);
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			return (rv);
 		}
 		while (!tlv_at_end(tlv)) {
 			tag = tlv_read_tag(tlv);
@@ -1041,28 +1094,24 @@ piv_select(struct piv_token *tk)
 				tlv_end(tlv);
 				break;
 			default:
-				bunyan_log(DEBUG, "card returned unknown tag "
-				    "in PIV INS_SELECT response payload",
-				    "reader", BNY_STRING, tk->pt_rdrname,
-				    "tag", BNY_UINT, tag,
-				    "reply", BNY_BIN_HEX, apdu->a_reply.b_data +
-				    apdu->a_reply.b_offset, apdu->a_reply.b_len,
-				    NULL);
+				rv = invderf(tagerf("INS_SELECT", tag),
+				    tk->pt_rdrname);
+				debug_dump(rv, apdu);
 				tlv_skip(tlv);
 				tlv_skip(tlv);
 				tlv_free(tlv);
 				piv_apdu_free(apdu);
-				return (ENOTSUP);
+				return (rv);
 			}
 		}
 		tlv_end(tlv);
 		tlv_free(tlv);
 		rv = 0;
 	} else {
+		rv = erf("NotFoundError", swerf("INS_SELECT", apdu->a_sw),
+		    "PIV applet was not found on device '%s'", tk->pt_rdrname);
 		bunyan_log(DEBUG, "card did not accept INS_SELECT for PIV",
-		    "reader", BNY_STRING, tk->pt_rdrname,
-		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
-		rv = ENOENT;
+		    "error", BNY_ERF, rv, NULL);
 	}
 
 	piv_apdu_free(apdu);
@@ -1070,9 +1119,10 @@ piv_select(struct piv_token *tk)
 	return (rv);
 }
 
-int
+erf_t *
 piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 {
+	erf_t *err;
 	int rv;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
@@ -1101,43 +1151,49 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	apdu->a_cmd.b_data = tlv_buf(tlv);
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
-	rv = piv_apdu_transceive(pt, apdu);
-	if (rv != 0) {
+	err = piv_apdu_transceive(pt, apdu);
+	if (err) {
+		err = ioerf(err, pt->pt_rdrname);
 		bunyan_log(WARN, "piv_auth_admin.transceive_chain failed",
-		    "reader", BNY_STRING, pt->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
-		return (EIO);
+		return (err);
 	}
 
 	tlv_free(tlv);
 
-	if (apdu->a_sw != SW_NO_ERROR) {
-		bunyan_log(DEBUG, "card did not return challenge to "
-		    "INS_GEN_AUTH",
-		    "reader", BNY_STRING, pt->pt_rdrname,
-		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
+	if (apdu->a_sw == SW_INCORRECT_P1P2) {
+		err = erf("NotFoundError", swerf("INS_GEN_AUTH(9b)",
+		    apdu->a_sw), "PIV device '%s' has no admin key",
+		    pt->pt_rdrname);
 		piv_apdu_free(apdu);
-		return (EINVAL);
+		return (err);
+	} else if (apdu->a_sw == SW_WRONG_DATA ||
+	    apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = erf("PermissionError", swerf("INS_GEN_AUTH(9b)",
+		    apdu->a_sw), "Permission denied attempting to "
+		    "authenticate with 9B admin key to PIV device '%s'",
+		    pt->pt_rdrname);
+		return (err);
+	} else if (apdu->a_sw != SW_NO_ERROR) {
+		err = erf("NotSupportedError", swerf("INS_GEN_AUTH(9b)",
+		    apdu->a_sw), "PIV device '%s' does not support admin "
+		    "challenge-response authentication", pt->pt_rdrname);
+		piv_apdu_free(apdu);
+		return (err);
 	}
 
 	tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 	    apdu->a_reply.b_len);
 	tag = tlv_read_tag(tlv);
 	if (tag != 0x7C) {
-		bunyan_log(DEBUG, "card returned invalid tag in PIV "
-		    "INS_GEN_AUTH response payload",
-		    "reader", BNY_STRING, pt->pt_rdrname,
-		    "slotid", BNY_UINT, (uint)0x9B,
-		    "tag", BNY_UINT, tag,
-		    "reply", BNY_BIN_HEX, apdu->a_reply.b_data +
-		    apdu->a_reply.b_offset, apdu->a_reply.b_len, NULL);
+		err = invderf(tagerf("INS_GEN_AUTH(9b)", tag), pt->pt_rdrname);
+		debug_dump(err, apdu);
 		tlv_skip(tlv);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
-		return (ENOTSUP);
+		return (err);
 	}
 
 	while (!tlv_at_end(tlv)) {
@@ -1153,25 +1209,30 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	}
 	tlv_end(tlv);
 
-	assert(chal != NULL);
+	VERIFY(chal != NULL);
 	tlv_free(tlv);
 	piv_apdu_free(apdu);
 
 	resplen = challen;
 	resp = calloc(1, resplen);
-	assert(resp != NULL);
+	VERIFY(resp != NULL);
 
-	assert(cipher_blocksize(cipher) == challen);
+	if (cipher_blocksize(cipher) != challen) {
+		err = invderf(erf("LengthError", NULL, "INS_GEN_AUTH(9b) "
+		    "returned %d byte challenge but cipher blocks are %d bytes",
+		    challen, cipher_blocksize(cipher)), pt->pt_rdrname);
+		return (err);
+	}
 
 	ivlen = cipher_ivlen(cipher);
 	iv = calloc(1, ivlen);
-	assert(iv != NULL);
+	VERIFY(iv != NULL);
 	explicit_bzero(iv, ivlen);
 
 	rv = cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 1);
-	assert(rv == 0);
+	VERIFY(rv == 0);
 	rv = cipher_crypt(cctx, 0, resp, chal, challen, 0, 0);
-	assert(rv == 0);
+	VERIFY(rv == 0);
 	cipher_free(cctx);
 
 	tlv = tlv_init_write();
@@ -1192,33 +1253,42 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	explicit_bzero(resp, resplen);
 	free(resp);
 
-	rv = piv_apdu_transceive(pt, apdu);
-	if (rv != 0) {
+	err = piv_apdu_transceive(pt, apdu);
+	if (err) {
+		err = ioerf(err, pt->pt_rdrname);
 		bunyan_log(WARN, "piv_auth_admin.transceive_chain failed",
-		    "reader", BNY_STRING, pt->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
-		return (EIO);
+		return (err);
 	}
 
 	tlv_free(tlv);
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		rv = 0;
+		err = ERF_OK;
 	} else if (apdu->a_sw == SW_INCORRECT_P1P2) {
-		rv = ENOENT;
-	} else if (apdu->a_sw == SW_WRONG_DATA) {
-		rv = EPERM;
-	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
-		rv = EPERM;
+		err = erf("NotFoundError", swerf("INS_GEN_AUTH(9b)",
+		    apdu->a_sw), "PIV device '%s' has no admin key",
+		    pt->pt_rdrname);
+		piv_apdu_free(apdu);
+		return (err);
+	} else if (apdu->a_sw == SW_WRONG_DATA ||
+	    apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = erf("PermissionError", swerf("INS_GEN_AUTH(9b)",
+		    apdu->a_sw), "Permission denied attempting to "
+		    "authenticate with 9B admin key to PIV device '%s'",
+		    pt->pt_rdrname);
+		return (err);
 	} else {
-		rv = EINVAL;
+		err = swerf("INS_GEN_AUTH(9B)", apdu->a_sw);
+		bunyan_log(DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pt->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
 	}
 
 	piv_apdu_free(apdu);
-	return (rv);
+	return (err);
 }
 
 int
@@ -1635,10 +1705,10 @@ piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 	return (rv);
 }
 
-int
+erf_t *
 piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 {
-	int rv;
+	erf_t *rv;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag;
@@ -1687,14 +1757,13 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
 	rv = piv_apdu_transceive_chain(pk, apdu);
-	if (rv != 0) {
+	if (rv) {
+		rv = ioerf(rv, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_read_cert.transceive_chain failed",
-		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "err", BNY_STRING, pcsc_stringify_error(rv),
-		    NULL);
+		    "error", BNY_ERF, rv, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
-		return (EIO);
+		return (rv);
 	}
 
 	tlv_free(tlv);
@@ -1710,17 +1779,13 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		    apdu->a_reply.b_len);
 		tag = tlv_read_tag(tlv);
 		if (tag != 0x53) {
-			bunyan_log(DEBUG, "card returned invalid tag in "
-			    "PIV INS_GET_DATA response payload",
-			    "reader", BNY_STRING, pk->pt_rdrname,
-			    "slotid", BNY_UINT, (uint)slotid,
-			    "tag", BNY_UINT, tag,
-			    "reply", BNY_BIN_HEX, apdu->a_reply.b_data +
-			    apdu->a_reply.b_offset, apdu->a_reply.b_len, NULL);
+			rv = invderf(tagerf("INS_GET_DATA(%02x)", tag,
+			    (uint)slotid), pk->pt_rdrname);
+			debug_dump(rv, apdu);
 			tlv_skip(tlv);
 			tlv_free(tlv);
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			return (rv);
 		}
 		while (!tlv_at_end(tlv)) {
 			tag = tlv_read_tag(tlv);
@@ -1739,13 +1804,14 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 
 		/* See the NIST PIV spec. This bit should always be zero. */
 		if ((certinfo & PIV_CI_X509) != 0) {
-			bunyan_log(DEBUG, "card returned cert with PIV_CI_X509 "
-			    "flag set, assuming invalid",
-			    "reader", BNY_STRING, pk->pt_rdrname,
-			    "slotid", BNY_UINT, (uint)slotid, NULL);
+			rv = erf("CertFlagError", NULL,
+			    "Certificate for slot %02x has PIV_CI_X509 flag "
+			    "set, not allowed by spec", (uint)slotid);
+			rv = invderf(rv, pk->pt_rdrname);
+			debug_dump(rv, apdu);
 			tlv_free(tlv);
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			return (rv);
 		}
 
 		if ((certinfo & PIV_CI_COMPTYPE) == PIV_COMP_GZIP) {
@@ -1778,13 +1844,17 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			VERIFY0(inflateEnd(&strm));
 
 		} else if ((certinfo & PIV_CI_COMPTYPE) != PIV_COMP_NONE) {
+			rv = erf("CertFlagError", NULL,
+			    "Certificate for slot %02x has unknown "
+			    "compression type flag", (uint)slotid);
+			rv = invderf(rv, pk->pt_rdrname);
 			bunyan_log(DEBUG, "card returned cert with unknown "
 			    "compression type, assuming invalid",
 			    "reader", BNY_STRING, pk->pt_rdrname,
 			    "slotid", BNY_UINT, (uint)slotid, NULL);
 			tlv_free(tlv);
 			piv_apdu_free(apdu);
-			return (ENOTSUP);
+			return (rv);
 		}
 
 		cert = d2i_X509(NULL, (const uint8_t **)&ptr, len);
@@ -1794,14 +1864,18 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			unsigned long err = ERR_peek_last_error();
 			ERR_load_crypto_strings();
 			ERR_error_string(err, errbuf);
+			rv = erf("OpenSSLError", NULL,
+			    "error %u parsing cert %02x: %s", err, (uint)slotid,
+			    errbuf);
+			rv = invderf(rv, pk->pt_rdrname);
 			bunyan_log(WARN, "card returned invalid cert",
 			    "reader", BNY_STRING, pk->pt_rdrname,
 			    "slotid", BNY_UINT, (uint)slotid,
-			    "openssl_err", BNY_STRING, errbuf,
+			    "error", BNY_ERF, rv,
 			    "data", BNY_BIN_HEX, ptr, len, NULL);
 			tlv_free(tlv);
 			piv_apdu_free(apdu);
-			return (EINVAL);
+			return (rv);
 		}
 
 		tlv_free(tlv);
@@ -1863,19 +1937,29 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			assert(0);
 		}
 
-		rv = 0;
+		rv = NULL;
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
-		rv = ENOENT;
+		rv = erf("NotFoundError", swerf("INS_GET_DATA", apdu->a_sw),
+		    "No certificate found for slot %02x in device '%s'",
+		    slotid, pk->pt_rdrname);
 
 	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
-		rv = EPERM;
+		rv = erf("PermissionError", swerf("INS_GET_DATA", apdu->a_sw),
+		    "Permission denied reading certificate for slot %02x on "
+		    "device '%s'", slotid, pk->pt_rdrname);
+
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED ||
+	    apdu->a_sw == SW_WRONG_DATA) {
+		rv = erf("NotSupportedError", swerf("INS_GET_DATA", apdu->a_sw),
+		    "Certificate slot %02x not supported by device '%s'",
+		    slotid, pk->pt_rdrname);
 
 	} else {
-		bunyan_log(DEBUG, "card did not accept INS_GET_DATA for PIV",
+		rv = swerf("INS_GET_DATA", apdu->a_sw);
+		bunyan_log(DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
-		    "sw", BNY_UINT, (uint)apdu->a_sw, NULL);
-		rv = EINVAL;
+		    "error", BNY_ERF, rv, NULL);
 	}
 
 	piv_apdu_free(apdu);
@@ -1883,34 +1967,43 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	return (rv);
 }
 
-int
+static inline int
+read_all_aborts_on(erf_t *err)
+{
+	return (err &&
+	    !erfcause(err, "NotFoundError") &&
+	    !erfcause(err, "PermissionError") &&
+	    !erfcause(err, "NotSupportedError"));
+}
+
+erf_t *
 piv_read_all_certs(struct piv_token *tk)
 {
-	int rv;
+	erf_t *err;
 	uint i;
 
-	assert(tk->pt_intxn == B_TRUE);
+	VERIFY(tk->pt_intxn == B_TRUE);
 
-	rv = piv_read_cert(tk, PIV_SLOT_9E);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
-		return (rv);
-	rv = piv_read_cert(tk, PIV_SLOT_9A);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
-		return (rv);
-	rv = piv_read_cert(tk, PIV_SLOT_9C);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
-		return (rv);
-	rv = piv_read_cert(tk, PIV_SLOT_9D);
-	if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
-		return (rv);
+	err = piv_read_cert(tk, PIV_SLOT_9E);
+	if (read_all_aborts_on(err))
+		return (err);
+	err = piv_read_cert(tk, PIV_SLOT_9A);
+	if (read_all_aborts_on(err))
+		return (err);
+	err = piv_read_cert(tk, PIV_SLOT_9C);
+	if (read_all_aborts_on(err))
+		return (err);
+	err = piv_read_cert(tk, PIV_SLOT_9D);
+	if (read_all_aborts_on(err))
+		return (err);
 
 	for (i = 0; i < tk->pt_hist_oncard; ++i) {
-		rv = piv_read_cert(tk, PIV_SLOT_RETIRED_1 + i);
-		if (rv != 0 && rv != ENOENT && rv != ENOTSUP && rv != EPERM)
-			return (rv);
+		err = piv_read_cert(tk, PIV_SLOT_RETIRED_1 + i);
+		if (read_all_aborts_on(err) && !erfcause(err, "APDUError"))
+			return (err);
 	}
 
-	return (rv);
+	return (ERF_OK);
 }
 
 int

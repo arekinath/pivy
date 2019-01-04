@@ -21,6 +21,7 @@
 
 #include "bunyan.h"
 #include "debug.h"
+#include "erf.h"
 
 static const char *bunyan_name = NULL;
 static char *bunyan_buf = NULL;
@@ -251,7 +252,8 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 {
 	char time[128];
 	va_list ap;
-	const char *propname;
+	const char *propname, *errn;
+	erf_t *err = NULL;
 	enum bunyan_arg_type typ;
 	int didsep = 0;
 
@@ -342,12 +344,26 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 			printf_buf("%s = << %s >>", propname, wstrval);
 			free(wstrval);
 			break;
+		case BNY_ERF:
+			err = va_arg(ap, erf_t *);
+			errn = propname;
+			break;
 		default:
 			abort();
 		}
 	}
 	va_end(ap);
 	printf_buf("\n");
+	if (err != NULL) {
+		const char *prefix = "";
+		printf_buf("\t%s = ", errn);
+		for (; err != NULL; err = err->erf_cause) {
+			printf_buf("%s%s: %s\n\t    in %s() at %s:%d\n", prefix,
+			    err->erf_name, err->erf_message, err->erf_function,
+			    err->erf_file, err->erf_line);
+			prefix = "\t  Caused by ";
+		}
+	}
 
 	if (level < bunyan_min_level) {
 		return;

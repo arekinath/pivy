@@ -209,14 +209,12 @@ read_stdin(size_t limit, size_t *outlen)
 static void
 assert_select(struct piv_token *tk)
 {
-	int rv;
+	erf_t *err;
 
-	rv = piv_select(tk);
-	if (rv != 0) {
+	err = piv_select(tk);
+	if (err) {
 		piv_txn_end(tk);
-		fprintf(stderr, "error: failed to select PIV applet "
-		    "(rv = %d)\n", rv);
-		exit(1);
+		perfexit(err);
 	}
 }
 
@@ -348,12 +346,13 @@ alg_to_string(uint alg)
 }
 
 static void
-cmd_list(SCARDCONTEXT ctx)
+cmd_list(void)
 {
 	struct piv_token *pk;
 	struct piv_slot *slot;
 	uint i;
 	char *buf = NULL;
+	erf_t *err;
 
 	for (pk = ks; pk != NULL; pk = pk->pt_next) {
 		if (guid != NULL &&
@@ -361,9 +360,13 @@ cmd_list(SCARDCONTEXT ctx)
 			continue;
 		}
 
-		assert(piv_txn_begin(pk) == 0);
+		if ((err = piv_txn_begin(pk)))
+			perfexit(err);
 		assert_select(pk);
-		piv_read_all_certs(pk);
+		if ((err = piv_read_all_certs(pk))) {
+			piv_txn_end(pk);
+			perfexit(err);
+		}
 		piv_txn_end(pk);
 
 		if (parseable) {
@@ -593,30 +596,26 @@ cmd_init(void)
 static void
 cmd_set_admin(uint8_t *new_admin_key)
 {
-	int rv;
+	erf_t *err;
 
-	piv_txn_begin(selk);
+	if ((err = piv_txn_begin(selk)))
+		perfexit(err);
 	assert_select(selk);
-	rv = piv_auth_admin(selk, admin_key, 24);
-	if (rv == 0) {
-		rv = ykpiv_set_admin(selk, new_admin_key, 24, touchpolicy);
+	err = piv_auth_admin(selk, admin_key, 24);
+	if (err) {
+		err = erf("set-admin", err,
+		    "Failed to authenticate with old admin key");
+	} else {
+		err = ykpiv_set_admin(selk, new_admin_key, 24, touchpolicy);
+		if (err) {
+			err = erf("set-admin", err,
+			    "Failed to set new admin key");
+		}
 	}
 	piv_txn_end(selk);
 
-	if (rv == EINVAL) {
-		fprintf(stderr, "error: card is not a yubikey or does not "
-		    "support changing admin key\n");
-		exit(1);
-	} else if (rv == ENOENT) {
-		fprintf(stderr, "error: card has no 3DES admin key\n");
-		exit(1);
-	} else if (rv == EACCES || rv == EPERM) {
-		fprintf(stderr, "error: admin authentication failed\n");
-		exit(1);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to write to card\n");
-		exit(1);
-	}
+	if (err)
+		perfexit(err);
 }
 
 #if 0
@@ -1729,6 +1728,7 @@ static void
 cmd_setup(SCARDCONTEXT ctx)
 {
 	boolean_t usetouch = B_FALSE;
+	erf_t *err;
 
 	if (!selk->pt_ykpiv) {
 		fprintf(stderr, "error: setup command is only for YubiKeys\n");
@@ -1744,7 +1744,8 @@ cmd_setup(SCARDCONTEXT ctx)
 	cmd_init();
 
 	piv_release(ks);
-	ks = piv_enumerate(ctx);
+	if ((err = piv_enumerate(ctx, &ks)))
+		perfexit(err);
 	selk = NULL;
 	check_select_key();
 
@@ -1890,6 +1891,7 @@ int
 main(int argc, char *argv[])
 {
 	LONG rv;
+	erf_t *err;
 	SCARDCONTEXT ctx;
 	extern char *optarg;
 	extern int optind;
@@ -2014,7 +2016,9 @@ main(int argc, char *argv[])
 		return (1);
 	}
 
-	ks = piv_enumerate(ctx);
+	err = piv_enumerate(ctx, &ks);
+	if (err)
+		perfexit(err);
 
 #if 0
 	if (piv_system_token_find(ks, &sysk) != 0)
@@ -2024,7 +2028,7 @@ main(int argc, char *argv[])
 	if (strcmp(op, "list") == 0) {
 		if (optind < argc)
 			usage();
-		cmd_list(ctx);
+		cmd_list();
 
 	} else if (strcmp(op, "init") == 0) {
 		if (optind < argc) {

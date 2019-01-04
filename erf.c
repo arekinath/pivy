@@ -10,14 +10,15 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdarg.h>
 
 #include "erf.h"
 
 const char *
-errno_to_macro(int errno)
+errno_to_macro(int eno)
 {
-	switch (errno) {
+	switch (eno) {
 	case EPERM: return ("EPERM");
 	case ENOENT: return ("ENOENT");
 	case ESRCH: return ("ESRCH");
@@ -58,12 +59,12 @@ errno_to_macro(int errno)
 
 struct erf erf_ok = {
     .erf_name = "NoError",
-    .erf_message = "Everything is fine",
+    .erf_message = "perf() called on a non-error",
     .erf_file = "erf.c",
     .erf_line = __LINE__
 };
 
-struct erf *ERF_OK = &erf_ok;
+struct erf *ERF_OK = NULL;
 
 struct erf erf_nomem = {
     .erf_errno = ENOMEM,
@@ -76,11 +77,10 @@ struct erf erf_nomem = {
 struct erf *ERF_NOMEM = &erf_nomem;
 
 struct erf *
-_erf(const char *name, struct erf *cause, const char *file, uint line,
-    const char *fmt, ...)
+_erf(const char *name, struct erf *cause, const char *func, const char *file,
+    uint line, const char *fmt, ...)
 {
 	struct erf *e;
-	char msgbuf[256];
 	size_t wrote;
 	va_list ap;
 
@@ -88,79 +88,96 @@ _erf(const char *name, struct erf *cause, const char *file, uint line,
 	if (e == NULL)
 		return (ERF_NOMEM);
 
-	e->erf_name = name;
+	strcpy(e->erf_name, name);
 	e->erf_cause = cause;
 	e->erf_file = file;
 	e->erf_line = line;
+	e->erf_function = func;
 
-	msgbuf[0] = '\0';
 	va_start(ap, fmt);
-	wrote = vsnprintf(msgbuf, sizeof (msgbuf), fmt, ap);
+	wrote = vsnprintf(e->erf_message, sizeof (e->erf_message), fmt, ap);
 	va_end(ap);
-	if (wrote >= sizeof (msgbuf))
-		msgbuf[sizeof (msgbuf) - 1] = '\0';
-	e->erf_message = strdup(msgbuf);
-	if (e->erf_message == NULL) {
-		free(e);
-		return (ERF_NOMEM);
-	}
+	if (wrote >= sizeof (e->erf_message))
+		e->erf_message[sizeof (e->erf_message) - 1] = '\0';
 
 	return (e);
 }
 
 struct erf *
-_erfno(int errno, const char *file, uint line, const char *fmt, ...)
+_erfno(int eno, const char *func ,const char *file, uint line,
+    const char *fmt, ...)
 {
 	struct erf *e;
-	char msgbuf[256];
+	char *p;
 	size_t wrote;
 	va_list ap;
 	const char *macro;
 
-	macro = errno_to_macro(errno);
+	macro = errno_to_macro(eno);
 
 	e = calloc(1, sizeof (struct erf));
 	if (e == NULL)
 		return (ERF_NOMEM);
 
-	e->erf_name = macro ? macro : "SystemError";
+	strcpy(e->erf_name, macro ? macro : "SystemError");
 	e->erf_file = file;
 	e->erf_line = line;
-	e->erf_errno = errno;
+	e->erf_errno = eno;
+	e->erf_function = func;
 
-	msgbuf[0] = '\0';
-	wrote = snprintf(msgbuf, sizeof (msgbuf), "Error %d (%s): %s: ",
-	    errno, macro, strerror(errno));
+	wrote = snprintf(e->erf_message, sizeof (e->erf_message),
+	    "Error %d (%s): %s: ", eno, macro, strerror(eno));
+	p = &e->erf_message[wrote];
 	va_start(ap, fmt);
-	wrote += vsnprintf(&msgbuf[wrote], sizeof (msgbuf) - wrote, fmt, ap);
+	wrote += vsnprintf(p, sizeof (e->erf_message) - wrote, fmt, ap);
 	va_end(ap);
-	if (wrote >= sizeof (msgbuf))
-		msgbuf[sizeof (msgbuf) - 1] = '\0';
-	e->erf_message = strdup(msgbuf);
-	if (e->erf_message == NULL) {
-		free(e);
-		return (ERF_NOMEM);
-	}
+	if (wrote >= sizeof (e->erf_message))
+		e->erf_message[sizeof (e->erf_message) - 1] = '\0';
 
 	return (e);
 }
 
 void
-perf(struct erf *etop)
+perf(const struct erf *etop)
 {
-	struct erf *e;
+	const struct erf *e;
+	const char *prefix = "error: ";
+	if (etop == NULL) {
+		perf(&erf_ok);
+		return;
+	}
 	for (e = etop; e != NULL; e = e->erf_cause) {
-		const char *prefix = "";
-		if (e != etop)
-			prefix = "Caused by ";
-		fprintf(stderr, "%s%s: %s\n  at %s:%d\n", prefix,
-		    e->erf_name, e->erf_message, e->erf_file, e->erf_line);
+		fprintf(stderr, "%s%s: %s\n    in %s() at %s:%d\n", prefix,
+		    e->erf_name, e->erf_message, e->erf_function, e->erf_file,
+		    e->erf_line);
+		prefix = "  Caused by ";
 	}
 }
 
 void
-perfexit(struct erf *etop)
+perfexit(const struct erf *etop)
 {
 	perf(etop);
 	exit(1);
+}
+
+int
+erfcause(const struct erf *e, const char *name)
+{
+	for (; e != NULL; e = e->erf_cause) {
+		if (strcmp(name, e->erf_name) == 0)
+			return (1);
+	}
+	return (0);
+}
+
+void
+erfree(struct erf *ep)
+{
+	struct erf *e;
+	while (ep != NULL) {
+		e = ep->erf_cause;
+		free(ep);
+		ep = e;
+	}
 }
