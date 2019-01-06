@@ -57,6 +57,7 @@ enum iso_ins {
 	INS_IMPORT_ASYM = 0xFE,
 	INS_GET_VER = 0xFD,
 	INS_SET_PIN_RETRIES = 0xFA,
+	INS_GET_SERIAL = 0xF8,
 	INS_ATTEST = 0xF9,
 };
 
@@ -238,6 +239,9 @@ struct piv_token {
 	boolean_t pt_nochuid;
 	boolean_t pt_signedchuid;
 	uint8_t pt_ykver[3];
+
+	boolean_t pt_ykserial_valid;
+	uint32_t pt_ykserial;
 
 	uint8_t pt_hist_oncard;
 	uint8_t pt_hist_offcard;

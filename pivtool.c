@@ -347,6 +347,16 @@ alg_to_string(uint alg)
 	}
 }
 
+static boolean_t
+buf_is_zero(const uint8_t *buf, size_t len)
+{
+	uint8_t v = 0;
+	size_t i;
+	for (i = 0; i < len; ++i)
+		v |= buf[i];
+	return (v == 0);
+}
+
 static void
 cmd_list(void)
 {
@@ -415,10 +425,12 @@ cmd_list(void)
 		buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid), B_FALSE);
 		printf("%10s: %s\n", "guid", buf);
 		free(buf);
-		buf = buf_to_hex(pk->pt_chuuid, sizeof (pk->pt_chuuid),
-		    B_FALSE);
-		printf("%10s: %s\n", "owner", buf);
-		free(buf);
+		if (!buf_is_zero(pk->pt_chuuid, sizeof (pk->pt_chuuid))) {
+			buf = buf_to_hex(pk->pt_chuuid, sizeof (pk->pt_chuuid),
+			    B_FALSE);
+			printf("%10s: %s\n", "owner", buf);
+			free(buf);
+		}
 		buf = buf_to_hex(pk->pt_fascn, pk->pt_fascn_len, B_FALSE);
 		printf("%10s: %s\n", "fasc-n", buf);
 		if (pk->pt_expiry[0] >= '0' && pk->pt_expiry[0] <= '9') {
@@ -432,6 +444,9 @@ cmd_list(void)
 			printf("%10s: implements YubicoPIV extensions "
 			    "(v%d.%d.%d)\n", "yubico", pk->pt_ykver[0],
 			    pk->pt_ykver[1], pk->pt_ykver[2]);
+		}
+		if (pk->pt_ykserial_valid) {
+			printf("%10s: %u\n", "serial", pk->pt_ykserial);
 		}
 		printf("%10s:", "auth");
 		if (pk->pt_pin_app && pk->pt_auth == PIV_PIN)

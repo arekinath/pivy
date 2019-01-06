@@ -218,7 +218,7 @@ piv_probe_ykpiv(struct piv_token *pk)
 	erf_t *err;
 	struct apdu *apdu;
 
-	assert(pk->pt_intxn == B_TRUE);
+	VERIFY(pk->pt_intxn == B_TRUE);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_VER, 0x00, 0x00);
 
@@ -245,6 +245,46 @@ piv_probe_ykpiv(struct piv_token *pk)
 	} else {
 		err = notsuperf(swerf("INS_YK_GET_VER", apdu->a_sw),
 		    pk->pt_rdrname, "YubicoPIV");
+	}
+
+	piv_apdu_free(apdu);
+	return (err);
+}
+
+static erf_t *
+ykpiv_read_serial(struct piv_token *pt)
+{
+	erf_t *err;
+	struct apdu *apdu;
+
+	VERIFY(pt->pt_intxn);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_GET_SERIAL, 0x00, 0x00);
+
+	err = piv_apdu_transceive(pt, apdu);
+	if (err) {
+		err = ioerf(err, pt->pt_rdrname);
+		bunyan_log(WARN, "ykpiv_read_serial.transceive_apdu failed",
+		    "error", BNY_ERF, err, NULL);
+		piv_apdu_free(apdu);
+		return (err);
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		const uint8_t *reply =
+		    &apdu->a_reply.b_data[apdu->a_reply.b_offset];
+		if (apdu->a_reply.b_len < 4) {
+			piv_apdu_free(apdu);
+			err = notsuperf(NULL, pt->pt_rdrname, "YubicoPIV v5");
+			return (err);
+		}
+		pt->pt_ykserial_valid = B_TRUE;
+		pt->pt_ykserial = reply[3] | (reply[2] << 8) |
+		    (reply[1] << 16) | (reply[0] << 24);
+		err = NULL;
+	} else {
+		err = notsuperf(swerf("INS_YK_GET_SERIAL", apdu->a_sw),
+		    pt->pt_rdrname, "YubicoPIV v5");
 	}
 
 	piv_apdu_free(apdu);
@@ -725,6 +765,9 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		}
 		if (err == ERF_OK) {
 			err = piv_probe_ykpiv(key);
+			if (err == ERF_OK) {
+				err = ykpiv_read_serial(key);
+			}
 			if (erfcause(err, "NotSupportedError")) {
 				erfree(err);
 				err = ERF_OK;
@@ -863,6 +906,8 @@ ins_to_name(enum iso_ins ins)
 		return ("YKPIV_SET_PIN_RETRIES");
 	case INS_ATTEST:
 		return ("YKPIV_ATTEST");
+	case INS_GET_SERIAL:
+		return ("YKPIV_GET_SERIAL");
 	default:
 		return ("UNKNOWN");
 	}
