@@ -99,6 +99,19 @@ boolean_t piv_full_apdu_debug = B_FALSE;
     erf("NotSupportedError", cause, \
     "PIVBox is not supported")
 
+#define boxaerf(cause) \
+    erf("ArgumentError", cause, \
+    "Supplied piv_ecdh_box argument is invalid")
+
+#define VERIFYB(apdubuf)	\
+	do { \
+		VERIFY((apdubuf).b_data != NULL);	\
+		VERIFY3U((apdubuf).b_size, >=, 0);	\
+		VERIFY3U((apdubuf).b_size, >=, (apdubuf).b_len);	\
+		VERIFY3U((apdubuf).b_offset + (apdubuf).b_len, <=,	\
+		    (apdubuf).b_size);	\
+	} while (0)
+
 static inline void
 debug_dump(erf_t *err, struct apdu *apdu)
 {
@@ -798,7 +811,7 @@ piv_release(struct piv_token *pk)
 	struct piv_slot *ps, *psnext;
 
 	while (pk != NULL) {
-		assert(pk->pt_intxn == B_FALSE);
+		VERIFY(pk->pt_intxn == B_FALSE);
 		(void) SCardDisconnect(pk->pt_cardhdl, SCARD_LEAVE_CARD);
 
 		ps = pk->pt_slots;
@@ -865,7 +878,7 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 		return (buf);
 	} else {
 		/* TODO: maybe look at handling ext APDUs? */
-		assert(d->b_len < 256 && d->b_len > 0);
+		VERIFY(d->b_len < 256 && d->b_len > 0);
 		buf[4] = d->b_len;
 		bcopy(d->b_data + d->b_offset, buf + 5, d->b_len);
 		buf[d->b_len + 5] = apdu->a_le;
@@ -925,10 +938,10 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	uint8_t *cmd;
 	struct apdubuf *r = &(apdu->a_reply);
 
-	assert(key->pt_intxn == B_TRUE);
+	VERIFY(key->pt_intxn == B_TRUE);
 
 	cmd = apdu_to_buffer(apdu, &cmdLen);
-	assert(cmd != NULL);
+	VERIFY(cmd != NULL);
 	if (cmd == NULL || cmdLen < 5)
 		return (ERF_NOMEM);
 
@@ -939,7 +952,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 		freedata = B_TRUE;
 	}
 	recvLength = r->b_size - r->b_offset;
-	assert(r->b_data != NULL);
+	VERIFY(r->b_data != NULL);
 
 	if (piv_full_apdu_debug) {
 		bunyan_log(TRACE, "sending APDU",
@@ -1096,7 +1109,7 @@ retry:
 void
 piv_txn_end(struct piv_token *key)
 {
-	assert(key->pt_intxn == B_TRUE);
+	VERIFY(key->pt_intxn == B_TRUE);
 	LONG rv;
 	rv = SCardEndTransaction(key->pt_cardhdl,
 	    key->pt_reset ? SCARD_RESET_CARD : SCARD_LEAVE_CARD);
@@ -1118,7 +1131,7 @@ piv_select(struct piv_token *tk)
 	struct tlv_state *tlv;
 	uint tag, idx;
 
-	assert(tk->pt_intxn == B_TRUE);
+	VERIFY(tk->pt_intxn == B_TRUE);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_SELECT, SEL_APP_AID, 0);
 	apdu->a_cmd.b_data = (uint8_t *)AID_PIV;
@@ -1168,7 +1181,15 @@ piv_select(struct piv_token *tk)
 					} else if (tag == 0x06) {
 						tlv_skip(tlv);
 					} else {
-						assert(0);
+						rv = invderf(tagerf("algo "
+						    "list in INS_SELECT",
+						    tag), tk->pt_rdrname);
+						debug_dump(rv, apdu);
+						tlv_skip(tlv);
+						tlv_skip(tlv);
+						tlv_free(tlv);
+						piv_apdu_free(apdu);
+						return (rv);
 					}
 				}
 				tlv_end(tlv);
@@ -1208,17 +1229,19 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	struct tlv_state *tlv;
 	uint tag;
 	uint8_t *chal = NULL, *resp = NULL, *iv = NULL;
-	size_t challen, ivlen, resplen;
+	size_t challen = 0, ivlen, resplen;
 	const struct sshcipher *cipher;
 	struct sshcipher_ctx *cctx;
 
-	assert(pt->pt_intxn == B_TRUE);
+	VERIFY(pt->pt_intxn == B_TRUE);
 
 	cipher = cipher_by_name("3des-cbc");
-	assert(cipher != NULL);
-
-	assert(cipher_keylen(cipher) == keylen);
-	assert(cipher_authlen(cipher) == 0);
+	VERIFY(cipher != NULL);
+	VERIFY(cipher_authlen(cipher) == 0);
+	if (cipher_keylen(cipher) != keylen) {
+		return (argerf("key", "a buffer of length %u",
+		    "%u bytes long", cipher_keylen(cipher), keylen));
+	}
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x7C);
@@ -1373,7 +1396,7 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 
-	assert(pt->pt_intxn == B_TRUE);
+	VERIFY(pt->pt_intxn == B_TRUE);
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x5C);
@@ -1829,6 +1852,7 @@ erf_t *
 piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 {
 	erf_t *err;
+	int rv;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag;
@@ -1839,7 +1863,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	EVP_PKEY *pkey;
 	uint8_t certinfo = 0;
 
-	assert(pk->pt_intxn == B_TRUE);
+	VERIFY(pk->pt_intxn == B_TRUE);
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x5C);
@@ -1863,7 +1887,9 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			    (slotid - PIV_SLOT_82));
 			break;
 		}
-		VERIFY(0);
+		err = argerf("slotid", "a supported PIV slot number",
+		    "%02x", slotid);
+		return (err);
 	}
 	tlv_pop(tlv);
 
@@ -1950,10 +1976,26 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			strm.avail_out = PIV_MAX_CERT_LEN;
 			strm.next_out = buf;
 
-			VERIFY3S(inflate(&strm, Z_NO_FLUSH), ==, Z_STREAM_END);
-
-			VERIFY3U(strm.avail_out, >, 0);
-			VERIFY3U(strm.avail_out, <, PIV_MAX_CERT_LEN);
+			if (inflate(&strm, Z_NO_FLUSH) != Z_STREAM_END ||
+			    strm.avail_out <= 0) {
+				err = erf("DecompressionError", NULL,
+				    "Compressed cert in slot %02x failed "
+				    "to decompress", slotid);
+				err = invderf(err, pk->pt_rdrname);
+				tlv_free(tlv);
+				piv_apdu_free(apdu);
+				return (err);
+			}
+			if (strm.avail_out > PIV_MAX_CERT_LEN) {
+				err = erf("DecompressionError", NULL,
+				    "Compressed cert in slot %02x was "
+				    "too big (%u bytes)", (uint)slotid,
+				    strm.avail_out);
+				err = invderf(err, pk->pt_rdrname);
+				tlv_free(tlv);
+				piv_apdu_free(apdu);
+				return (err);
+			}
 
 			bunyan_log(DEBUG, "decompressed cert",
 			    "compressed_len", BNY_UINT, len,
@@ -1984,6 +2026,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		if (cert == NULL) {
 			make_sslerf(err, "d2i_X509", "parsing cert %02x",
 			    (uint)slotid);
+			err = invderf(err, pk->pt_rdrname);
 			bunyan_log(WARN, "card returned invalid cert",
 			    "reader", BNY_STRING, pk->pt_rdrname,
 			    "slotid", BNY_UINT, (uint)slotid,
@@ -2003,7 +2046,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		}
 		if (pc == NULL) {
 			pc = calloc(1, sizeof (struct piv_slot));
-			assert(pc != NULL);
+			VERIFY(pc != NULL);
 			if (pk->pt_last_slot == NULL) {
 				pk->pt_slots = pc;
 			} else {
@@ -2020,9 +2063,18 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		pc->ps_subj = X509_NAME_oneline(
 		    X509_get_subject_name(cert), NULL, 0);
 		pkey = X509_get_pubkey(cert);
-		assert(pkey != NULL);
-		assert(sshkey_from_evp_pkey(pkey, KEY_UNSPEC,
-		    &pc->ps_pubkey) == 0);
+		VERIFY(pkey != NULL);
+		rv = sshkey_from_evp_pkey(pkey, KEY_UNSPEC,
+		    &pc->ps_pubkey);
+		if (rv != 0) {
+			err = invderf(ssherf("sshkey_from_evp_pkey", rv),
+			    pk->pt_rdrname);
+			tlv_free(tlv);
+			piv_apdu_free(apdu);
+			return (err);
+		}
+
+		err = NULL;
 
 		switch (pc->ps_pubkey->type) {
 		case KEY_ECDSA:
@@ -2034,7 +2086,11 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 				pc->ps_alg = PIV_ALG_ECCP384;
 				break;
 			default:
-				assert(0);
+				err = invderf(erf("BadAlgorithmError", NULL,
+				    "Cert subj is EC key of size %u, not "
+				    "supported by PIV",
+				    sshkey_size(pc->ps_pubkey)),
+				    pk->pt_rdrname);
 			}
 			break;
 		case KEY_RSA:
@@ -2046,14 +2102,18 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 				pc->ps_alg = PIV_ALG_RSA2048;
 				break;
 			default:
-				assert(0);
+				err = invderf(erf("BadAlgorithmError", NULL,
+				    "Cert subj is RSA key of size %u, not "
+				    "supported by PIV",
+				    sshkey_size(pc->ps_pubkey)),
+				    pk->pt_rdrname);
 			}
 			break;
 		default:
-			assert(0);
+			err = invderf(erf("BadAlgorithmError", NULL,
+			    "Certificate subject key is of unsupported type: "
+			    "%s", sshkey_type(pc->ps_pubkey)), pk->pt_rdrname);
 		}
-
-		err = NULL;
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
 		err = erf("NotFoundError", swerf("INS_GET_DATA", apdu->a_sw),
@@ -2677,7 +2737,7 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 	uint tag;
 	uint8_t *buf;
 
-	assert(pk->pt_intxn == B_TRUE);
+	VERIFY(pk->pt_intxn == B_TRUE);
 
 	tlv = tlv_init_write();
 	tlv_pushl(tlv, 0x7C, hashlen + 16);
@@ -2734,7 +2794,7 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 
 		*siglen = tlv_rem(tlv);
 		buf = calloc(1, *siglen);
-		assert(buf != NULL);
+		VERIFY(buf != NULL);
 		*siglen = tlv_read(tlv, buf, 0, *siglen);
 		*signature = buf;
 
@@ -2847,7 +2907,7 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 
 		*seclen = tlv_rem(tlv);
 		buf = calloc(1, *seclen);
-		assert(buf != NULL);
+		VERIFY(buf != NULL);
 		*seclen = tlv_read(tlv, buf, 0, *seclen);
 		*secret = buf;
 
@@ -2987,8 +3047,8 @@ piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf)
 	VERIFY3P(box->pdb_plain.b_data, ==, NULL);
 
 	len = sshbuf_len(buf);
-	buf = malloc(len);
-	if (buf == NULL)
+	data = malloc(len);
+	if (data == NULL)
 		return (ENOMEM);
 	VERIFY0(sshbuf_get(buf, data, len));
 	box->pdb_plain.b_data = data;
@@ -3044,7 +3104,7 @@ piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **pbuf)
 	return (0);
 }
 
-int
+erf_t *
 piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 {
 	const struct sshcipher *cipher;
@@ -3055,29 +3115,50 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	size_t ivlen, authlen, blocksz, keylen, dglen, seclen;
 	size_t fieldsz, plainlen, enclen;
 	size_t reallen, padding, i;
+	erf_t *err;
+	int rv;
 
 	VERIFY3P(box->pdb_cipher, !=, NULL);
 	VERIFY3P(box->pdb_kdf, !=, NULL);
 
 	cipher = cipher_by_name(box->pdb_cipher);
-	VERIFY3P(cipher, !=, NULL);
+	if (cipher == NULL) {
+		err = boxverf(erf("BadAlgorithmError", NULL,
+		    "Cipher '%s' is not supported", box->pdb_cipher));
+		return (err);
+	}
 	ivlen = cipher_ivlen(cipher);
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
 
 	dgalg = ssh_digest_alg_by_name(box->pdb_kdf);
+	if (dgalg == -1) {
+		err = boxverf(erf("BadAlgorithmError", NULL,
+		    "KDF digest '%s' is not supported", box->pdb_kdf));
+		return (err);
+	}
 	dglen = ssh_digest_bytes(dgalg);
-	VERIFY3U(dglen, >=, keylen);
+	if (dglen < keylen) {
+		err = boxderf(erf("BadAlgorithmError", NULL,
+		    "KDF digest '%s' produces output too short for use as "
+		    "key with cipher '%s'", box->pdb_kdf, box->pdb_cipher));
+		return (err);
+	}
 
 	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(privkey->ecdsa));
 	seclen = (fieldsz + 7) / 8;
 	sec = calloc(1, seclen);
-	assert(sec != NULL);
+	VERIFY(sec != NULL);
 	seclen = ECDH_compute_key(sec, seclen,
 	    EC_KEY_get0_public_key(box->pdb_ephem_pub->ecdsa), privkey->ecdsa,
 	    NULL);
-	VERIFY3U(seclen, >, 0);
+	if (seclen <= 0) {
+		free(sec);
+		make_sslerf(err, "ECDH_compute_key", "performing ECDH");
+		err = boxderf(err);
+		return (err);
+	}
 
 	dgctx = ssh_digest_start(dgalg);
 	VERIFY3P(dgctx, !=, NULL);
@@ -3090,43 +3171,68 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	explicit_bzero(sec, seclen);
 	free(sec);
 
-	iv = box->pdb_iv.b_data;
-	VERIFY3U(box->pdb_iv.b_len, ==, ivlen);
-	VERIFY3U(box->pdb_iv.b_offset, ==, 0);
-	VERIFY3P(iv, !=, NULL);
+	VERIFYB(box->pdb_iv);
+	iv = box->pdb_iv.b_data + box->pdb_iv.b_offset;
+	if (box->pdb_iv.b_len != ivlen) {
+		err = boxderf(erf("LengthError", NULL, "IV length (%d) is not "
+		    "appropriate for cipher '%s'", ivlen, box->pdb_cipher));
+		return (err);
+	}
 
+	VERIFYB(box->pdb_enc);
 	enc = box->pdb_enc.b_data + box->pdb_enc.b_offset;
-	VERIFY3P(box->pdb_enc.b_data, !=, NULL);
 	enclen = box->pdb_enc.b_len;
-	VERIFY3U(enclen, >=, authlen + blocksz);
+	if (enclen < authlen + blocksz) {
+		err = boxderf(erf("LengthError", NULL, "Ciphertext length (%d) "
+		    "is smaller than minimum length (auth tag + 1 block = %d)",
+		    enclen, authlen + blocksz));
+		return (err);
+	}
 
 	plainlen = enclen - authlen;
 	plain = calloc(1, plainlen);
 	VERIFY3P(plain, !=, NULL);
 
 	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
-	VERIFY0(cipher_crypt(cctx, 0, plain, enc, enclen - authlen, 0,
-	    authlen));
+	rv = cipher_crypt(cctx, 0, plain, enc, enclen - authlen, 0,
+	    authlen);
 	cipher_free(cctx);
 
 	explicit_bzero(key, dglen);
 	free(key);
 
+	if (rv != 0) {
+		err = boxderf(ssherf("cipher_crypt", rv));
+		return (err);
+	}
+
 	/* Strip off the pkcs#7 padding and verify it. */
 	padding = plain[plainlen - 1];
-	VERIFY3U(padding, <=, blocksz);
-	VERIFY3U(padding, >, 0);
+	if (padding < 1 || padding > blocksz)
+		goto paderr;
 	reallen = plainlen - padding;
-	for (i = reallen; i < plainlen; ++i)
-		VERIFY3U(plain[i], ==, padding);
+	for (i = reallen; i < plainlen; ++i) {
+		if (plain[i] != padding) {
+			goto paderr;
+		}
+	}
 
-	free(box->pdb_plain.b_data);
+	if (box->pdb_plain.b_data != NULL) {
+		explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
+		free(box->pdb_plain.b_data);
+	}
 	box->pdb_plain.b_data = plain;
 	box->pdb_plain.b_size = plainlen;
 	box->pdb_plain.b_len = reallen;
 	box->pdb_plain.b_offset = 0;
 
-	return (0);
+	return (ERF_OK);
+
+paderr:
+	err = boxderf(erf("PaddingError", NULL, "Padding failed validation"));
+	explicit_bzero(plain, plainlen);
+	free(plain);
+	return (err);
 }
 
 erf_t *
@@ -3165,7 +3271,12 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 		return (err);
 	}
 	dglen = ssh_digest_bytes(dgalg);
-	VERIFY3U(dglen, >=, keylen);
+	if (dglen < keylen) {
+		err = boxderf(erf("BadAlgorithmError", NULL,
+		    "KDF digest '%s' produces output too short for use as "
+		    "key with cipher '%s'", box->pdb_kdf, box->pdb_cipher));
+		return (err);
+	}
 
 	sec = NULL;
 	VERIFY3P(box->pdb_ephem_pub, !=, NULL);
@@ -3189,17 +3300,17 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	explicit_bzero(sec, seclen);
 	free(sec);
 
-	iv = box->pdb_iv.b_data;
-	if (box->pdb_iv.b_size != ivlen) {
+	VERIFYB(box->pdb_iv);
+	iv = box->pdb_iv.b_data + box->pdb_iv.b_offset;
+	if (box->pdb_iv.b_len != ivlen) {
 		err = boxderf(erf("LengthError", NULL, "IV length (%d) is not "
 		    "appropriate for cipher '%s'", ivlen, box->pdb_cipher));
 		return (err);
 	}
-	VERIFY3P(iv, !=, NULL);
 
-	enc = box->pdb_enc.b_data;
-	VERIFY3P(enc, !=, NULL);
-	enclen = box->pdb_enc.b_size;
+	VERIFYB(box->pdb_enc);
+	enc = box->pdb_enc.b_data + box->pdb_enc.b_offset;
+	enclen = box->pdb_enc.b_len;
 	if (enclen < authlen + blocksz) {
 		err = boxderf(erf("LengthError", NULL, "Ciphertext length (%d) "
 		    "is smaller than minimum length (auth tag + 1 block = %d)",
@@ -3226,33 +3337,39 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 
 	/* Strip off the pkcs#7 padding and verify it. */
 	padding = plain[plainlen - 1];
-	VERIFY3U(padding, <=, blocksz);
-	VERIFY3U(padding, >, 0);
+	if (padding < 1 || padding > blocksz)
+		goto paderr;
 	reallen = plainlen - padding;
 	for (i = reallen; i < plainlen; ++i) {
 		if (plain[i] != padding) {
-			err = boxderf(erf("PaddingError", NULL, "Padding "
-			    "failed validation"));
-			explicit_bzero(plain, plainlen);
-			free(plain);
-			return (err);
+			goto paderr;
 		}
 	}
 
-	free(box->pdb_plain.b_data);
+	if (box->pdb_plain.b_data != NULL) {
+		explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
+		free(box->pdb_plain.b_data);
+	}
 	box->pdb_plain.b_data = plain;
 	box->pdb_plain.b_offset = 0;
 	box->pdb_plain.b_size = plainlen;
 	box->pdb_plain.b_len = reallen;
 
 	return (ERF_OK);
+
+paderr:
+	err = boxderf(erf("PaddingError", NULL, "Padding failed validation"));
+	explicit_bzero(plain, plainlen);
+	free(plain);
+	return (err);
 }
 
-int
+erf_t *
 piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 {
 	const struct sshcipher *cipher;
 	int rv;
+	erf_t *err;
 	int dgalg;
 	struct sshkey *pkey;
 	struct sshcipher_ctx *cctx;
@@ -3262,8 +3379,16 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	size_t fieldsz, plainlen, enclen;
 	size_t padding, i;
 
-	rv = sshkey_generate(KEY_ECDSA, 256, &pkey);
-	VERIFY0(rv);
+	if (pubk->type != KEY_ECDSA) {
+		return (argerf("pubkey", "an ECDSA public key",
+		    "type %s", sshkey_type(pubk)));
+	}
+
+	rv = sshkey_generate(KEY_ECDSA, sshkey_size(pubk), &pkey);
+	if (rv != 0) {
+		err = boxaerf(ssherf("sshkey_generate", rv));
+		return (err);
+	}
 	VERIFY0(sshkey_demote(pkey, &box->pdb_ephem_pub));
 
 	if (box->pdb_cipher == NULL)
@@ -3272,26 +3397,42 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 		box->pdb_kdf = "sha512";
 
 	cipher = cipher_by_name(box->pdb_cipher);
-	VERIFY3P(cipher, !=, NULL);
+	if (cipher == NULL) {
+		err = boxaerf(erf("BadAlgorithmError", NULL,
+		    "Cipher '%s' is not supported", box->pdb_cipher));
+		return (err);
+	}
 	ivlen = cipher_ivlen(cipher);
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
 
 	dgalg = ssh_digest_alg_by_name(box->pdb_kdf);
+	if (dgalg == -1) {
+		err = boxaerf(erf("BadAlgorithmError", NULL,
+		    "KDF digest '%s' is not supported", box->pdb_kdf));
+		return (err);
+	}
 	dglen = ssh_digest_bytes(dgalg);
-	VERIFY3U(dglen, >=, keylen);
+	if (dglen < keylen) {
+		err = boxaerf(erf("BadAlgorithmError", NULL,
+		    "KDF digest '%s' produces output too short for use as "
+		    "key with cipher '%s'", box->pdb_kdf, box->pdb_cipher));
+		return (err);
+	}
 
 	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(pkey->ecdsa));
 	seclen = (fieldsz + 7) / 8;
 	sec = calloc(1, seclen);
-	assert(sec != NULL);
+	VERIFY(sec != NULL);
 	seclen = ECDH_compute_key(sec, seclen,
 	    EC_KEY_get0_public_key(pubk->ecdsa), pkey->ecdsa, NULL);
-	VERIFY3U(seclen, >, 0);
-
-	bunyan_log(TRACE, "derived symmetric key",
-	    "secret", BNY_BIN_HEX, sec, seclen, NULL);
+	if (seclen <= 0) {
+		free(sec);
+		make_sslerf(err, "ECDH_compute_key", "performing ECDH");
+		err = boxaerf(err);
+		return (err);
+	}
 
 	sshkey_free(pkey);
 
@@ -3316,7 +3457,7 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	box->pdb_iv.b_data = iv;
 	box->pdb_iv.b_offset = 0;
 
-	plainlen = box->pdb_plain.b_size;
+	plainlen = box->pdb_plain.b_len;
 	VERIFY3U(plainlen, >, 0);
 
 	/*
@@ -3331,8 +3472,9 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	plainlen += padding;
 	plain = calloc(1, plainlen);
 	VERIFY3P(plain, !=, NULL);
-	bcopy(box->pdb_plain.b_data, plain, box->pdb_plain.b_len);
-	for (i = box->pdb_plain.b_size; i < plainlen; ++i)
+	bcopy(box->pdb_plain.b_data + box->pdb_plain.b_offset, plain,
+	    box->pdb_plain.b_len);
+	for (i = box->pdb_plain.b_len; i < plainlen; ++i)
 		plain[i] = padding;
 
 	explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
@@ -3361,24 +3503,24 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	box->pdb_enc.b_len = enclen;
 	box->pdb_enc.b_offset = 0;
 
-	return (0);
+	return (ERF_OK);
 }
 
-int
+erf_t *
 piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box)
 {
-	int rv;
+	erf_t *err;
 
-	rv = piv_box_seal_offline(slot->ps_pubkey, box);
-	if (rv != 0)
-		return (rv);
+	err = piv_box_seal_offline(slot->ps_pubkey, box);
+	if (err)
+		return (err);
 
 	box->pdb_guidslot_valid = B_TRUE;
 	bcopy(tk->pt_guid, box->pdb_guid, sizeof (tk->pt_guid));
 	box->pdb_slot = slot->ps_slot;
 
-	return (0);
+	return (ERF_OK);
 }
 
 erf_t *
@@ -3387,7 +3529,7 @@ piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 {
 	struct piv_token *pt;
 	struct piv_slot *s;
-	int rv;
+	erf_t *err;
 	enum piv_slotid slotid;
 
 	for (pt = tks; pt != NULL; pt = pt->pt_next) {
@@ -3401,10 +3543,10 @@ piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 		for (pt = tks; pt != NULL; pt = pt->pt_next) {
 			s = piv_get_slot(pt, slotid);
 			if (s == NULL) {
-				if (piv_txn_begin(pt) != 0)
+				if (piv_txn_begin(pt))
 					continue;
-				if (piv_select(pt) != 0 ||
-				    piv_read_cert(pt, slotid) != 0) {
+				if (piv_select(pt) ||
+				    piv_read_cert(pt, slotid)) {
 					piv_txn_end(pt);
 					continue;
 				}
@@ -3421,20 +3563,20 @@ piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 
 	s = piv_get_slot(pt, box->pdb_slot);
 	if (s == NULL) {
-		if ((rv = piv_txn_begin(pt)) != 0)
-			return (rv);
-		if ((rv = piv_select(pt)) != 0 ||
-		    (rv = piv_read_cert(pt, box->pdb_slot)) != 0) {
+		if ((err = piv_txn_begin(pt)) != 0)
+			return (err);
+		if ((err = piv_select(pt)) != 0 ||
+		    (err = piv_read_cert(pt, box->pdb_slot)) != 0) {
 			piv_txn_end(pt);
-			return (rv);
+			return (err);
 		}
 		piv_txn_end(pt);
 		s = piv_get_slot(pt, box->pdb_slot);
 	}
 
 	if (!sshkey_equal_public(s->ps_pubkey, box->pdb_pub)) {
-		return (erf("NotFoundError", NULL, "Only PIV token on system "
-		    "that matches GUID for box has different keys"));
+		return (erf("NotFoundError", NULL, "PIV token on system "
+		    "with matching GUID for box has different keys"));
 	}
 
 out:
