@@ -95,6 +95,7 @@
 #include "debug.h"
 #include "tlv.h"
 #include "piv.h"
+#include "erf.h"
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -294,41 +295,52 @@ drop_pin(void)
 	pin_len = 0;
 }
 
-static boolean_t
+static erf_t *
 auth_cak(void)
 {
 	struct piv_slot *slot;
-	int rc;
+	erf_t *err;
 	slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
 	if (slot == NULL) {
-		bunyan_log(WARN, "CAK failed auth", NULL);
-		return (B_FALSE);
+		err = erf("CAKAuthError", NULL, "No key was found in the "
+		    "CARD_AUTH (CAK) slot");
+		return (err);
 	}
-	rc = piv_auth_key(selk, slot, cak);
-	if (rc != 0) {
-		bunyan_log(WARN, "CAK failed auth", NULL);
-		return (B_FALSE);
+	err = piv_auth_key(selk, slot, cak);
+	if (err) {
+		err = erf("CAKAuthError", err, "Key in CARD_AUTH slot (CAK) "
+		    "does not match the configured CAK: this card may be "
+		    "a fake!");
+		return (err);
 	}
-	return (B_TRUE);
+	return (NULL);
 }
 
-static int
+static erf_t *
 agent_piv_open(void)
 {
 	struct piv_token *t;
 	struct piv_slot *slot;
-	int rc;
+	erf_t *err = NULL;
 
 	if (txnopen) {
 		txntimeout = monotime() + 2000;
-		return (0);
+		return (NULL);
 	}
 
-	if (selk == NULL || (rc = piv_txn_begin(selk)) != 0) {
+	if (selk == NULL || (err = piv_txn_begin(selk))) {
+		erfree(err);
+
 		selk = NULL;
 		if (ks != NULL)
 			piv_release(ks);
-		ks = piv_enumerate(ctx);
+
+		err = piv_enumerate(ctx, &ks);
+		if (err) {
+			err = erf("EnumerationError", err, "Failed to "
+			    "enumerate PIV tokens on the system");
+			return (err);
+		}
 
 		for (t = ks; t != NULL; t = t->pt_next) {
 			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
@@ -344,43 +356,39 @@ agent_piv_open(void)
 			}
 		}
 		if (selk == NULL) {
-			bunyan_log(WARN, "PIV card with given GUID is not "
-			    "present on the system", NULL);
+			err = erf("NotFoundError", NULL, "PIV card with "
+			    "given GUID is not present on the system");
 			if (monotime() - last_update > 5000)
 				drop_pin();
-			return (ENOENT);
+			return (err);
 		}
 
-		if ((rc = piv_txn_begin(selk)) != 0) {
-			bunyan_log(WARN, "PIV card could not be opened",
-			    "piv_txn_begin_rc", BNY_INT, rc, NULL);
-			return (rc);
+		if ((err = piv_txn_begin(selk))) {
+			return (err);
 		}
 
-		if ((rc = piv_select(selk)) != 0) {
+		if ((err = piv_select(selk))) {
 			piv_txn_end(selk);
-			return (rc);
+			return (err);
 		}
 
-		rc = piv_read_all_certs(selk);
-		if (rc != 0 && rc != ENOENT && rc != ENOTSUP) {
-			bunyan_log(WARN, "piv_read_all_certs returned error",
-			    "code", BNY_INT, rc,
-			    "error", BNY_STRING, strerror(rc), NULL);
+		err = piv_read_all_certs(selk);
+		if (err && !erfcause(err, "NotFoundError") &&
+		    !erfcause(err, "NotSupportedError")) {
 			piv_txn_end(selk);
-			return (rc);
+			return (err);
 		}
-		if (cak != NULL && !auth_cak()) {
+		if (cak != NULL && (err = auth_cak())) {
 			piv_txn_end(selk);
 			drop_pin();
-			return (ENOENT);
+			return (err);
 		}
 		last_update = monotime();
 
 	} else {
-		if ((rc = piv_select(selk)) != 0) {
+		if ((err = piv_select(selk))) {
 			piv_txn_end(selk);
-			return (rc);
+			return (err);
 		}
 	}
 	if (cak == NULL) {
@@ -391,19 +399,25 @@ agent_piv_open(void)
 	bunyan_log(TRACE, "opened new txn", NULL);
 	txnopen = B_TRUE;
 	txntimeout = monotime() + 2000;
-	return (0);
+	return (NULL);
 }
 
 static void
 probe_card(void)
 {
+	erf_t *err;
 	bunyan_log(TRACE, "doing idle probe", NULL);
 
 	last_op = monotime();
-	if (agent_piv_open() != 0) {
+	if ((err = agent_piv_open())) {
+		bunyan_log(TRACE, "error opening for idle probe",
+		    "error", BNY_ERF, err, NULL);
+		erfree(err);
 		goto nope;
 	}
-	if (cak != NULL && !auth_cak()) {
+	if (cak != NULL && (err = auth_cak())) {
+		bunyan_log(WARN, "CAK authentication failed",
+		    "error", BNY_ERF, err, NULL);
 		agent_piv_close(B_TRUE);
 		goto nope;
 	}
@@ -415,41 +429,38 @@ nope:
 	selk = NULL;
 }
 
-static int
+static erf_t *
 agent_piv_try_pin(boolean_t canskip)
 {
-	int r;
+	erf_t *err;
 	uint retries = 1;
 	if (pin_len != 0) {
-		r = piv_verify_pin(selk, selk->pt_auth, pin, &retries, canskip);
-		if (r == EACCES) {
+		err = piv_verify_pin(selk, selk->pt_auth, pin, &retries,
+		    canskip);
+		if (erfcause(err, "PermissionError")) {
 			if (retries == 0) {
-				bunyan_log(ERROR, "token is locked due to "
-				    "too many invalid PIN code attempts",
-				    NULL);
+				err = erf("TokenLocked", err,
+				    "PIV token is locked due to too many "
+				    "invalid PIN code attempts");
 			} else {
-				bunyan_log(ERROR, "invalid PIN code",
-				    "attempts_remaining", BNY_INT, retries,
-				    NULL);
+				err = erf("InvalidPIN", err,
+				    "Invalid PIN code supplied (%d attempts "
+				    "remaining)", retries);
 				drop_pin();
 			}
-			return (EACCES);
-		} else if (r == EAGAIN) {
-			bunyan_log(ERROR, "insufficient PIN retries "
-			    "remaining (stubbornly refusing to use up the "
-			    "last one)", "attempts_remaining", BNY_INT, retries,
-			    NULL);
+			return (err);
+		} else if (erfcause(err, "MinRetriesError")) {
+			err = erf("TokenLocked", err,
+			    "Refusing to use up the last PIN code attempt: "
+			    "unlock the token with another tool to clear "
+			    "the counter");
 			drop_pin();
-			return (EACCES);
-		} else if (r != 0) {
-			bunyan_log(ERROR, "piv_verify_pin returned error",
-			    "code", BNY_INT, r,
-			    "error", BNY_STRING, strerror(r), NULL);
-			return (r);
+			return (err);
+		} else if (err) {
+			return (err);
 		}
 	}
-
-	return (0);
+	return (NULL);
 }
 
 static void
@@ -542,11 +553,15 @@ process_request_identities(SocketEntry *e)
 	char comment[256];
 	uint64_t now;
 	int r, n;
+	erf_t *err;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
 
-	if (agent_piv_open() != 0) {
+	if ((err = agent_piv_open())) {
+		bunyan_log(WARN, "failed to open PIV device",
+		    "error", BNY_ERF, err, NULL);
+		erfree(err);
 		sshbuf_free(msg);
 		send_status(e, 0);
 		return;
@@ -554,8 +569,9 @@ process_request_identities(SocketEntry *e)
 	now = monotime();
 	if ((now - last_update) >= card_probe_interval * 1000) {
 		last_update = now;
-		piv_read_all_certs(selk);
-		if (cak != NULL && !auth_cak()) {
+		err = piv_read_all_certs(selk);
+		erfree(err);
+		if (cak != NULL && (err = auth_cak())) {
 			agent_piv_close(B_TRUE);
 			drop_pin();
 			sshbuf_free(msg);
