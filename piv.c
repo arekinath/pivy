@@ -730,7 +730,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 
 		key = calloc(1, sizeof (struct piv_token));
 		key->pt_cardhdl = card;
-		key->pt_rdrname = thisrdr;
+		key->pt_rdrname = strdup(thisrdr);
 		key->pt_proto = activeProtocol;
 
 		switch (activeProtocol) {
@@ -801,6 +801,8 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 	}
 
 	*tokens = ks;
+
+	free(readers);
 	return (ERF_OK);
 }
 
@@ -824,6 +826,7 @@ piv_release(struct piv_token *pk)
 			ps = psnext;
 		}
 		free(pk->pt_hist_url);
+		free((char *)pk->pt_rdrname);
 
 		next = pk->pt_next;
 		free(pk);
@@ -2066,6 +2069,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		VERIFY(pkey != NULL);
 		rv = sshkey_from_evp_pkey(pkey, KEY_UNSPEC,
 		    &pc->ps_pubkey);
+		EVP_PKEY_free(pkey);
 		if (rv != 0) {
 			err = invderf(ssherf("sshkey_from_evp_pkey", rv),
 			    pk->pt_rdrname);
