@@ -255,6 +255,7 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 {
 	erf_t *err;
 	uint retries = min_retries;
+	enum piv_pin auth = piv_token_default_auth(pk);
 
 #if 0
 	if (pin == NULL && pk == sysk) {
@@ -270,9 +271,10 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 	if (pin == NULL && prompt) {
 		char prompt[64];
 		char *guid;
-		guid = buf_to_hex(pk->pt_guid, 4, B_FALSE);
+		guid = strdup(piv_token_guid_hex(pk));
+		guid[8] = '\0';
 		snprintf(prompt, 64, "Enter %s for token %s: ",
-		    pin_type_to_name(pk->pt_auth), guid);
+		    pin_type_to_name(auth), guid);
 		do {
 			pin = getpass(prompt);
 		} while (pin == NULL && errno == EINTR);
@@ -287,7 +289,7 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 			exit(3);
 		} else if (strlen(pin) < 6 || strlen(pin) > 8) {
 			const char *charType = "digits";
-			if (selk->pt_ykpiv)
+			if (piv_token_is_ykpiv(selk))
 				charType = "characters";
 			fprintf(stderr, "error: a valid PIN must be 6-8 "
 			    "%s in length\n", charType);
@@ -296,7 +298,7 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		pin = strdup(pin);
 		free(guid);
 	}
-	err = piv_verify_pin(pk, pk->pt_auth, pin, &retries, B_FALSE);
+	err = piv_verify_pin(pk, auth, pin, &retries, B_FALSE);
 	if (erfcause(err, "PermissionError")) {
 		piv_txn_end(pk);
 		if (retries == 0) {
@@ -367,11 +369,15 @@ cmd_list(void)
 	struct piv_slot *slot;
 	uint i;
 	char *buf = NULL;
+	uint8_t *temp;
+	size_t len;
+	enum piv_auth defauth;
 	erf_t *err;
 
-	for (pk = ks; pk != NULL; pk = pk->pt_next) {
+	for (pk = ks; pk != NULL; pk = piv_token_next(pk)) {
+		const uint8_t *tguid = piv_token_guid(pk);
 		if (guid != NULL &&
-		    bcmp(pk->pt_guid, guid, guid_len) != 0) {
+		    bcmp(tguid, guid, guid_len) != 0) {
 			continue;
 		}
 
@@ -385,27 +391,32 @@ cmd_list(void)
 		piv_txn_end(pk);
 
 		if (parseable) {
-			free(buf);
-			buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid),
-			    B_FALSE);
+			uint8_t nover[] = { 0, 0, 0 };
+			const uint8_t *ver = nover;
+			if (piv_token_is_ykpiv(pk))
+				 ver = ykpiv_token_version(pk);
 			printf("%s:%s:%s:%s:%d.%d.%d:",
-			    pk->pt_rdrname, buf,
-			    pk->pt_nochuid ? "true" : "false",
-			    pk->pt_ykpiv ? "true" : "false",
-			    pk->pt_ykver[0], pk->pt_ykver[1], pk->pt_ykver[2]);
-			for (i = 0; i < pk->pt_alg_count; ++i) {
-				printf("%s%s", alg_to_string(pk->pt_algs[i]),
-				    (i + 1 < pk->pt_alg_count) ? "," : "");
+			    piv_token_rdrname(pk),
+			    piv_token_guid_hex(pk),
+			    piv_token_has_chuid(pk) ? "true" : "false",
+			    piv_token_is_ykpiv(pk) ? "true" : "false",
+			    ver[0], ver[1], ver[2]);
+			for (i = 0; i < piv_token_nalgs(pk); ++i) {
+				enum piv_alg alg = piv_token_alg(pk, i);
+				printf("%s%s", alg_to_string(alg),
+				    (i + 1 < piv_token_nalgs(pk)) ? "," : "");
 			}
 			for (i = 0x9A; i < 0x9F; ++i) {
 				slot = piv_get_slot(pk, i);
 				if (slot == NULL) {
 					printf(":%02X", i);
 				} else {
+					struct sshkey *key =
+					    piv_slot_pubkey(slot);
 					printf(":%02X;%s;%s;%d",
-					    i, slot->ps_subj,
-					    sshkey_type(slot->ps_pubkey),
-					    sshkey_size(slot->ps_pubkey));
+					    i, piv_slot_subject(slot),
+					    sshkey_type(key),
+					    sshkey_size(key));
 				}
 			}
 			printf("\n");
@@ -413,70 +424,86 @@ cmd_list(void)
 		}
 
 		free(buf);
-		buf = buf_to_hex(pk->pt_guid, 4, B_FALSE);
+		if (piv_token_has_chuid(pk)) {
+			buf = strdup(piv_token_guid_hex(pk));
+			buf[8] = '\0';
+		} else {
+			buf = strdup("00000000");
+		}
 		printf("%10s: %s\n", "card", buf);
-		printf("%10s: %s\n", "device", pk->pt_rdrname);
-		if (pk->pt_nochuid) {
+		free(buf);
+		printf("%10s: %s\n", "device", piv_token_rdrname(pk));
+		if (!piv_token_has_chuid(pk)) {
 			printf("%10s: %s\n", "chuid", "not set "
 			    "(needs initialization)");
-		} else if (pk->pt_signedchuid) {
+		} else if (piv_token_has_signed_chuid(pk)) {
 			printf("%10s: %s\n", "chuid", "ok, signed");
 		} else {
 			printf("%10s: %s\n", "chuid", "ok");
 		}
-		free(buf);
-		buf = buf_to_hex(pk->pt_guid, sizeof (pk->pt_guid), B_FALSE);
-		printf("%10s: %s\n", "guid", buf);
-		free(buf);
-		if (!buf_is_zero(pk->pt_chuuid, sizeof (pk->pt_chuuid))) {
-			buf = buf_to_hex(pk->pt_chuuid, sizeof (pk->pt_chuuid),
-			    B_FALSE);
+		printf("%10s: %s\n", "guid", piv_token_guid_hex(pk));
+		temp = piv_token_chuuid(pk);
+		if (temp != NULL) {
+			buf = buf_to_hex(temp, 16, B_FALSE);
 			printf("%10s: %s\n", "owner", buf);
 			free(buf);
 		}
-		buf = buf_to_hex(pk->pt_fascn, pk->pt_fascn_len, B_FALSE);
-		printf("%10s: %s\n", "fasc-n", buf);
-		if (pk->pt_expiry[0] >= '0' && pk->pt_expiry[0] <= '9') {
+		temp = piv_token_fascn(pk, &len);
+		if (temp != NULL && len > 0) {
+			buf = buf_to_hex(temp, len, B_FALSE);
+			printf("%10s: %s\n", "fasc-n", buf);
+			free(buf);
+		}
+		temp = piv_token_expiry(pk, &len);
+		if (len == 8 && temp[0] >= '0' && temp[0] <= '9') {
 			printf("%10s: %c%c%c%c-%c%c-%c%c\n", "expiry",
-			    pk->pt_expiry[0], pk->pt_expiry[1],
-			    pk->pt_expiry[2], pk->pt_expiry[3],
-			    pk->pt_expiry[4], pk->pt_expiry[5],
-			    pk->pt_expiry[6], pk->pt_expiry[7]);
+			    temp[0], temp[1], temp[2], temp[3],
+			    temp[4], temp[5], temp[6], temp[7]);
 		}
-		if (pk->pt_ykpiv) {
+		if (piv_token_is_ykpiv(pk)) {
+			temp = ykpiv_token_version(pk);
 			printf("%10s: implements YubicoPIV extensions "
-			    "(v%d.%d.%d)\n", "yubico", pk->pt_ykver[0],
-			    pk->pt_ykver[1], pk->pt_ykver[2]);
-		}
-		if (pk->pt_ykserial_valid) {
-			printf("%10s: %u\n", "serial", pk->pt_ykserial);
+			    "(v%d.%d.%d)\n", "yubico", temp[0], temp[1],
+			    temp[2]);
+			if (ykpiv_token_has_serial(pk)) {
+				printf("%10s: %u\n", "serial",
+				    ykpiv_token_serial(pk));
+			}
 		}
 		printf("%10s:", "auth");
-		if (pk->pt_pin_app && pk->pt_auth == PIV_PIN)
-			printf(" PIN*");
-		else if (pk->pt_pin_app)
-			printf(" PIN");
-		if (pk->pt_pin_global && pk->pt_auth == PIV_GLOBAL_PIN)
-			printf(" GlobalPIN*");
-		else if (pk->pt_pin_global)
-			printf(" GlobalPIN");
-		if (pk->pt_occ && pk->pt_auth == PIV_OCC)
-			printf(" Biometrics*");
-		else if (pk->pt_occ)
-			printf(" Biometrics");
+		defauth = piv_token_default_auth(pk);
+		if (piv_token_has_auth(PIV_PIN)) {
+			if (defauth == PIV_PIN)
+				printf(" PIN*");
+			else
+				printf(" PIN");
+		}
+		if (piv_token_has_auth(PIV_GLOBAL_PIN)) {
+			if (defauth == PIV_GLOBAL_PIN)
+				printf(" GlobalPIN*");
+			else
+				printf(" GlobalPIN");
+		}
+		if (piv_token_has_auth(PIV_OCC)) {
+			if (defauth == PIV_OCC)
+				printf(" Biometrics*");
+			else
+				printf(" Biometrics");
+		}
 		printf("\n");
-		if (pk->pt_vci) {
+		if (piv_token_has_vci(pk)) {
 			printf("%10s: supports VCI (secure contactless)\n",
 			    "vci");
 		}
-		if (pk->pt_alg_count > 0) {
+		if (piv_token_nalgs(pk) > 0) {
 			printf("%10s: ", "algos");
-			for (i = 0; i < pk->pt_alg_count; ++i) {
-				printf("%s ", alg_to_string(pk->pt_algs[i]));
+			for (i = 0; i < piv_token_nalgs(pk); ++i) {
+				printf("%s ", alg_to_string(
+				    piv_token_alg(pk, i)));
 			}
 			printf("\n");
 		}
-		if (pk->pt_nochuid) {
+		if (!piv_token_has_chuid(pk)) {
 			printf("%10s:\n", "action");
 			printf("%10s Initialize this card using 'piv-tool "
 			    "init'\n", "");
@@ -488,10 +515,12 @@ cmd_list(void)
 		printf("%10s:\n", "slots");
 		printf("%10s %-3s  %-6s  %-4s  %-30s\n", "", "ID", "TYPE",
 		    "BITS", "CERTIFICATE");
-		for (slot = pk->pt_slots; slot != NULL; slot = slot->ps_next) {
+		slot = piv_token_slots(pk);
+		for (; slot != NULL; slot = piv_next_slot(slot)) {
+			struct sshkey *pubkey = piv_slot_pubkey(slot);
 			printf("%10s %-3x  %-6s  %-4d  %-30s\n", "",
-			    slot->ps_slot, sshkey_type(slot->ps_pubkey),
-			    sshkey_size(slot->ps_pubkey), slot->ps_subj);
+			    piv_slot_id(slot), sshkey_type(pubkey),
+			    sshkey_size(pubkey), piv_slot_subject(slot));
 		}
 		printf("\n");
 	}

@@ -189,91 +189,39 @@ enum ykpiv_touch_policy {
 	YKPIV_TOUCH_CACHED = 0x03,
 };
 
-struct apdubuf {
-	uint8_t *b_data;
-	size_t b_offset;
-	size_t b_size;
-	size_t b_len;
-};
+struct apdubuf;
+struct apdu;
+struct piv_slot;
+struct piv_token;
+struct piv_ecdh_box;
 
-struct apdu {
-	enum iso_class a_cls;
-	enum iso_ins a_ins;
-	uint8_t a_p1;
-	uint8_t a_p2;
-	uint8_t a_le;
+#define	GUID_LEN	16
 
-	struct apdubuf a_cmd;
-	uint16_t a_sw;
-	struct apdubuf a_reply;
-};
+const char *piv_token_rdrname(const struct piv_token *token);
 
-struct piv_slot {
-	struct piv_slot *ps_next;
-	enum piv_slotid ps_slot;
-	enum piv_alg ps_alg;
-	X509 *ps_x509;
-	const char *ps_subj;
-	struct sshkey *ps_pubkey;
-};
+const uint8_t *piv_token_fascn(const struct piv_token *token, size_t *len);
+const uint8_t *piv_token_guid(const struct piv_token *token);
+const char *piv_token_guid_hex(const struct piv_token *token);
+const uint8_t *piv_token_chuuid(const struct piv_token *token);
+const uint8_t *piv_token_expiry(const struct piv_token *token, size_t *len);
+size_t piv_token_nalgs(const struct piv_token *token);
+enum piv_alg piv_token_alg(const struct piv_token *token, size_t idx);
 
-struct piv_token {
-	struct piv_token *pt_next;
-	const char *pt_rdrname;
-	SCARDHANDLE pt_cardhdl;
-	DWORD pt_proto;
-	SCARD_IO_REQUEST pt_sendpci;
-	boolean_t pt_intxn;
-	boolean_t pt_reset;
+boolean_t piv_token_has_chuid(const struct piv_token *token);
+boolean_t piv_token_has_signed_chuid(const struct piv_token *token);
 
-	uint8_t pt_fascn[26];
-	size_t pt_fascn_len;
+enum piv_pin piv_token_default_auth(const struct piv_token *token);
+boolean_t piv_token_has_auth(const struct piv_token *token, enum piv_pin auth);
 
-	uint8_t pt_guid[16];
-	uint8_t pt_chuuid[16];
-	uint8_t pt_expiry[8];
-	enum piv_alg pt_algs[32];
-	size_t pt_alg_count;
-	uint pt_pinretries;
-	boolean_t pt_ykpiv;
-	boolean_t pt_nochuid;
-	boolean_t pt_signedchuid;
-	uint8_t pt_ykver[3];
+boolean_t piv_token_has_vci(const struct piv_token *token);
 
-	boolean_t pt_ykserial_valid;
-	uint32_t pt_ykserial;
+uint piv_token_offcard_certs(const struct piv_token *token);
+const char *piv_token_offcard_url(const struct piv_token *token);
 
-	uint8_t pt_hist_oncard;
-	uint8_t pt_hist_offcard;
-	char *pt_hist_url;
-
-	enum piv_pin pt_auth;
-
-	boolean_t pt_pin_global;
-	boolean_t pt_pin_app;
-	boolean_t pt_occ;
-	boolean_t pt_vci;
-
-	struct piv_slot *pt_slots;
-	struct piv_slot *pt_last_slot;
-};
-
-struct piv_ecdh_box {
-	boolean_t pdb_guidslot_valid;
-	uint8_t pdb_guid[16];
-	enum piv_slotid pdb_slot;
-
-	struct sshkey *pdb_ephem_pub;
-	struct sshkey *pdb_pub;
-
-	boolean_t pdb_free_str;
-	const char *pdb_cipher;
-	const char *pdb_kdf;
-
-	struct apdubuf pdb_iv;
-	struct apdubuf pdb_enc;
-	struct apdubuf pdb_plain;
-};
+boolean_t piv_token_is_ykpiv(const struct piv_token *token);
+const uint8_t *ykpiv_token_version(const struct piv_token *token);
+boolean_t ykpiv_token_has_serial(const struct piv_token *token);
+uint32_t ykpiv_token_serial(const struct piv_token *token);
 
 /*
  * Enumerates all PIV tokens attached to the given SCARDCONTEXT.
@@ -282,6 +230,8 @@ struct piv_ecdh_box {
  *  - PCSCError: a PCSC call failed in a way that is not retryable
  */
 erf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
+
+struct piv_token *piv_token_next(struct piv_token *token);
 
 /* Releases a list of tokens acquired from piv_enumerate. */
 void piv_release(struct piv_token *pk);
@@ -292,9 +242,21 @@ void piv_release(struct piv_token *pk);
  */
 struct piv_slot *piv_get_slot(struct piv_token *tk, enum piv_slotid slotid);
 
+struct piv_slot *piv_token_slots(struct piv_token *tk);
+struct piv_slot *piv_next_slot(struct piv_slot *slot);
+
+enum piv_slotid piv_slot_id(const struct piv_slot *slot);
+enum piv_alg piv_slot_alg(const struct piv_slot *slot);
+X509 *piv_slot_cert(const struct piv_slot *slot);
+const char *piv_slot_subject(const struct piv_slot *slot);
+struct sshkey *piv_slot_pubkey(const struct piv_slot *slot);
+
 /* Low-level APDU access */
 struct apdu *piv_apdu_make(enum iso_class cls, enum iso_ins ins, uint8_t p1,
     uint8_t p2);
+void piv_apdu_set_cmd(struct apdu *apdu, const uint8_t *data, size_t len);
+uint16_t piv_apdu_sw(const struct apdu *apdu);
+const uint8_t *piv_apdu_get_reply(const struct apdu *apdu, size_t *len);
 void piv_apdu_free(struct apdu *pdu);
 
 erf_t *piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
@@ -595,6 +557,18 @@ erf_t *piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box);
 erf_t *piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box);
 int piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len);
+
+boolean_t piv_box_has_guidslot(const struct piv_ecdh_box *box);
+const uint8_t *piv_box_guid(const struct piv_ecdh_box *box);
+enum piv_slotid piv_box_slot(const struct piv_ecdh_box *box);
+struct sshkey *piv_box_pubkey(const struct piv_ecdh_box *box);
+int piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey *tgt);
+const char *piv_box_cipher(const struct piv_ecdh_box *box);
+const char *piv_box_kdf(const struct piv_ecdh_box *box);
+
+void piv_box_set_guid(struct piv_ecdh_box *box, const uint8_t *guid,
+    size_t len);
+void piv_box_set_slot(struct piv_ecdh_box *box, enum piv_slotid slot);
 
 erf_t *piv_box_from_binary(const uint8_t *input, size_t len,
     struct piv_ecdh_box **box);

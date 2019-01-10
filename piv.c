@@ -112,6 +112,95 @@ boolean_t piv_full_apdu_debug = B_FALSE;
 		    (apdubuf).b_size);	\
 	} while (0)
 
+struct apdubuf {
+	uint8_t *b_data;
+	size_t b_offset;
+	size_t b_size;
+	size_t b_len;
+};
+
+struct apdu {
+	enum iso_class a_cls;
+	enum iso_ins a_ins;
+	uint8_t a_p1;
+	uint8_t a_p2;
+	uint8_t a_le;
+
+	struct apdubuf a_cmd;
+	uint16_t a_sw;
+	struct apdubuf a_reply;
+};
+
+struct piv_slot {
+	struct piv_slot *ps_next;
+	enum piv_slotid ps_slot;
+	enum piv_alg ps_alg;
+	X509 *ps_x509;
+	const char *ps_subj;
+	struct sshkey *ps_pubkey;
+};
+
+struct piv_token {
+	struct piv_token *pt_next;
+	const char *pt_rdrname;
+	SCARDHANDLE pt_cardhdl;
+	DWORD pt_proto;
+	SCARD_IO_REQUEST pt_sendpci;
+	boolean_t pt_intxn;
+	boolean_t pt_reset;
+
+	uint8_t pt_fascn[26];
+	size_t pt_fascn_len;
+
+	uint8_t pt_guid[GUID_LEN];
+	char *pt_guidhex;
+
+	boolean_t pt_haschuuid;
+	uint8_t pt_chuuid[GUID_LEN];
+	uint8_t pt_expiry[8];
+	enum piv_alg pt_algs[32];
+	size_t pt_alg_count;
+	uint pt_pinretries;
+	boolean_t pt_ykpiv;
+	boolean_t pt_nochuid;
+	boolean_t pt_signedchuid;
+	uint8_t pt_ykver[3];
+
+	boolean_t pt_ykserial_valid;
+	uint32_t pt_ykserial;
+
+	uint8_t pt_hist_oncard;
+	uint8_t pt_hist_offcard;
+	char *pt_hist_url;
+
+	enum piv_pin pt_auth;
+
+	boolean_t pt_pin_global;
+	boolean_t pt_pin_app;
+	boolean_t pt_occ;
+	boolean_t pt_vci;
+
+	struct piv_slot *pt_slots;
+	struct piv_slot *pt_last_slot;
+};
+
+struct piv_ecdh_box {
+	boolean_t pdb_guidslot_valid;
+	uint8_t pdb_guid[16];
+	enum piv_slotid pdb_slot;
+
+	struct sshkey *pdb_ephem_pub;
+	struct sshkey *pdb_pub;
+
+	boolean_t pdb_free_str;
+	const char *pdb_cipher;
+	const char *pdb_kdf;
+
+	struct apdubuf pdb_iv;
+	struct apdubuf pdb_enc;
+	struct apdubuf pdb_plain;
+};
+
 static inline void
 debug_dump(erf_t *err, struct apdu *apdu)
 {
@@ -160,6 +249,161 @@ sw_to_name(enum iso_sw sw)
 	else if ((sw & 0xFF00) == SW_WARNING_00)
 		return ("WARNING_UNKNOWN");
 	return ("UNKNOWN");
+}
+
+const char *
+piv_token_rdrname(const struct piv_token *token)
+{
+	return (token->pt_rdrname);
+}
+
+const uint8_t *
+piv_token_fascn(const struct piv_token *token, size_t *len)
+{
+	if (token->pt_fascn_len == 0)
+		return (NULL);
+	*len = token->pt_fascn_len;
+	return (token->pt_fascn);
+}
+
+const uint8_t *
+piv_token_guid(const struct piv_token *token)
+{
+	if (token->pt_nochuid)
+		return (NULL);
+	return (token->pt_guid);
+}
+
+/* from bunyan.c */
+extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
+
+const char *
+piv_token_guid_hex(const struct piv_token *token)
+{
+	if (token->pt_nochuid)
+		return (NULL);
+	if (token->pt_guidhex == NULL) {
+		struct piv_token *tkwrite = (struct piv_token *)token;
+		tkwrite->pt_guidhex = buf_to_hex(token->pt_guid,
+		    sizeof (token->pt_guid), B_FALSE);
+	}
+	return (token->pt_guidhex);
+}
+
+const uint8_t *
+piv_token_chuuid(const struct piv_token *token)
+{
+	if (token->pt_nochuid || !token->pt_haschuuid)
+		return (NULL);
+	return (token->pt_chuuid);
+}
+
+const uint8_t *
+piv_token_expiry(const struct piv_token *token, size_t *len)
+{
+	if (token->pt_nochuid)
+		return (NULL);
+	*len = sizeof (token->pt_expiry);
+	return (token->pt_expiry);
+}
+
+size_t
+piv_token_nalgs(const struct piv_token *token)
+{
+	return (token->pt_alg_count);
+}
+
+enum piv_alg
+piv_token_alg(const struct piv_token *token, size_t idx)
+{
+	VERIFY3U(idx, <, token->pt_alg_count);
+	return (token->pt_algs[idx]);
+}
+
+boolean_t
+piv_token_has_chuid(const struct piv_token *token)
+{
+	return (!token->pt_nochuid);
+}
+
+boolean_t
+piv_token_has_signed_chuid(const struct piv_token *token)
+{
+	return (token->pt_signedchuid);
+}
+
+enum piv_pin
+piv_token_default_auth(const struct piv_token *token)
+{
+	return (token->pt_auth);
+}
+
+boolean_t
+piv_token_has_auth(const struct piv_token *token, enum piv_pin auth)
+{
+	switch (auth) {
+	case PIV_PIN:
+		return (token->pt_pin_app);
+	case PIV_GLOBAL_PIN:
+		return (token->pt_pin_global);
+	case PIV_PUK:
+		return (B_TRUE);
+	case PIV_OCC:
+		return (token->pt_occ);
+	}
+	return (B_FALSE);
+}
+
+boolean_t
+piv_token_has_vci(const struct piv_token *token)
+{
+	return (token->pt_vci);
+}
+
+uint
+piv_token_offcard_certs(const struct piv_token *token)
+{
+	return (token->pt_hist_offcard);
+}
+
+const char *
+piv_token_offcard_url(const struct piv_token *token)
+{
+	return (token->pt_hist_url);
+}
+
+boolean_t
+piv_token_is_ykpiv(const struct piv_token *token)
+{
+	return (token->pt_ykpiv);
+}
+
+const uint8_t *
+ykpiv_token_version(const struct piv_token *token)
+{
+	VERIFY(token->pt_ykpiv);
+	return (token->pt_ykver);
+}
+
+boolean_t
+ykpiv_token_has_serial(const struct piv_token *token)
+{
+	VERIFY(token->pt_ykpiv);
+	return (token->pt_ykserial_valid);
+}
+
+uint32_t
+ykpiv_token_serial(const struct piv_token *token)
+{
+	VERIFY(token->pt_ykpiv);
+	VERIFY(token->pt_ykserial_valid);
+	return (token->pt_ykserial);
+}
+
+struct piv_token *
+piv_token_next(struct piv_token *token)
+{
+	return (token->pt_next);
 }
 
 erf_t *
@@ -620,6 +864,7 @@ piv_read_chuid(struct piv_token *pk)
 				tlv_end(tlv);
 				break;
 			case 0x36:	/* Cardholder UUID */
+				pk->pt_haschuuid = B_TRUE;
 				tlv_read(tlv, pk->pt_chuuid, 0,
 				    sizeof (pk->pt_chuuid));
 				tlv_end(tlv);
@@ -845,6 +1090,48 @@ piv_get_slot(struct piv_token *tk, enum piv_slotid slotid)
 	return (NULL);
 }
 
+struct piv_slot *
+piv_token_slots(struct piv_token *token)
+{
+	return (token->pt_slots);
+}
+
+struct piv_slot *
+piv_next_slot(struct piv_slot *slot)
+{
+	return (slot->ps_next);
+}
+
+enum piv_slotid
+piv_slot_id(const struct piv_slot *slot)
+{
+	return (slot->ps_slot);
+}
+
+enum piv_alg
+piv_slot_alg(const struct piv_slot *slot)
+{
+	return (slot->ps_alg);
+}
+
+X509 *
+piv_slot_cert(const struct piv_slot *slot)
+{
+	return (slot->ps_x509);
+}
+
+const char *
+piv_slot_subject(const struct piv_slot *slot)
+{
+	return (slot->ps_subj);
+}
+
+struct sshkey *
+piv_slot_pubkey(const struct piv_slot *slot)
+{
+	return (slot->ps_pubkey);
+}
+
 struct apdu *
 piv_apdu_make(enum iso_class cls, enum iso_ins ins, uint8_t p1, uint8_t p2)
 {
@@ -864,6 +1151,28 @@ piv_apdu_free(struct apdu *a)
 		free(a->a_reply.b_data);
 	}
 	free(a);
+}
+
+void
+piv_apdu_set_cmd(struct apdu *apdu, const uint8_t *data, size_t len)
+{
+	apdu->a_cmd.b_offset = 0;
+	apdu->a_cmd.b_len = len;
+	apdu->a_cmd.b_size = len;
+	apdu->a_cmd.b_data = data;
+}
+
+uint16_t
+piv_apdu_sw(const struct apdu *apdu)
+{
+	return (apdu->a_sw);
+}
+
+const uint8_t *
+piv_apdu_get_reply(const struct apdu *apdu, size_t *len)
+{
+	*len = apdu->a_reply.b_len;
+	return (apdu->a_reply.b_data + apdu->a_reply.b_offset);
 }
 
 static uint8_t *
@@ -2938,6 +3247,9 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 	return (err);
 }
 
+#define	BOX_DEFAULT_CIPHER	"chacha20-poly1305"
+#define	BOX_DEFAULT_KDF		"sha512"
+
 struct piv_ecdh_box *
 piv_box_new(void)
 {
@@ -3396,9 +3708,9 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	VERIFY0(sshkey_demote(pkey, &box->pdb_ephem_pub));
 
 	if (box->pdb_cipher == NULL)
-		box->pdb_cipher = "chacha20-poly1305";
+		box->pdb_cipher = BOX_DEFAULT_CIPHER;
 	if (box->pdb_kdf == NULL)
-		box->pdb_kdf = "sha512";
+		box->pdb_kdf = BOX_DEFAULT_KDF;
 
 	cipher = cipher_by_name(box->pdb_cipher);
 	if (cipher == NULL) {
@@ -3805,6 +4117,69 @@ out:
 	free(tname);
 	free(tmpbuf);
 	return (err);
+}
+
+const uint8_t *
+piv_box_guid(const struct piv_ecdh_box *box)
+{
+	VERIFY(box->pdb_guidslot_valid);
+	return (box->pdb_guid);
+}
+
+boolean_t
+piv_box_has_guidslot(const struct piv_ecdh_box *box)
+{
+	return (box->pdb_guidslot_valid);
+}
+
+enum piv_slotid
+piv_box_slot(const struct piv_ecdh_box *box)
+{
+	VERIFY(box->pdb_guidslot_valid);
+	return (box->pdb_slot);
+}
+
+struct sshkey *
+piv_box_pubkey(const struct piv_ecdh_box *box)
+{
+	return (box->pdb_pub);
+}
+
+int
+piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey *tgt)
+{
+	return (sshkey_demote(box->pdb_pub, tgt));
+}
+
+const char *
+piv_box_cipher(const struct piv_ecdh_box *box)
+{
+	if (box->pdb_cipher == NULL)
+		return (BOX_DEFAULT_CIPHER);
+	return (box->pdb_cipher);
+}
+
+const char *
+piv_box_kdf(const struct piv_ecdh_box *box)
+{
+	if (box->pdb_kdf == NULL)
+		return (BOX_DEFAULT_KDF);
+	return (box->pdb_kdf);
+}
+
+void
+piv_box_set_guid(struct piv_ecdh_box *box, const uint8_t *guid, size_t len)
+{
+	VERIFY3U(len, ==, sizeof (box->pdb_guid));
+	bcopy(guid, box->pdb_guid, len);
+	box->pdb_guidslot_valid = B_TRUE;
+}
+
+void
+piv_box_set_slot(struct piv_ecdh_box *box, enum piv_slotid slot)
+{
+	box->pdb_slot = slot;
+	box->pdb_guidslot_valid = B_TRUE;
 }
 
 static int piv_box_read_old_v1(struct sshbuf *buf, struct piv_ecdh_box **pbox);
