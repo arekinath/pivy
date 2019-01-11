@@ -239,7 +239,10 @@ erf_t *piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 
 struct piv_token *piv_token_next(struct piv_token *token);
 
-/* Releases a list of tokens acquired from piv_enumerate. */
+/*
+ * Releases a list of tokens acquired from piv_enumerate or a token from
+ * piv_find.
+ */
 void piv_release(struct piv_token *pk);
 
 /*
