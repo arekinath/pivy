@@ -281,6 +281,7 @@ clean:
 	rm -f piv-tool $(PIVTOOL_OBJS)
 	rm -f piv-agent $(AGENT_OBJS)
 	rm -f piv-zfs $(PIVZFS_OBJS)
+	rm -f ebox $(EBOX_OBJS)
 	rm -fr .dist
 
 distclean: clean

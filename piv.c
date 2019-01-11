@@ -81,6 +81,9 @@ boolean_t piv_full_apdu_debug = B_FALSE;
     errf("InvalidDataError", cause, "PIV device '%s' returned invalid or " \
     "unsupported payload", rdr)
 
+/* smatch and similar don't support varargs macros */
+#ifndef LINT
+
 #define permerrf(cause, rdr, doing, ...)	\
     errf("PermissionError", cause, \
     "Permission denied " doing " on PIV device '%s'" \
@@ -90,6 +93,8 @@ boolean_t piv_full_apdu_debug = B_FALSE;
     errf("NotSupportedError", cause, \
     thing " not supported by PIV device '%s'" \
     __VA_OPT__(,) __VA_ARGS__, rdr)
+
+#endif
 
 #define boxderrf(cause) \
     errf("InvalidDataError", cause, \
@@ -445,7 +450,7 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 
 	VERIFY(tk->pt_intxn);
 
-	if (!sshkey_equal_public(pubkey, slot->ps_pubkey)) {
+	if (sshkey_equal_public(pubkey, slot->ps_pubkey) != 0) {
 		err = errf("KeysNotEqualError", NULL,
 		    "Given public key and slot's public key do not match");
 		return (errf("KeyAuthError", err, "Failed to authenticate key "
@@ -1192,7 +1197,6 @@ nope:
 		bzero(key, sizeof (struct piv_token));
 	}
 
-	free((char *)key->pt_rdrname);
 	free(key);
 
 	if (found == NULL) {
@@ -3025,6 +3029,32 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 
 	VERIFY(pk->pt_intxn == B_TRUE);
 
+	/*
+	 * This gets a little confusing because there are several valid forms
+	 * of this function:
+	 *   1. piv_verify_pin(tk, type, NULL, NULL, ?);
+	 *     => check if we are already authed and return ERF_OK if so
+	 *   2. piv_verify_pin(tk, type, NULL, &retries, ?);
+	 *     => check how many retries are left without trying the PIN
+	 *   3. piv_verify_pin(tk, type, pin, NULL, ?);
+	 *     => try a PIN without any min retry cap
+	 *   4. piv_verify_pin(tk, type, pin, &retries, ?);  (retries == 0)
+	 *     => try a PIN without any min retry cap, if fail set *retries
+	 *   5. piv_verify_pin(tk, type, pin, &retries, ?);  (retries > 0)
+	 *     => try a PIN with a min retry cap and if we fail set *retries
+	 *
+	 * It's worth noting that the canskip argument is separate at least in
+	 * part due to "PIN always" slots, which can't use the cached auth
+	 * status and need a separate VERIFY command every time they're used.
+	 */
+
+	/*
+	 * Decide if we want to do an initial empty VERIFY command to check
+	 * the current auth status.
+	 *
+	 * We want to always do this for cases 1, 2 and 5 above, and on cases
+	 * 3 and 4 we want to do it only if canskip is set.
+	 */
 	if (pin == NULL || canskip || (retries != NULL && *retries > 0)) {
 		apdu = piv_apdu_make(CLA_ISO, INS_VERIFY, 0x00, type);
 
@@ -3038,43 +3068,70 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 		}
 
 		if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
-			if ((apdu->a_sw & 0x000F) <= *retries) {
+			/* We're not authed. */
+
+			if (pin != NULL && retries != NULL && *retries > 0 &&
+			    (apdu->a_sw & 0x000F) <= *retries) {
+				/* Case 5 */
 				err = errf("MinRetriesError", NULL,
 				    "Insufficient PIN retries remaining "
 				    "(minimum %d, remaining %d)", *retries,
 				    (apdu->a_sw & 0x000F));
-				if (retries != NULL)
-					*retries = (apdu->a_sw & 0x000F);
+				*retries = (apdu->a_sw & 0x000F);
+
 			} else if (pin == NULL) {
+				/* Cases 1, 2 */
 				if (retries != NULL)
 					*retries = (apdu->a_sw & 0x000F);
 				piv_apdu_free(apdu);
 				return (ERF_OK);
+
 			} else {
+				/* Cases 3, 4 with canskip set */
 				err = ERF_OK;
 			}
 		} else if (apdu->a_sw == SW_WRONG_LENGTH ||
 		    apdu->a_sw == SW_WRONG_DATA) {
+			/*
+			 * Probably this applet doesn't implement the empty
+			 * VERIFY command properly (it's easy to miss it in
+			 * the spec, and lots of them have had bugs here).
+			 */
 			if (pin == NULL) {
+				/* Cases 1, 2 */
 				piv_apdu_free(apdu);
 				return (notsuperrf(swerrf("INS_VERIFY(%x)",
 				    apdu->a_sw, type), pk->pt_rdrname,
 				    "Reading PIN retry counter"));
 			} else {
 				/*
-				 * We can't seem to check the number of retries
-				 * remaining, so just proceed through.
+				 * In cases 3, 4 the canskip is best-effort
+				 * anyway, so let's just continue.
+				 *
+				 * For case 5, maybe this is more questionable
+				 * but we err on the side of continuing when
+				 * faced with a card without empty VERIFY
+				 * support.
 				 */
 				err = ERF_OK;
 			}
 		} else if (apdu->a_sw == SW_NO_ERROR) {
+			/* We are already authed! */
 			if (pin == NULL) {
+				/* Cases 1 and 2 just return here. */
 				piv_apdu_free(apdu);
 				return (ERF_OK);
+
 			} else if (canskip) {
+				/* Cases 3 and 4 with canskip just ret too */
 				piv_apdu_free(apdu);
 				return (ERF_OK);
 			} else {
+
+				/*
+				 * Case 5, continue to try the PIN, we've
+				 * met the retries constraint.
+				 */
 				err = ERF_OK;
 			}
 		} else {
@@ -3088,7 +3145,12 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 			return (err);
 	}
 
+	/* Cases 3-5 only past here. */
 	VERIFY(pin != NULL);
+#ifdef LINT
+	if (pin == NULL)
+		return (err);
+#endif
 
 	if (strlen(pin) < 1 || strlen(pin) > 8) {
 		return (argerrf("pin", "a string 1-8 chars in length",

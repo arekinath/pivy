@@ -79,8 +79,10 @@ static struct piv_slot *override = NULL;
 
 SCARDCONTEXT ctx;
 
+#ifndef LINT
 #define	funcerrf(cause, fmt, ...)	\
     errf(__func__, cause, fmt __VA_OPT__(,) __VA_ARGS__)
+#endif
 
 extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 

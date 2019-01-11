@@ -122,7 +122,7 @@ errf_line(const struct errf *e)
 	return (e->errf_line);
 }
 
-const struct errf *
+struct errf *
 errf_cause(const struct errf *e)
 {
 	return (e->errf_cause);

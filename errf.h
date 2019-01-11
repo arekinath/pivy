@@ -12,11 +12,7 @@
 
 #include <stdint.h>
 #include <sys/types.h>
-
-#if !defined(__sun) && !defined(USING_SPL)
-typedef enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
-typedef unsigned int uint;
-#endif
+#include "debug.h"
 
 /*
  * ERF -- annotated chained error objects for C.
@@ -81,6 +77,8 @@ const char *errf_file(const struct errf *e);
 uint errf_line(const struct errf *e);
 struct errf *errf_cause(const struct errf *e);
 
+#ifndef LINT
+
 /*
  * Basic public interface for constructing an error object.
  *
@@ -109,6 +107,14 @@ struct errf *errf_cause(const struct errf *e);
     errf("ArgumentError", NULL, \
     "Argument " param " must be " mustbe " but is " butis \
     __VA_OPT__(,) __VA_ARGS__)
+
+#else
+
+/* smatch and similar don't support varargs macros */
+#define	errf(name, cause, fmt, ...)	\
+    _errf(name, cause, __func__, __FILE__, __LINE__, fmt)
+
+#endif
 
 /* Internal only -- used by the above macros. */
 struct errf *_errf(const char *name, struct errf *cause, const char *func,
