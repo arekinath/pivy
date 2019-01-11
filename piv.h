@@ -215,11 +215,14 @@ boolean_t piv_token_has_auth(const struct piv_token *token, enum piv_pin auth);
 
 boolean_t piv_token_has_vci(const struct piv_token *token);
 
-uint piv_token_offcard_certs(const struct piv_token *token);
+uint piv_token_keyhistory_oncard(const struct piv_token *token);
+uint piv_token_keyhistory_offcard(const struct piv_token *token);
 const char *piv_token_offcard_url(const struct piv_token *token);
 
 boolean_t piv_token_is_ykpiv(const struct piv_token *token);
 const uint8_t *ykpiv_token_version(const struct piv_token *token);
+int ykpiv_version_compare(const struct piv_token *token, uint8_t major,
+    uint8_t minor, uint8_t patch);
 boolean_t ykpiv_token_has_serial(const struct piv_token *token);
 uint32_t ykpiv_token_serial(const struct piv_token *token);
 
@@ -230,6 +233,9 @@ uint32_t ykpiv_token_serial(const struct piv_token *token);
  *  - PCSCError: a PCSC call failed in a way that is not retryable
  */
 erf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
+
+erf_t *piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
+    struct piv_token **token);
 
 struct piv_token *piv_token_next(struct piv_token *token);
 
@@ -244,6 +250,14 @@ struct piv_slot *piv_get_slot(struct piv_token *tk, enum piv_slotid slotid);
 
 struct piv_slot *piv_token_slots(struct piv_token *tk);
 struct piv_slot *piv_next_slot(struct piv_slot *slot);
+
+/*
+ * Forces the enumeration of a slot which doesn't have a valid certificate on
+ * the card. This can useful to ask the card for a signature from a particular
+ * slot even though no certificate has been written there yet.
+ */
+struct piv_slot *piv_force_slot(struct piv_token *tk, enum piv_slotid slotid,
+   enum piv_alg alg);
 
 enum piv_slotid piv_slot_id(const struct piv_slot *slot);
 enum piv_alg piv_slot_alg(const struct piv_slot *slot);
@@ -356,6 +370,22 @@ erf_t *ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
  */
 erf_t *piv_generate(struct piv_token *tk, enum piv_slotid slotid,
     enum piv_alg alg, struct sshkey **pubkey);
+
+/*
+ * Writes the key history object of the card with the given counts of on-
+ * and off-card certs and a URL for retrieving off-card certificates.
+ *
+ * You should use this after generating a key in one of the key history
+ * slots.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - ArgumentError: counts are too large, or offcard > 0 && offcard_url == NULL
+ *  - PermissionError: the card requires admin authentication before writing
+ *  - APDUError: the card rejected the command
+ */
+erf_t *piv_write_keyhistory(struct piv_token *tk, uint oncard, uint offcard,
+    const char *offcard_url);
 
 /*
  * YubicoPIV specific: generates a new asymmetric private key in a slot on the
@@ -562,9 +592,11 @@ boolean_t piv_box_has_guidslot(const struct piv_ecdh_box *box);
 const uint8_t *piv_box_guid(const struct piv_ecdh_box *box);
 enum piv_slotid piv_box_slot(const struct piv_ecdh_box *box);
 struct sshkey *piv_box_pubkey(const struct piv_ecdh_box *box);
-int piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey *tgt);
+struct sshkey *piv_box_ephem_pubkey(const struct piv_ecdh_box *box);
+int piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey **tgt);
 const char *piv_box_cipher(const struct piv_ecdh_box *box);
 const char *piv_box_kdf(const struct piv_ecdh_box *box);
+size_t piv_box_encsize(const struct piv_ecdh_box *box);
 
 void piv_box_set_guid(struct piv_ecdh_box *box, const uint8_t *guid,
     size_t len);

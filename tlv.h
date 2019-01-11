@@ -14,15 +14,9 @@
 #include <sys/types.h>
 #include <assert.h>
 #include <strings.h>
-
-#if !defined(__sun) && !defined(USING_SPL)
-typedef enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
-typedef unsigned int uint;
-#endif
+#include "erf.h"
 
 #define	MAX_APDU_SIZE	16384
-
-extern boolean_t debug;
 
 struct tlv_state {
 	struct tlv_stack_frame *ts_stack;

@@ -371,8 +371,8 @@ agent_piv_open(void)
 		}
 
 		err = piv_read_all_certs(selk);
-		if (err && !erfcause(err, "NotFoundError") &&
-		    !erfcause(err, "NotSupportedError")) {
+		if (err && !erf_caused_by(err, "NotFoundError") &&
+		    !erf_caused_by(err, "NotSupportedError")) {
 			piv_txn_end(selk);
 			return (err);
 		}
@@ -430,7 +430,7 @@ nope:
 static erf_t *
 wrap_pin_error(erf_t *err, int retries)
 {
-	if (erfcause(err, "PermissionError")) {
+	if (erf_caused_by(err, "PermissionError")) {
 		if (retries == 0) {
 			err = erf("TokenLocked", err,
 			    "PIV token is locked due to too many "
@@ -441,7 +441,7 @@ wrap_pin_error(erf_t *err, int retries)
 			    "remaining)", retries);
 			drop_pin();
 		}
-	} else if (erfcause(err, "MinRetriesError")) {
+	} else if (erf_caused_by(err, "MinRetriesError")) {
 		err = erf("TokenLocked", err,
 		    "Refusing to use up the last PIN code attempt: "
 		    "unlock the token with another tool to clear "
@@ -678,7 +678,7 @@ pin_again:
 	ohashalg = hashalg;
 	err = piv_sign(selk, slot, data, dlen, &hashalg, &rawsig, &rslen);
 
-	if (erfcause(err, "PermissionError") && pin_len != 0 &&
+	if (erf_caused_by(err, "PermissionError") && pin_len != 0 &&
 	    selk->pt_ykpiv && canskip) {
 		/*
 		 * On a Yubikey, slots other than 9C (SIGNATURE) can also be
@@ -687,7 +687,7 @@ pin_again:
 		 */
 		canskip = B_FALSE;
 		goto pin_again;
-	} else if (erfcause(err, "PermissionError")) {
+	} else if (erf_caused_by(err, "PermissionError")) {
 		agent_piv_close(B_TRUE);
 		err = nopinerf(err);
 		goto out;
@@ -830,12 +830,12 @@ pin_again:
 		goto out;
 	}
 	err = piv_ecdh(selk, slot, partner, &secret, &seclen);
-	if (erfcause(err, "PermissionError") && pin_len != 0 &&
+	if (erf_caused_by(err, "PermissionError") && pin_len != 0 &&
 	    selk->pt_ykpiv && canskip) {
 		/* Yubikey can have slots other than 9C as "PIN Always" */
 		canskip = B_FALSE;
 		goto pin_again;
-	} else if (erfcause(err, "PermissionError")) {
+	} else if (erf_caused_by(err, "PermissionError")) {
 		agent_piv_close(B_TRUE);
 		err = nopinerf(err);
 		goto out;
@@ -1136,7 +1136,7 @@ process_extension(SocketEntry *e)
 		send_extfail(e);
 		bunyan_log(WARN, "failed to process extension command",
 		    "error", BNY_ERF, err, NULL);
-		if (erfcause(err, "NoPINError") && bunyan_get_level() > WARN)
+		if (erf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
 			perf(err);
 		erfree(err);
 		err = ERF_OK;
@@ -1307,7 +1307,7 @@ process_message(u_int socknum)
 	if (err) {
 		bunyan_log(WARN, "failed to process command",
 		    "error", BNY_ERF, err, NULL);
-		if (erfcause(err, "NoPINError") && bunyan_get_level() > WARN)
+		if (erf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
 			perf(err);
 		sshbuf_reset(e->request);
 		send_status(e, 0);

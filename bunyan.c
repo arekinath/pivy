@@ -449,7 +449,7 @@ print_frame(struct bunyan_frame *frame, uint *pn, struct bunyan_var **evars)
 			evar->bv_next = *evars;
 			*evars = evar;
 			printf_buf("%s = %s...", var->bv_name,
-			    var->bv_value.bvv_erf->erf_name);
+			    erf_name(var->bv_value.bvv_erf));
 			break;
 		default:
 			abort();
@@ -567,7 +567,7 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 			break;
 		case BNY_ERF:
 			err = va_arg(ap, erf_t *);
-			printf_buf("%s = %s...", propname, err->erf_name);
+			printf_buf("%s = %s...", propname, erf_name(err));
 
 			evar = calloc(1, sizeof (struct bunyan_var));
 			evar->bv_name = propname;
@@ -588,10 +588,10 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 		nevar = evar->bv_next;
 		printf_buf("\t%s = ", evar->bv_name);
 		err = evar->bv_value.bvv_erf;
-		for (; err != NULL; err = err->erf_cause) {
+		for (; err != NULL; err = erf_cause(err)) {
 			printf_buf("%s%s: %s\n\t    in %s() at %s:%d\n", prefix,
-			    err->erf_name, err->erf_message, err->erf_function,
-			    err->erf_file, err->erf_line);
+			    erf_name(err), erf_message(err), erf_function(err),
+			    erf_file(err), erf_line(err));
 			prefix = "\t  Caused by ";
 		}
 		free(evar);

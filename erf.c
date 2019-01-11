@@ -15,6 +15,16 @@
 
 #include "erf.h"
 
+struct erf {
+	struct erf *erf_cause;
+	int erf_errno;
+	char erf_name[128];
+	char erf_message[256];
+	const char *erf_function;
+	const char *erf_file;
+	uint erf_line;
+};
+
 const char *
 errno_to_macro(int eno)
 {
@@ -75,6 +85,48 @@ struct erf erf_nomem = {
 };
 
 struct erf *ERF_NOMEM = &erf_nomem;
+
+const char *
+erf_name(const struct erf *e)
+{
+	return (e->erf_name);
+}
+
+const char *
+erf_message(const struct erf *e)
+{
+	return (e->erf_message);
+}
+
+int
+erf_errno(const struct erf *e)
+{
+	return (e->erf_errno);
+}
+
+const char *
+erf_function(const struct erf *e)
+{
+	return (e->erf_function);
+}
+
+const char *
+erf_file(const struct erf *e)
+{
+	return (e->erf_file);
+}
+
+uint
+erf_line(const struct erf *e)
+{
+	return (e->erf_line);
+}
+
+const struct erf *
+erf_cause(const struct erf *e)
+{
+	return (e->erf_cause);
+}
 
 struct erf *
 _erf(const char *name, struct erf *cause, const char *func, const char *file,
@@ -162,14 +214,14 @@ perfexit(const struct erf *etop)
 	exit(1);
 }
 
-int
-erfcause(const struct erf *e, const char *name)
+boolean_t
+erf_caused_by(const struct erf *e, const char *name)
 {
 	for (; e != NULL; e = e->erf_cause) {
 		if (strcmp(name, e->erf_name) == 0)
-			return (1);
+			return (B_TRUE);
 	}
-	return (0);
+	return (B_FALSE);
 }
 
 void
@@ -178,7 +230,8 @@ erfree(struct erf *ep)
 	struct erf *e;
 	while (ep != NULL) {
 		e = ep->erf_cause;
-		free(ep);
+		if (ep != ERF_NOMEM)
+			free(ep);
 		ep = e;
 	}
 }

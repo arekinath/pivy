@@ -350,8 +350,9 @@ piv_token_has_auth(const struct piv_token *token, enum piv_pin auth)
 		return (B_TRUE);
 	case PIV_OCC:
 		return (token->pt_occ);
+	default:
+		return (B_FALSE);
 	}
-	return (B_FALSE);
 }
 
 boolean_t
@@ -361,7 +362,13 @@ piv_token_has_vci(const struct piv_token *token)
 }
 
 uint
-piv_token_offcard_certs(const struct piv_token *token)
+piv_token_keyhistory_oncard(const struct piv_token *token)
+{
+	return (token->pt_hist_oncard);
+}
+
+uint
+piv_token_keyhistory_offcard(const struct piv_token *token)
 {
 	return (token->pt_hist_offcard);
 }
@@ -383,6 +390,26 @@ ykpiv_token_version(const struct piv_token *token)
 {
 	VERIFY(token->pt_ykpiv);
 	return (token->pt_ykver);
+}
+
+int
+ykpiv_version_compare(const struct piv_token *token, uint8_t major,
+    uint8_t minor, uint8_t patch)
+{
+	VERIFY(token->pt_ykpiv);
+	if (token->pt_ykver[0] < major)
+		return (-1);
+	if (token->pt_ykver[0] > major)
+		return (1);
+	if (token->pt_ykver[1] < minor)
+		return (-1);
+	if (token->pt_ykver[1] > minor)
+		return (1);
+	if (token->pt_ykver[2] < patch)
+		return (-1);
+	if (token->pt_ykver[2] > patch)
+		return (1);
+	return (0);
 }
 
 boolean_t
@@ -993,7 +1020,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		err = piv_select(key);
 		if (err == ERF_OK) {
 			err = piv_read_chuid(key);
-			if (erfcause(err, "NotFoundError")) {
+			if (erf_caused_by(err, "NotFoundError")) {
 				erfree(err);
 				err = ERF_OK;
 				key->pt_nochuid = B_TRUE;
@@ -1001,8 +1028,8 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		}
 		if (err == ERF_OK) {
 			err = piv_read_discov(key);
-			if (erfcause(err, "NotFoundError") ||
-			    erfcause(err, "NotSupportedError")) {
+			if (erf_caused_by(err, "NotFoundError") ||
+			    erf_caused_by(err, "NotSupportedError")) {
 				erfree(err);
 				err = ERF_OK;
 				/*
@@ -1015,8 +1042,8 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		}
 		if (err == ERF_OK) {
 			err = piv_read_keyhist(key);
-			if (erfcause(err, "NotFoundError") ||
-			    erfcause(err, "NotSupportedError")) {
+			if (erf_caused_by(err, "NotFoundError") ||
+			    erf_caused_by(err, "NotSupportedError")) {
 				erfree(err);
 				err = ERF_OK;
 			}
@@ -1026,7 +1053,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			if (err == ERF_OK) {
 				err = ykpiv_read_serial(key);
 			}
-			if (erfcause(err, "NotSupportedError")) {
+			if (erf_caused_by(err, "NotSupportedError")) {
 				erfree(err);
 				err = ERF_OK;
 			}
@@ -1047,6 +1074,180 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 
 	*tokens = ks;
 
+	free(readers);
+	return (ERF_OK);
+}
+
+erf_t *
+piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
+    struct piv_token **token)
+{
+	DWORD rv, readersLen = 0;
+	LPTSTR readers, thisrdr;
+	struct piv_token *found = NULL, *key;
+	erf_t *err;
+
+	rv = SCardListReaders(ctx, NULL, NULL, &readersLen);
+	if (rv != SCARD_S_SUCCESS) {
+		return (pcscerf("SCardListReaders", rv));
+	}
+	readers = calloc(1, readersLen);
+	rv = SCardListReaders(ctx, NULL, readers, &readersLen);
+	if (rv != SCARD_S_SUCCESS) {
+		return (pcscerf("SCardListReaders", rv));
+	}
+
+	key = calloc(1, sizeof (struct piv_token));
+	VERIFY(key != NULL);
+
+	for (thisrdr = readers; *thisrdr != 0; thisrdr += strlen(thisrdr) + 1) {
+		SCARDHANDLE card;
+		DWORD activeProtocol;
+
+		rv = SCardConnect(ctx, thisrdr, SCARD_SHARE_SHARED,
+		    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, &card,
+		    &activeProtocol);
+		if (rv != SCARD_S_SUCCESS) {
+			err = pcscrerf("SCardConnect", thisrdr, rv);
+			bunyan_log(DEBUG, "SCardConnect failed",
+			    "error", BNY_ERF, err, NULL);
+			erfree(err);
+			continue;
+		}
+
+		key->pt_cardhdl = card;
+		key->pt_rdrname = strdup(thisrdr);
+		VERIFY(key->pt_rdrname != NULL);
+		key->pt_proto = activeProtocol;
+
+		switch (activeProtocol) {
+		case SCARD_PROTOCOL_T0:
+			key->pt_sendpci = *SCARD_PCI_T0;
+			break;
+		case SCARD_PROTOCOL_T1:
+			key->pt_sendpci = *SCARD_PCI_T1;
+			break;
+		default:
+			VERIFY(0);
+		}
+
+		piv_txn_begin(key);
+		err = piv_select(key);
+		if (err) {
+			erfree(err);
+			goto nope;
+		}
+		err = piv_read_chuid(key);
+		if (erf_caused_by(err, "NotFoundError") && guidlen == 0) {
+			erfree(err);
+			err = ERF_OK;
+			key->pt_nochuid = B_TRUE;
+			if (found != NULL) {
+				piv_txn_end(key);
+				(void) SCardDisconnect(card, SCARD_RESET_CARD);
+				free((char *)key->pt_rdrname);
+				free(key);
+				piv_txn_end(found);
+				(void) SCardDisconnect(found->pt_cardhdl,
+				    SCARD_RESET_CARD);
+				free((char *)found->pt_rdrname);
+				free(found);
+				return (erf("DuplicateError", NULL,
+				    "More than one PIV token matched GUID"));
+			}
+			found = key;
+			key = calloc(1, sizeof (struct piv_token));
+			continue;
+		} else if (err) {
+			bunyan_log(DEBUG, "piv_find() eliminated reader "
+			    "due to error", "reader", BNY_STRING, thisrdr,
+			    "error", BNY_ERF, err, NULL);
+			erfree(err);
+			goto nope;
+		}
+		if (bcmp(guid, key->pt_guid, guidlen) != 0)
+			goto nope;
+
+		if (found != NULL) {
+			piv_txn_end(key);
+			(void) SCardDisconnect(card, SCARD_RESET_CARD);
+			free((char *)key->pt_rdrname);
+			free(key);
+			piv_txn_end(found);
+			(void) SCardDisconnect(found->pt_cardhdl,
+			    SCARD_RESET_CARD);
+			free((char *)found->pt_rdrname);
+			free(found);
+			return (erf("DuplicateError", NULL,
+			    "More than one PIV token matched GUID"));
+		}
+		found = key;
+		key = calloc(1, sizeof (struct piv_token));
+		continue;
+
+nope:
+		piv_txn_end(key);
+		(void) SCardDisconnect(card, SCARD_RESET_CARD);
+		free((char *)key->pt_rdrname);
+		bzero(key, sizeof (struct piv_token));
+	}
+
+	free((char *)key->pt_rdrname);
+	free(key);
+
+	if (found == NULL) {
+		return (erf("NotFoundError", NULL,
+		    "No PIV token found matching GUID"));
+	}
+
+	key = found;
+	err = ERF_OK;
+
+	if (err == ERF_OK) {
+		err = piv_read_discov(key);
+		if (erf_caused_by(err, "NotFoundError") ||
+		    erf_caused_by(err, "NotSupportedError")) {
+			erfree(err);
+			err = ERF_OK;
+			/*
+			 * Default to preferring the application PIN if
+			 * we have no discovery object.
+			 */
+			key->pt_pin_app = B_TRUE;
+			key->pt_auth = PIV_PIN;
+		}
+	}
+	if (err == ERF_OK) {
+		err = piv_read_keyhist(key);
+		if (erf_caused_by(err, "NotFoundError") ||
+		    erf_caused_by(err, "NotSupportedError")) {
+			erfree(err);
+			err = ERF_OK;
+		}
+	}
+	if (err == ERF_OK) {
+		err = piv_probe_ykpiv(key);
+		if (err == ERF_OK) {
+			err = ykpiv_read_serial(key);
+		}
+		if (erf_caused_by(err, "NotSupportedError")) {
+			erfree(err);
+			err = ERF_OK;
+		}
+	}
+	piv_txn_end(key);
+
+	if (err) {
+		bunyan_log(DEBUG, "piv_find() eliminated reader "
+		    "due to error", "reader", BNY_STRING, thisrdr,
+		    "error", BNY_ERF, err, NULL);
+		erfree(err);
+		(void) SCardDisconnect(key->pt_cardhdl, SCARD_RESET_CARD);
+		free((char *)key->pt_rdrname);
+		free(key);
+	}
+
+	*token = key;
 	free(readers);
 	return (ERF_OK);
 }
@@ -1088,6 +1289,29 @@ piv_get_slot(struct piv_token *tk, enum piv_slotid slotid)
 			return (s);
 	}
 	return (NULL);
+}
+
+struct piv_slot *
+piv_force_slot(struct piv_token *tk, enum piv_slotid slotid, enum piv_alg alg)
+{
+	struct piv_slot *s;
+	for (s = tk->pt_slots; s != NULL; s = s->ps_next) {
+		if (s->ps_slot == slotid)
+			break;
+	}
+	if (s == NULL) {
+		s = calloc(1, sizeof (struct piv_slot));
+		VERIFY(s != NULL);
+		if (tk->pt_last_slot == NULL) {
+			tk->pt_slots = s;
+		} else {
+			tk->pt_last_slot->ps_next = s;
+		}
+		tk->pt_last_slot = s;
+	}
+	s->ps_slot = slotid;
+	s->ps_alg = alg;
+	return (s);
 }
 
 struct piv_slot *
@@ -1159,7 +1383,7 @@ piv_apdu_set_cmd(struct apdu *apdu, const uint8_t *data, size_t len)
 	apdu->a_cmd.b_offset = 0;
 	apdu->a_cmd.b_len = len;
 	apdu->a_cmd.b_size = len;
-	apdu->a_cmd.b_data = data;
+	apdu->a_cmd.b_data = (uint8_t *)data;
 }
 
 uint16_t
@@ -1972,6 +2196,55 @@ ykpiv_generate(struct piv_token *pt, enum piv_slotid slotid,
 }
 
 erf_t *
+piv_write_keyhistory(struct piv_token *pt, uint oncard, uint offcard,
+    const char *offcard_url)
+{
+	struct tlv_state *tlv;
+	erf_t *err;
+
+	VERIFY(pt->pt_intxn);
+
+	if (oncard > 20 || offcard > 20 || oncard + offcard > 20) {
+		return (argerf("oncard + offcard", "less than max keyhist "
+		    "slots (%d)", "%d", 20, oncard + offcard));
+	}
+
+	if (offcard > 0 && offcard_url == NULL) {
+		return (argerf("offcard_url", "a valid URL string when "
+		    "offcard > 0", "NULL"));
+	}
+
+	tlv = tlv_init_write();
+
+	tlv_push(tlv, 0xC1);
+	tlv_write_uint(tlv, oncard);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xC2);
+	tlv_write_uint(tlv, offcard);
+	tlv_pop(tlv);
+
+	if (offcard_url != NULL) {
+		tlv_push(tlv, 0xF3);
+		tlv_write(tlv, (uint8_t *)offcard_url, 0,
+		    strlen(offcard_url));
+		tlv_pop(tlv);
+	}
+
+	err = piv_write_file(pt, PIV_TAG_KEYHIST, tlv_buf(tlv), tlv_len(tlv));
+
+	if (err == ERF_OK) {
+		pt->pt_hist_oncard = oncard;
+		pt->pt_hist_offcard = offcard;
+		pt->pt_hist_url = strdup(offcard_url);
+	}
+
+	tlv_free(tlv);
+
+	return (err);
+}
+
+erf_t *
 piv_write_cert(struct piv_token *pk, enum piv_slotid slotid,
     const uint8_t *data, size_t datalen, uint flags)
 {
@@ -2458,9 +2731,9 @@ static inline int
 read_all_aborts_on(erf_t *err)
 {
 	return (err &&
-	    !erfcause(err, "NotFoundError") &&
-	    !erfcause(err, "PermissionError") &&
-	    !erfcause(err, "NotSupportedError"));
+	    !erf_caused_by(err, "NotFoundError") &&
+	    !erf_caused_by(err, "PermissionError") &&
+	    !erf_caused_by(err, "NotSupportedError"));
 }
 
 erf_t *
@@ -2486,7 +2759,7 @@ piv_read_all_certs(struct piv_token *tk)
 
 	for (i = 0; i < tk->pt_hist_oncard; ++i) {
 		err = piv_read_cert(tk, PIV_SLOT_RETIRED_1 + i);
-		if (read_all_aborts_on(err) && !erfcause(err, "APDUError"))
+		if (read_all_aborts_on(err) && !erf_caused_by(err, "APDUError"))
 			return (err);
 	}
 
@@ -4145,10 +4418,22 @@ piv_box_pubkey(const struct piv_ecdh_box *box)
 	return (box->pdb_pub);
 }
 
+struct sshkey *
+piv_box_ephem_pubkey(const struct piv_ecdh_box *box)
+{
+	return (box->pdb_ephem_pub);
+}
+
 int
-piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey *tgt)
+piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey **tgt)
 {
 	return (sshkey_demote(box->pdb_pub, tgt));
+}
+
+size_t
+piv_box_encsize(const struct piv_ecdh_box *box)
+{
+	return (box->pdb_enc.b_len);
 }
 
 const char *
