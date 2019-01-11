@@ -81,16 +81,16 @@
 /* Translate a numeric error code to a human-readable error string */
 const char *ssh_err(int n);
 
-#define ssherf(func, code, ...)		\
-    erf("LibSSHError", NULL, func " returned %d (%s)", code, ssh_err(code))
+#define ssherrf(func, code, ...)		\
+    errf("LibSSHError", NULL, func " returned %d (%s)", code, ssh_err(code))
 
-#define make_sslerf(var, call, action, ...)	\
+#define make_sslerrf(var, call, action, ...)	\
 	do {	\
 		char _ssl_errbuf[128]; \
 		unsigned long _ssl_err = ERR_peek_last_error(); \
 		ERR_load_crypto_strings(); \
 		ERR_error_string(_ssl_err, _ssl_errbuf); \
-		var = erf("OpenSSLError", NULL, \
+		var = errf("OpenSSLError", NULL, \
 		    call " returned error %u (%s) while " action, \
 		    _ssl_err, _ssl_errbuf \
 		    __VA_OPT__(,) __VA_ARGS__); \

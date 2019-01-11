@@ -21,7 +21,7 @@
 
 #include "bunyan.h"
 #include "debug.h"
-#include "erf.h"
+#include "errf.h"
 
 static const char *bunyan_name = NULL;
 static char *bunyan_buf = NULL;
@@ -43,7 +43,7 @@ struct bunyan_var {
 			const uint8_t *bvvbh_data;
 			size_t bvvbh_len;
 		} bvv_bin_hex;
-		erf_t *bvv_erf;
+		errf_t *bvv_erf;
 	} bv_value;
 };
 struct bunyan_frame {
@@ -334,7 +334,7 @@ bunyan_add_vars_p(struct bunyan_frame *frame, va_list ap)
 			    va_arg(ap, size_t);
 			break;
 		case BNY_ERF:
-			var->bv_value.bvv_erf = va_arg(ap, erf_t *);
+			var->bv_value.bvv_erf = va_arg(ap, errf_t *);
 			break;
 		default:
 			abort();
@@ -449,7 +449,7 @@ print_frame(struct bunyan_frame *frame, uint *pn, struct bunyan_var **evars)
 			evar->bv_next = *evars;
 			*evars = evar;
 			printf_buf("%s = %s...", var->bv_name,
-			    erf_name(var->bv_value.bvv_erf));
+			    errf_name(var->bv_value.bvv_erf));
 			break;
 		default:
 			abort();
@@ -465,7 +465,7 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 	char time[128];
 	va_list ap;
 	const char *propname;
-	erf_t *err = NULL;
+	errf_t *err = NULL;
 	enum bunyan_arg_type typ;
 	uint n = 0;
 	struct bunyan_frame *frame;
@@ -566,8 +566,8 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 			free(wstrval);
 			break;
 		case BNY_ERF:
-			err = va_arg(ap, erf_t *);
-			printf_buf("%s = %s...", propname, erf_name(err));
+			err = va_arg(ap, errf_t *);
+			printf_buf("%s = %s...", propname, errf_name(err));
 
 			evar = calloc(1, sizeof (struct bunyan_var));
 			evar->bv_name = propname;
@@ -588,10 +588,10 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 		nevar = evar->bv_next;
 		printf_buf("\t%s = ", evar->bv_name);
 		err = evar->bv_value.bvv_erf;
-		for (; err != NULL; err = erf_cause(err)) {
+		for (; err != NULL; err = errf_cause(err)) {
 			printf_buf("%s%s: %s\n\t    in %s() at %s:%d\n", prefix,
-			    erf_name(err), erf_message(err), erf_function(err),
-			    erf_file(err), erf_line(err));
+			    errf_name(err), errf_message(err),
+			    errf_function(err), errf_file(err), errf_line(err));
 			prefix = "\t  Caused by ";
 		}
 		free(evar);

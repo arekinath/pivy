@@ -70,6 +70,8 @@ enum sshkey_fp_rep {
 /* key is stored in external hardware */
 #define SSHKEY_FLAG_EXT		0x0001
 
+typedef unsigned int u_int;
+
 #define SSHKEY_CERT_MAX_PRINCIPALS	256
 /* XXX opaquify? */
 struct sshkey_cert {

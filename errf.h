@@ -21,19 +21,19 @@ typedef unsigned int uint;
 /*
  * ERF -- annotated chained error objects for C.
  *
- * The intention is that functions which may produce an error return an erf_t*
+ * The intention is that functions which may produce an error return an errf_t*
  * where they normally would return an errno int.
  *
- * E.g.    erf_t *do_something(int arg, int *output);
+ * E.g.    errf_t *do_something(int arg, int *output);
  *
  * If this returns NULL (equivalent to ERF_OK) then this means "no error" (as
  * a 0 return value would normally). Otherwise it returns a pointer to an
- * erf_t describing the error that occurred.
+ * errf_t describing the error that occurred.
  *
- * The erf_t is allocated from the heap (using the erf() family of function
+ * The errf_t is allocated from the heap (using the errf() family of function
  * macros) and belongs to the caller.
  *
- * You can chain erf_ts together as a "cause chain" to indicate more detailed
+ * You can chain errf_ts together as a "cause chain" to indicate more detailed
  * information about the error. This is useful when high up a chain of
  * abstraction in order to understand the context where the error happened
  * For example, let's say a database couldn't answer your query because while
@@ -50,70 +50,70 @@ typedef unsigned int uint;
  * going on.
  *
  * Error objects can be nicely formatted to the console (including their
- * cause chain) using perf() and friends.
+ * cause chain) using perrf() and friends.
  */
-struct erf;
-typedef struct erf erf_t;
+struct errf;
+typedef struct errf errf_t;
 
-extern struct erf *ERF_OK;
-extern struct erf *ERF_NOMEM;
+extern struct errf *ERF_OK;
+extern struct errf *ERF_NOMEM;
 
-/* Print an erf_t to stderr, prefixed by "error: " */
-void perf(const struct erf *e);
-/* perf() and exit(1); */
-void perfexit(const struct erf *e);
+/* Print an errf_t to stderr, prefixed by "error: " */
+void perrf(const struct errf *e);
+/* perrf() and exit(1); */
+void perrfexit(const struct errf *e);
 
-/* Frees an erf_t and its cause chain. */
-void erfree(struct erf *e);
+/* Frees an errf_t and its cause chain. */
+void erfree(struct errf *e);
 
 /*
  * Returns B_TRUE if there is an error in the cause chain of "e" which is
  * named "name".
  */
-boolean_t erf_caused_by(const struct erf *e, const char *name);
+boolean_t errf_caused_by(const struct errf *e, const char *name);
 
 /* Accessors for basic information about the error. */
-const char *erf_name(const struct erf *e);
-const char *erf_message(const struct erf *e);
-int erf_errno(const struct erf *e);
-const char *erf_function(const struct erf *e);
-const char *erf_file(const struct erf *e);
-uint erf_line(const struct erf *e);
-const struct erf *erf_cause(const struct erf *e);
+const char *errf_name(const struct errf *e);
+const char *errf_message(const struct errf *e);
+int errf_errno(const struct errf *e);
+const char *errf_function(const struct errf *e);
+const char *errf_file(const struct errf *e);
+uint errf_line(const struct errf *e);
+struct errf *errf_cause(const struct errf *e);
 
 /*
  * Basic public interface for constructing an error object.
  *
- * erf_t *erf(const char *name, erf_t *cause, const char *fmt, ...);
+ * errf_t *errf(const char *name, errf_t *cause, const char *fmt, ...);
  *
  * Takes printf-style arguments for "fmt".
  */
-#define erf(name, cause, fmt, ...)	\
-    _erf(name, cause, __func__, __FILE__, __LINE__, \
+#define errf(name, cause, fmt, ...)	\
+    _errf(name, cause, __func__, __FILE__, __LINE__, \
     fmt __VA_OPT__(,) __VA_ARGS__)
 
 /*
  * Turn an int errno value into an error object (includes both the macro
  * name for the errno if available and the strerror() value).
  *
- * erf_t *erfno(const char *function, int errno, const char *fmt, ...);
+ * errf_t *errfno(const char *function, int errno, const char *fmt, ...);
  */
-#define erfno(func, eno, fmt, ...)	\
-    _erfno(func, eno, __func__, __FILE__, __LINE__, \
+#define errfno(func, eno, fmt, ...)	\
+    _errfno(func, eno, __func__, __FILE__, __LINE__, \
     fmt __VA_OPT__(,) __VA_ARGS__)
 
 /*
  * An example error subclass used to report an invalid argument.
  */
-#define argerf(param, mustbe, butis, ...)	\
-    erf("ArgumentError", NULL, \
+#define argerrf(param, mustbe, butis, ...)	\
+    errf("ArgumentError", NULL, \
     "Argument " param " must be " mustbe " but is " butis \
     __VA_OPT__(,) __VA_ARGS__)
 
 /* Internal only -- used by the above macros. */
-struct erf *_erf(const char *name, struct erf *cause, const char *func,
+struct errf *_errf(const char *name, struct errf *cause, const char *func,
     const char *file, uint line, const char *fmt, ...);
-struct erf *_erfno(const char *enofunc, int eno, const char *func,
+struct errf *_errfno(const char *enofunc, int eno, const char *func,
     const char *file, uint line, const char *fmt, ...);
 
 #endif

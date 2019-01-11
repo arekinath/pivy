@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <assert.h>
 #include <strings.h>
-#include "erf.h"
+#include "errf.h"
 
 #define	MAX_APDU_SIZE	16384
 

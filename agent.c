@@ -96,7 +96,7 @@
 #include "debug.h"
 #include "tlv.h"
 #include "piv.h"
-#include "erf.h"
+#include "errf.h"
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -134,14 +134,14 @@
 
 #define	MAX_PIN_LEN	16
 
-#define	parserf(sshfunc, rc)	\
-    erf("ParseError", ssherf(sshfunc, rc), \
+#define	parserrf(sshfunc, rc)	\
+    errf("ParseError", ssherrf(sshfunc, rc), \
     "failed to parse request in %s", __func__)
-#define	nopinerf(cause)		\
-    erf("NoPINError", cause, "no PIN has been supplied to the agent " \
+#define	nopinerrf(cause)		\
+    errf("NoPINError", cause, "no PIN has been supplied to the agent " \
     "(try ssh-add -X)")
-#define	flagserf(val)		\
-    erf("FlagsError", NULL, "unsupported flags value: %x", val)
+#define	flagserrf(val)		\
+    errf("FlagsError", NULL, "unsupported flags value: %x", val)
 
 static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
@@ -293,20 +293,20 @@ drop_pin(void)
 	pin_len = 0;
 }
 
-static erf_t *
+static errf_t *
 auth_cak(void)
 {
 	struct piv_slot *slot;
-	erf_t *err;
+	errf_t *err;
 	slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
 	if (slot == NULL) {
-		err = erf("CAKAuthError", NULL, "No key was found in the "
+		err = errf("CAKAuthError", NULL, "No key was found in the "
 		    "CARD_AUTH (CAK) slot");
 		return (err);
 	}
 	err = piv_auth_key(selk, slot, cak);
 	if (err) {
-		err = erf("CAKAuthError", err, "Key in CARD_AUTH slot (CAK) "
+		err = errf("CAKAuthError", err, "Key in CARD_AUTH slot (CAK) "
 		    "does not match the configured CAK: this card may be "
 		    "a fake!");
 		return (err);
@@ -314,12 +314,12 @@ auth_cak(void)
 	return (NULL);
 }
 
-static erf_t *
+static errf_t *
 agent_piv_open(void)
 {
 	struct piv_token *t;
 	struct piv_slot *slot;
-	erf_t *err = NULL;
+	errf_t *err = NULL;
 
 	if (txnopen) {
 		txntimeout = monotime() + 2000;
@@ -335,7 +335,7 @@ agent_piv_open(void)
 
 		err = piv_enumerate(ctx, &ks);
 		if (err) {
-			err = erf("EnumerationError", err, "Failed to "
+			err = errf("EnumerationError", err, "Failed to "
 			    "enumerate PIV tokens on the system");
 			return (err);
 		}
@@ -354,7 +354,7 @@ agent_piv_open(void)
 			}
 		}
 		if (selk == NULL) {
-			err = erf("NotFoundError", NULL, "PIV card with "
+			err = errf("NotFoundError", NULL, "PIV card with "
 			    "given GUID is not present on the system");
 			if (monotime() - last_update > 5000)
 				drop_pin();
@@ -371,8 +371,8 @@ agent_piv_open(void)
 		}
 
 		err = piv_read_all_certs(selk);
-		if (err && !erf_caused_by(err, "NotFoundError") &&
-		    !erf_caused_by(err, "NotSupportedError")) {
+		if (err && !errf_caused_by(err, "NotFoundError") &&
+		    !errf_caused_by(err, "NotSupportedError")) {
 			piv_txn_end(selk);
 			return (err);
 		}
@@ -403,7 +403,7 @@ agent_piv_open(void)
 static void
 probe_card(void)
 {
-	erf_t *err;
+	errf_t *err;
 	bunyan_log(TRACE, "doing idle probe", NULL);
 
 	last_op = monotime();
@@ -427,22 +427,22 @@ nope:
 	selk = NULL;
 }
 
-static erf_t *
-wrap_pin_error(erf_t *err, int retries)
+static errf_t *
+wrap_pin_error(errf_t *err, int retries)
 {
-	if (erf_caused_by(err, "PermissionError")) {
+	if (errf_caused_by(err, "PermissionError")) {
 		if (retries == 0) {
-			err = erf("TokenLocked", err,
+			err = errf("TokenLocked", err,
 			    "PIV token is locked due to too many "
 			    "invalid PIN code attempts");
 		} else {
-			err = erf("InvalidPIN", err,
+			err = errf("InvalidPIN", err,
 			    "Invalid PIN code supplied (%d attempts "
 			    "remaining)", retries);
 			drop_pin();
 		}
-	} else if (erf_caused_by(err, "MinRetriesError")) {
-		err = erf("TokenLocked", err,
+	} else if (errf_caused_by(err, "MinRetriesError")) {
+		err = errf("TokenLocked", err,
 		    "Refusing to use up the last PIN code attempt: "
 		    "unlock the token with another tool to clear "
 		    "the counter");
@@ -451,10 +451,10 @@ wrap_pin_error(erf_t *err, int retries)
 	return (err);
 }
 
-static erf_t *
+static errf_t *
 agent_piv_try_pin(boolean_t canskip)
 {
-	erf_t *err = NULL;
+	errf_t *err = NULL;
 	uint retries = 1;
 	if (pin_len != 0) {
 		err = piv_verify_pin(selk, selk->pt_auth, pin, &retries,
@@ -546,7 +546,7 @@ send_extfail(SocketEntry *e)
 }
 
 /* send list of supported public keys to 'client' */
-static erf_t *
+static errf_t *
 process_request_identities(SocketEntry *e)
 {
 	struct sshbuf *msg;
@@ -554,7 +554,7 @@ process_request_identities(SocketEntry *e)
 	char comment[256];
 	uint64_t now;
 	int r, n;
-	erf_t *err = NULL;
+	errf_t *err = NULL;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -602,7 +602,7 @@ out:
 }
 
 /* ssh2 only */
-static erf_t *
+static errf_t *
 process_sign_request2(SocketEntry *e)
 {
 	const u_char *data;
@@ -611,7 +611,7 @@ process_sign_request2(SocketEntry *e)
 	size_t dlen, rslen = 0, slen = 0;
 	u_int flags;
 	int r;
-	erf_t *err = NULL;
+	errf_t *err = NULL;
 	struct sshbuf *msg;
 	struct sshbuf *buf;
 	struct sshkey *key = NULL;
@@ -625,7 +625,7 @@ process_sign_request2(SocketEntry *e)
 	if ((r = sshkey_froms(e->request, &key)) != 0 ||
 	    (r = sshbuf_get_string_direct(e->request, &data, &dlen)) != 0 ||
 	    (r = sshbuf_get_u32(e->request, &flags)) != 0) {
-		err = parserf("sshbuf_get_string", r);
+		err = parserrf("sshbuf_get_string", r);
 		goto out;
 	}
 
@@ -640,7 +640,7 @@ process_sign_request2(SocketEntry *e)
 	}
 	if (!found || slot == NULL) {
 		agent_piv_close(B_FALSE);
-		err = erf("NotFoundError", NULL, "specified key not found");
+		err = errf("NotFoundError", NULL, "specified key not found");
 		goto out;
 	}
 	bunyan_add_vars(msg_log_frame,
@@ -678,7 +678,7 @@ pin_again:
 	ohashalg = hashalg;
 	err = piv_sign(selk, slot, data, dlen, &hashalg, &rawsig, &rslen);
 
-	if (erf_caused_by(err, "PermissionError") && pin_len != 0 &&
+	if (errf_caused_by(err, "PermissionError") && pin_len != 0 &&
 	    selk->pt_ykpiv && canskip) {
 		/*
 		 * On a Yubikey, slots other than 9C (SIGNATURE) can also be
@@ -687,9 +687,9 @@ pin_again:
 		 */
 		canskip = B_FALSE;
 		goto pin_again;
-	} else if (erf_caused_by(err, "PermissionError")) {
+	} else if (errf_caused_by(err, "PermissionError")) {
 		agent_piv_close(B_TRUE);
-		err = nopinerf(err);
+		err = nopinerrf(err);
 		goto out;
 	} else if (err) {
 		agent_piv_close(B_TRUE);
@@ -698,7 +698,7 @@ pin_again:
 	agent_piv_close(B_FALSE);
 
 	if (hashalg != ohashalg) {
-		err = erf("HashMismatch", NULL,
+		err = errf("HashMismatch", NULL,
 		    "PIV device signed with a different hash algorithm to "
 		    "the one requested (wanted %d, got %d)",
 		    (int)ohashalg, (int)hashalg);
@@ -731,26 +731,26 @@ out:
 	return (err);
 }
 
-static erf_t *
+static errf_t *
 valid_pin(const char *pin)
 {
 	int i;
 	if (strlen(pin) < 6 || strlen(pin) > 8) {
-		return (erf("InvalidPIN", NULL, "PIN must be 6-8 characters "
+		return (errf("InvalidPIN", NULL, "PIN must be 6-8 characters "
 		    "(was given %d)", strlen(pin)));
 	}
 	for (i = 0; pin[i] != 0; ++i) {
 		if (!(pin[i] >= '0' && pin[i] <= '9') &&
 		    !(pin[i] >= 'a' && pin[i] <= 'z') &&
 		    !(pin[i] >= 'A' && pin[i] <= 'Z')) {
-			return (erf("InvalidPIN", NULL, "PIN contains "
+			return (errf("InvalidPIN", NULL, "PIN contains "
 			    "invalid characters: '%c'", pin[i]));
 		}
 	}
 	return (NULL);
 }
 
-static erf_t *
+static errf_t *
 process_remove_all_identities(SocketEntry *e)
 {
 	drop_pin();
@@ -760,15 +760,15 @@ process_remove_all_identities(SocketEntry *e)
 
 struct exthandler {
 	const char *eh_name;
-	erf_t *(*eh_handler)(SocketEntry *, struct sshbuf *);
+	errf_t *(*eh_handler)(SocketEntry *, struct sshbuf *);
 };
 struct exthandler exthandlers[];
 
-static erf_t *
+static errf_t *
 process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 {
 	int r;
-	erf_t *err;
+	errf_t *err;
 	struct sshbuf *msg;
 	struct sshkey *key = NULL;
 	struct sshkey *partner = NULL;
@@ -783,16 +783,16 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 		fatal("%s: sshbuf_new failed", __func__);
 	if ((r = sshkey_froms(buf, &key)) ||
 	    (r = sshkey_froms(buf, &partner))) {
-		err = parserf("sshkey_froms", r);
+		err = parserrf("sshkey_froms", r);
 		goto out;
 	}
 	if ((r = sshbuf_get_u32(buf, &flags))) {
-		err = parserf("sshbuf_get_u32(flags)", r);
+		err = parserrf("sshbuf_get_u32(flags)", r);
 		goto out;
 	}
 
 	if (flags != 0) {
-		err = flagserf(flags);
+		err = flagserrf(flags);
 		goto out;
 	}
 
@@ -807,7 +807,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	}
 	if (!found) {
 		agent_piv_close(B_FALSE);
-		err = erf("NotFoundError", NULL, "specified key not found");
+		err = errf("NotFoundError", NULL, "specified key not found");
 		goto out;
 	}
 	bunyan_add_vars(msg_log_frame,
@@ -815,7 +815,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 
 	if (key->type != KEY_ECDSA || partner->type != KEY_ECDSA) {
 		agent_piv_close(B_FALSE);
-		err = erf("InvalidKeysError", NULL,
+		err = errf("InvalidKeysError", NULL,
 		    "keys are not both EC keys (%s and %s)",
 		    sshkey_type(key), sshkey_type(partner));
 		goto out;
@@ -830,14 +830,14 @@ pin_again:
 		goto out;
 	}
 	err = piv_ecdh(selk, slot, partner, &secret, &seclen);
-	if (erf_caused_by(err, "PermissionError") && pin_len != 0 &&
+	if (errf_caused_by(err, "PermissionError") && pin_len != 0 &&
 	    selk->pt_ykpiv && canskip) {
 		/* Yubikey can have slots other than 9C as "PIN Always" */
 		canskip = B_FALSE;
 		goto pin_again;
-	} else if (erf_caused_by(err, "PermissionError")) {
+	} else if (errf_caused_by(err, "PermissionError")) {
 		agent_piv_close(B_TRUE);
-		err = nopinerf(err);
+		err = nopinerrf(err);
 		goto out;
 	} else if (err) {
 		agent_piv_close(B_TRUE);
@@ -861,11 +861,11 @@ out:
 	return (err);
 }
 
-static erf_t *
+static errf_t *
 process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 {
 	int r;
-	erf_t *err;
+	errf_t *err;
 	struct sshbuf *msg, *boxbuf = NULL, *guid = NULL;
 	struct sshkey *partner = NULL;
 	struct piv_ecdh_box *box = NULL, *newbox = NULL;
@@ -880,24 +880,24 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 		fatal("%s: sshbuf_new failed", __func__);
 	if ((r = sshbuf_froms(buf, &boxbuf)) != 0 ||
 	    (r = sshbuf_froms(buf, &guid)) != 0) {
-		err = parserf("sshbuf_froms", r);
+		err = parserrf("sshbuf_froms", r);
 		goto out;
 	}
 	if ((r = sshbuf_get_u8(buf, &slotid)) != 0) {
-		err = parserf("sshbuf_get_u8(slotid)", r);
+		err = parserrf("sshbuf_get_u8(slotid)", r);
 		goto out;
 	}
 	if ((r = sshkey_froms(buf, &partner)) != 0) {
-		err = parserf("sshkey_froms(partner)", r);
+		err = parserrf("sshkey_froms(partner)", r);
 		goto out;
 	}
 	if ((r = sshbuf_get_u32(buf, &flags)) != 0) {
-		err = parserf("sshbuf_get_u32(flags)", r);
+		err = parserrf("sshbuf_get_u32(flags)", r);
 		goto out;
 	}
 
 	if (flags != 0) {
-		err = flagserf(flags);
+		err = flagserrf(flags);
 		goto out;
 	}
 
@@ -909,7 +909,7 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	if (err)
 		goto out;
 	if (tk != selk) {
-		err = erf("WrongTokenError", NULL, "box can only be unlocked "
+		err = errf("WrongTokenError", NULL, "box can only be unlocked "
 		    "by a different PIV device");
 		goto out;
 	}
@@ -963,20 +963,20 @@ out:
 	return (err);
 }
 
-static erf_t *
+static errf_t *
 process_ext_x509_certs(SocketEntry *e, struct sshbuf *buf)
 {
 	/*int r;
 	struct sshbuf *msg;*/
-	return (erf("NotImplementedError", NULL,
+	return (errf("NotImplementedError", NULL,
 	    "x509 certs ext not implemented yet"));
 }
 
-static erf_t *
+static errf_t *
 process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 {
 	int r;
-	erf_t *err;
+	errf_t *err;
 	struct sshbuf *msg;
 	struct sshkey *key = NULL;
 	struct piv_slot *slot;
@@ -990,12 +990,12 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 		fatal("%s: sshbuf_new failed", __func__);
 	if ((r = sshkey_froms(buf, &key)) != 0 ||
 	    (r = sshbuf_get_u32(buf, &flags)) != 0) {
-		err = parserf("sshkey_froms", r);
+		err = parserrf("sshkey_froms", r);
 		goto out;
 	}
 
 	if (flags != 0) {
-		err = flagserf(flags);
+		err = flagserrf(flags);
 		goto out;
 	}
 
@@ -1010,7 +1010,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	}
 	if (!found) {
 		agent_piv_close(B_FALSE);
-		err = erf("NotFoundError", NULL, "specified key not found");
+		err = errf("NotFoundError", NULL, "specified key not found");
 		goto out;
 	}
 	bunyan_add_vars(msg_log_frame,
@@ -1030,7 +1030,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 
 	tlv = tlv_init(chain, 0, chainlen);
 	if (tlv_read_tag(tlv) != 0x70) {
-		err = erf("InvalidDataError", NULL, "PIV device returned "
+		err = errf("InvalidDataError", NULL, "PIV device returned "
 		    "wrong tag at start of attestation cert");
 		goto out;
 	}
@@ -1059,7 +1059,7 @@ out:
 	return (err);
 }
 
-static erf_t *
+static errf_t *
 process_ext_query(SocketEntry *e, struct sshbuf *buf)
 {
 	int r, n = 0;
@@ -1096,10 +1096,10 @@ struct exthandler exthandlers[] = {
 	{ NULL, NULL }
 };
 
-static erf_t *
+static errf_t *
 process_extension(SocketEntry *e)
 {
-	erf_t *err;
+	errf_t *err;
 	int r;
 	char *extname = NULL;
 	size_t enlen;
@@ -1107,10 +1107,10 @@ process_extension(SocketEntry *e)
 	struct exthandler *h, *hdlr = NULL;
 
 	if ((r = sshbuf_get_cstring(e->request, &extname, &enlen)))
-		return (parserf("sshbuf_get_cstring", r));
+		return (parserrf("sshbuf_get_cstring", r));
 
 	if ((r = sshbuf_froms(e->request, &inner))) {
-		err = parserf("sshbuf_froms", r);
+		err = parserrf("sshbuf_froms", r);
 		goto out;
 	}
 	VERIFY(extname != NULL);
@@ -1123,7 +1123,7 @@ process_extension(SocketEntry *e)
 		}
 	}
 	if (hdlr == NULL) {
-		err = erf("UnknownExtension", NULL,
+		err = errf("UnknownExtension", NULL,
 		    "unsupported extension '%s'", extname);
 		goto out;
 	}
@@ -1136,8 +1136,8 @@ process_extension(SocketEntry *e)
 		send_extfail(e);
 		bunyan_log(WARN, "failed to process extension command",
 		    "error", BNY_ERF, err, NULL);
-		if (erf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
-			perf(err);
+		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
+			perrf(err);
 		erfree(err);
 		err = ERF_OK;
 	}
@@ -1148,14 +1148,14 @@ out:
 	return (err);
 }
 
-static erf_t *
+static errf_t *
 process_lock_agent(SocketEntry *e, int lock)
 {
 	int r;
 	char *passwd;
 	size_t pwlen;
 	uint retries = 1;
-	erf_t *err = NULL;
+	errf_t *err = NULL;
 
 	/*
 	 * This is deliberately fatal: the user has requested that we lock,
@@ -1235,7 +1235,7 @@ process_message(u_int socknum)
 	u_char type;
 	const u_char *cp;
 	int r;
-	erf_t *err;
+	errf_t *err;
 	SocketEntry *e;
 
 	if (socknum >= sockets_alloc) {
@@ -1299,7 +1299,7 @@ process_message(u_int socknum)
 		break;
 	default:
 		/* Unknown message.  Respond with failure. */
-		err = erf("UnknownMessageError", NULL,
+		err = errf("UnknownMessageError", NULL,
 		    "unknown/unsupported agent protocol message %d", type);
 		break;
 	}
@@ -1307,8 +1307,8 @@ process_message(u_int socknum)
 	if (err) {
 		bunyan_log(WARN, "failed to process command",
 		    "error", BNY_ERF, err, NULL);
-		if (erf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
-			perf(err);
+		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
+			perrf(err);
 		sshbuf_reset(e->request);
 		send_status(e, 0);
 		erfree(err);
@@ -1827,7 +1827,7 @@ main(int ac, char **av)
 	uint64_t now;
 	char *ptr;
 	int r;
-	erf_t *err;
+	errf_t *err;
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
 	sanitise_stdfd();
