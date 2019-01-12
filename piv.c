@@ -271,8 +271,10 @@ piv_token_in_txn(const struct piv_token *token)
 const uint8_t *
 piv_token_fascn(const struct piv_token *token, size_t *len)
 {
-	if (token->pt_fascn_len == 0)
+	if (token->pt_fascn_len == 0) {
+		*len = 0;
 		return (NULL);
+	}
 	*len = token->pt_fascn_len;
 	return (token->pt_fascn);
 }
@@ -312,8 +314,10 @@ piv_token_chuuid(const struct piv_token *token)
 const uint8_t *
 piv_token_expiry(const struct piv_token *token, size_t *len)
 {
-	if (token->pt_nochuid)
+	if (token->pt_nochuid) {
+		*len = 0;
 		return (NULL);
+	}
 	*len = sizeof (token->pt_expiry);
 	return (token->pt_expiry);
 }
@@ -1179,7 +1183,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			erfree(err);
 			goto nope;
 		}
-		if (bcmp(guid, key->pt_guid, guidlen) != 0)
+		if (guidlen == 0 || bcmp(guid, key->pt_guid, guidlen) != 0)
 			goto nope;
 
 		if (found != NULL) {
@@ -1327,14 +1331,10 @@ piv_force_slot(struct piv_token *tk, enum piv_slotid slotid, enum piv_alg alg)
 }
 
 struct piv_slot *
-piv_token_slots(struct piv_token *token)
+piv_slot_next(struct piv_token *token, struct piv_slot *slot)
 {
-	return (token->pt_slots);
-}
-
-struct piv_slot *
-piv_next_slot(struct piv_slot *slot)
-{
+	if (slot == NULL)
+		return (token->pt_slots);
 	return (slot->ps_next);
 }
 

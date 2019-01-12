@@ -380,7 +380,7 @@ static errf_t *
 cmd_list(void)
 {
 	struct piv_token *pk;
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	uint i;
 	char *buf = NULL;
 	const uint8_t *temp;
@@ -437,7 +437,6 @@ cmd_list(void)
 			continue;
 		}
 
-		free(buf);
 		if (piv_token_has_chuid(pk)) {
 			buf = piv_token_shortid(pk);
 		} else {
@@ -528,8 +527,7 @@ cmd_list(void)
 		printf("%10s:\n", "slots");
 		printf("%10s %-3s  %-6s  %-4s  %-30s\n", "", "ID", "TYPE",
 		    "BITS", "CERTIFICATE");
-		slot = piv_token_slots(pk);
-		for (; slot != NULL; slot = piv_next_slot(slot)) {
+		while ((slot = piv_slot_next(pk, slot)) != NULL) {
 			struct sshkey *pubkey = piv_slot_pubkey(slot);
 			printf("%10s %-3x  %-6s  %-4d  %-30s\n", "",
 			    piv_slot_id(slot), sshkey_type(pubkey),

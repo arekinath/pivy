@@ -538,7 +538,7 @@ static errf_t *
 process_request_identities(SocketEntry *e)
 {
 	struct sshbuf *msg;
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	char comment[256];
 	uint64_t now;
 	int r, n;
@@ -564,16 +564,14 @@ process_request_identities(SocketEntry *e)
 	agent_piv_close(B_FALSE);
 
 	n = 0;
-	slot = piv_token_slots(selk);
-	for (; slot != NULL; slot = piv_next_slot(slot))
+	while ((slot = piv_slot_next(selk, slot)) != NULL)
 		++n;
 
 	if ((r = sshbuf_put_u8(msg, SSH2_AGENT_IDENTITIES_ANSWER)) != 0 ||
 	    (r = sshbuf_put_u32(msg, n)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
-	slot = piv_token_slots(selk);
-	for (; slot != NULL; slot = piv_next_slot(slot)) {
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
 		comment[0] = 0;
 		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
 		    piv_slot_id(slot), piv_slot_subject(slot));
@@ -605,7 +603,7 @@ process_sign_request2(SocketEntry *e)
 	struct sshbuf *msg;
 	struct sshbuf *buf;
 	struct sshkey *key = NULL;
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	int found = 0;
 	enum sshdigest_types hashalg, ohashalg;
 	boolean_t canskip = B_TRUE;
@@ -622,8 +620,7 @@ process_sign_request2(SocketEntry *e)
 	if ((err = agent_piv_open()))
 		goto out;
 
-	slot = piv_token_slots(selk);
-	for (; slot != NULL; slot = piv_next_slot(slot)) {
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
 		if (sshkey_equal(piv_slot_pubkey(slot), key)) {
 			found = 1;
 			break;
@@ -763,7 +760,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	struct sshbuf *msg;
 	struct sshkey *key = NULL;
 	struct sshkey *partner = NULL;
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	uint8_t *secret;
 	size_t seclen;
 	uint flags;
@@ -790,8 +787,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	if ((err = agent_piv_open()))
 		goto out;
 
-	slot = piv_token_slots(selk);
-	for (; slot != NULL; slot = piv_next_slot(slot)) {
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
 		if (sshkey_equal(piv_slot_pubkey(slot), key) == 1) {
 			found = 1;
 			break;
@@ -971,7 +967,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	errf_t *err;
 	struct sshbuf *msg;
 	struct sshkey *key = NULL;
-	struct piv_slot *slot;
+	struct piv_slot *slot = NULL;
 	uint8_t *cert = NULL, *chain = NULL, *ptr;
 	size_t certlen, chainlen, len;
 	uint flags;
@@ -994,8 +990,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	if ((err = agent_piv_open()))
 		goto out;
 
-	slot = piv_token_slots(selk);
-	for (; slot != NULL; slot = piv_next_slot(slot)) {
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
 		if (sshkey_equal(piv_slot_pubkey(slot), key)) {
 			found = 1;
 			break;

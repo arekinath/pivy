@@ -252,9 +252,7 @@ void piv_release(struct piv_token *pk);
  * been enumerated using piv_read_cert, or else this will return NULL.
  */
 struct piv_slot *piv_get_slot(struct piv_token *tk, enum piv_slotid slotid);
-
-struct piv_slot *piv_token_slots(struct piv_token *tk);
-struct piv_slot *piv_next_slot(struct piv_slot *slot);
+struct piv_slot *piv_slot_next(struct piv_token *tk, struct piv_slot *slot);
 
 /*
  * Forces the enumeration of a slot which doesn't have a valid certificate on
