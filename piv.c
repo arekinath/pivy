@@ -262,6 +262,12 @@ piv_token_rdrname(const struct piv_token *token)
 	return (token->pt_rdrname);
 }
 
+boolean_t
+piv_token_in_txn(const struct piv_token *token)
+{
+	return (token->pt_intxn);
+}
+
 const uint8_t *
 piv_token_fascn(const struct piv_token *token, size_t *len)
 {
@@ -450,7 +456,7 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 
 	VERIFY(tk->pt_intxn);
 
-	if (sshkey_equal_public(pubkey, slot->ps_pubkey) != 0) {
+	if (sshkey_equal_public(pubkey, slot->ps_pubkey) == 0) {
 		err = errf("KeysNotEqualError", NULL,
 		    "Given public key and slot's public key do not match");
 		return (errf("KeyAuthError", err, "Failed to authenticate key "
@@ -986,6 +992,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 	readers = calloc(1, readersLen);
 	rv = SCardListReaders(ctx, NULL, readers, &readersLen);
 	if (rv != SCARD_S_SUCCESS) {
+		free(readers);
 		return (pcscerrf("SCardListReaders", rv));
 	}
 
@@ -1099,6 +1106,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 	readers = calloc(1, readersLen);
 	rv = SCardListReaders(ctx, NULL, readers, &readersLen);
 	if (rv != SCARD_S_SUCCESS) {
+		free(readers);
 		return (pcscerrf("SCardListReaders", rv));
 	}
 
@@ -1157,6 +1165,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 				    SCARD_RESET_CARD);
 				free((char *)found->pt_rdrname);
 				free(found);
+				free(readers);
 				return (errf("DuplicateError", NULL,
 				    "More than one PIV token matched GUID"));
 			}
@@ -1183,6 +1192,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			    SCARD_RESET_CARD);
 			free((char *)found->pt_rdrname);
 			free(found);
+			free(readers);
 			return (errf("DuplicateError", NULL,
 			    "More than one PIV token matched GUID"));
 		}
@@ -1200,6 +1210,7 @@ nope:
 	free(key);
 
 	if (found == NULL) {
+		free(readers);
 		return (errf("NotFoundError", NULL,
 		    "No PIV token found matching GUID"));
 	}
@@ -1262,25 +1273,22 @@ piv_release(struct piv_token *pk)
 	struct piv_token *next;
 	struct piv_slot *ps, *psnext;
 
-	while (pk != NULL) {
+	for (; pk != NULL; pk = next) {
 		VERIFY(pk->pt_intxn == B_FALSE);
 		(void) SCardDisconnect(pk->pt_cardhdl, SCARD_LEAVE_CARD);
 
-		ps = pk->pt_slots;
-		while (ps != NULL) {
+		for (ps = pk->pt_slots; ps != NULL; ps = psnext) {
 			OPENSSL_free((void *)ps->ps_subj);
 			X509_free(ps->ps_x509);
 			sshkey_free(ps->ps_pubkey);
 			psnext = ps->ps_next;
 			free(ps);
-			ps = psnext;
 		}
 		free(pk->pt_hist_url);
 		free((char *)pk->pt_rdrname);
 
 		next = pk->pt_next;
 		free(pk);
-		pk = next;
 	}
 }
 

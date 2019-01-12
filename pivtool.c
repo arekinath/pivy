@@ -2362,7 +2362,7 @@ main(int argc, char *argv[])
 	}
 
 	if (err) {
-		err = errf(op, NULL, "failed to complete command");
+		err = errf(op, err, "failed to complete command");
 		perrfexit(err);
 	}
 

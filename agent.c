@@ -317,7 +317,6 @@ auth_cak(void)
 static errf_t *
 agent_piv_open(void)
 {
-	struct piv_token *t;
 	struct piv_slot *slot;
 	errf_t *err = NULL;
 
@@ -333,26 +332,15 @@ agent_piv_open(void)
 		if (ks != NULL)
 			piv_release(ks);
 
-		err = piv_enumerate(ctx, &ks);
+		err = piv_find(ctx, guid, guid_len, &ks);
 		if (err) {
+			ks = NULL;
 			err = errf("EnumerationError", err, "Failed to "
-			    "enumerate PIV tokens on the system");
+			    "find specified PIV token on the system");
 			return (err);
 		}
+		selk = ks;
 
-		for (t = ks; t != NULL; t = t->pt_next) {
-			if (bcmp(t->pt_guid, guid, guid_len) == 0) {
-				if (selk == NULL) {
-					selk = t;
-				} else {
-					bunyan_log(ERROR, "GUID prefix is not "
-					    "unique; refusing to open token",
-					    NULL);
-					selk = NULL;
-					break;
-				}
-			}
-		}
 		if (selk == NULL) {
 			err = errf("NotFoundError", NULL, "PIV card with "
 			    "given GUID is not present on the system");
@@ -392,7 +380,7 @@ agent_piv_open(void)
 	if (cak == NULL) {
 		slot = piv_get_slot(selk, PIV_SLOT_CARD_AUTH);
 		if (slot != NULL)
-			VERIFY0(sshkey_demote(slot->ps_pubkey, &cak));
+			VERIFY0(sshkey_demote(piv_slot_pubkey(slot), &cak));
 	}
 	bunyan_log(TRACE, "opened new txn", NULL);
 	txnopen = B_TRUE;
@@ -457,8 +445,8 @@ agent_piv_try_pin(boolean_t canskip)
 	errf_t *err = NULL;
 	uint retries = 1;
 	if (pin_len != 0) {
-		err = piv_verify_pin(selk, selk->pt_auth, pin, &retries,
-		    canskip);
+		err = piv_verify_pin(selk, piv_token_default_auth(selk),
+		    pin, &retries, canskip);
 		err = wrap_pin_error(err, retries);
 	}
 	return (err);
@@ -576,18 +564,20 @@ process_request_identities(SocketEntry *e)
 	agent_piv_close(B_FALSE);
 
 	n = 0;
-	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next)
+	slot = piv_token_slots(selk);
+	for (; slot != NULL; slot = piv_next_slot(slot))
 		++n;
 
 	if ((r = sshbuf_put_u8(msg, SSH2_AGENT_IDENTITIES_ANSWER)) != 0 ||
 	    (r = sshbuf_put_u32(msg, n)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
-	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
+	slot = piv_token_slots(selk);
+	for (; slot != NULL; slot = piv_next_slot(slot)) {
 		comment[0] = 0;
 		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
-		    slot->ps_slot, slot->ps_subj);
-		if ((r = sshkey_puts(slot->ps_pubkey, msg)) != 0 ||
+		    piv_slot_id(slot), piv_slot_subject(slot));
+		if ((r = sshkey_puts(piv_slot_pubkey(slot), msg)) != 0 ||
 		    (r = sshbuf_put_cstring(msg, comment)) != 0) {
 			fatal("%s: put key/comment: %s", __func__,
 			    ssh_err(r));
@@ -632,8 +622,9 @@ process_sign_request2(SocketEntry *e)
 	if ((err = agent_piv_open()))
 		goto out;
 
-	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
-		if (sshkey_equal(slot->ps_pubkey, key)) {
+	slot = piv_token_slots(selk);
+	for (; slot != NULL; slot = piv_next_slot(slot)) {
+		if (sshkey_equal(piv_slot_pubkey(slot), key)) {
 			found = 1;
 			break;
 		}
@@ -644,9 +635,9 @@ process_sign_request2(SocketEntry *e)
 		goto out;
 	}
 	bunyan_add_vars(msg_log_frame,
-	    "slotid", BNY_UINT, (uint)slot->ps_slot, NULL);
+	    "slotid", BNY_UINT, (uint)piv_slot_id(slot), NULL);
 
-	if (slot->ps_slot == PIV_SLOT_SIGNATURE)
+	if (piv_slot_id(slot) == PIV_SLOT_SIGNATURE)
 		canskip = B_FALSE;
 
 pin_again:
@@ -679,7 +670,7 @@ pin_again:
 	err = piv_sign(selk, slot, data, dlen, &hashalg, &rawsig, &rslen);
 
 	if (errf_caused_by(err, "PermissionError") && pin_len != 0 &&
-	    selk->pt_ykpiv && canskip) {
+	    piv_token_is_ykpiv(selk) && canskip) {
 		/*
 		 * On a Yubikey, slots other than 9C (SIGNATURE) can also be
 		 * set to "PIN Always" mode. We might have one, so try again
@@ -707,7 +698,7 @@ pin_again:
 
 	buf = sshbuf_new();
 	VERIFY(buf != NULL);
-	VERIFY0(sshkey_sig_from_asn1(slot->ps_pubkey, hashalg,
+	VERIFY0(sshkey_sig_from_asn1(piv_slot_pubkey(slot), hashalg,
 	    rawsig, rslen, buf));
 	explicit_bzero(rawsig, rslen);
 	free(rawsig);
@@ -799,8 +790,9 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	if ((err = agent_piv_open()))
 		goto out;
 
-	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
-		if (sshkey_equal(slot->ps_pubkey, key)) {
+	slot = piv_token_slots(selk);
+	for (; slot != NULL; slot = piv_next_slot(slot)) {
+		if (sshkey_equal(piv_slot_pubkey(slot), key) == 1) {
 			found = 1;
 			break;
 		}
@@ -811,7 +803,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 		goto out;
 	}
 	bunyan_add_vars(msg_log_frame,
-	    "slotid", BNY_UINT, (uint)slot->ps_slot, NULL);
+	    "slotid", BNY_UINT, (uint)piv_slot_id(slot), NULL);
 
 	if (key->type != KEY_ECDSA || partner->type != KEY_ECDSA) {
 		agent_piv_close(B_FALSE);
@@ -821,7 +813,7 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 		goto out;
 	}
 
-	if (slot->ps_slot == PIV_SLOT_SIGNATURE)
+	if (piv_slot_id(slot) == PIV_SLOT_SIGNATURE)
 		canskip = B_FALSE;
 
 pin_again:
@@ -831,7 +823,7 @@ pin_again:
 	}
 	err = piv_ecdh(selk, slot, partner, &secret, &seclen);
 	if (errf_caused_by(err, "PermissionError") && pin_len != 0 &&
-	    selk->pt_ykpiv && canskip) {
+	    piv_token_is_ykpiv(selk) && canskip) {
 		/* Yubikey can have slots other than 9C as "PIN Always" */
 		canskip = B_FALSE;
 		goto pin_again;
@@ -930,8 +922,8 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	newbox = piv_box_new();
 	VERIFY(newbox != NULL);
 
-	bcopy(sshbuf_ptr(guid), newbox->pdb_guid, sizeof (newbox->pdb_guid));
-	newbox->pdb_slot = slotid;
+	piv_box_set_guid(newbox, sshbuf_ptr(guid), GUID_LEN);
+	piv_box_set_slot(newbox, slotid);
 	VERIFY0(piv_box_set_data(newbox, secret, seclen));
 	if ((err = piv_box_seal_offline(partner, newbox)))
 		goto out;
@@ -1002,8 +994,9 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	if ((err = agent_piv_open()))
 		goto out;
 
-	for (slot = selk->pt_slots; slot != NULL; slot = slot->ps_next) {
-		if (sshkey_equal(slot->ps_pubkey, key)) {
+	slot = piv_token_slots(selk);
+	for (; slot != NULL; slot = piv_next_slot(slot)) {
+		if (sshkey_equal(piv_slot_pubkey(slot), key)) {
 			found = 1;
 			break;
 		}
@@ -1014,7 +1007,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 		goto out;
 	}
 	bunyan_add_vars(msg_log_frame,
-	    "slotid", BNY_UINT, (uint)slot->ps_slot, NULL);
+	    "slotid", BNY_UINT, (uint)piv_slot_id(slot), NULL);
 
 	err = ykpiv_attest(selk, slot, &cert, &certlen);
 	if (err) {
@@ -1176,8 +1169,8 @@ process_lock_agent(SocketEntry *e, int lock)
 		if ((err = agent_piv_open()))
 			goto out;
 
-		err = piv_verify_pin(selk, selk->pt_auth, passwd, &retries,
-		    B_FALSE);
+		err = piv_verify_pin(selk, piv_token_default_auth(selk),
+		    passwd, &retries, B_FALSE);
 
 		if (err == ERF_OK) {
 			agent_piv_close(B_FALSE);
@@ -1626,7 +1619,7 @@ static void
 cleanup_handler(int sig)
 {
 	cleanup_socket();
-	if (selk->pt_intxn)
+	if (piv_token_in_txn(selk))
 		piv_txn_end(selk);
 	piv_release(ks);
 	SCardReleaseContext(ctx);
@@ -2109,17 +2102,10 @@ skip:
 		return (1);
 	}
 
-	err = piv_enumerate(ctx, &ks);
-
-	if (err || ks == NULL) {
-		bunyan_log(WARN, "no PIV cards present",
-		    "error", BNY_ERF, err, NULL);
-		erfree(err);
-	}
-
 	err = agent_piv_open();
 	if (err) {
 		erfree(err);
+	} else {
 		agent_piv_close(B_TRUE);
 	}
 	last_op = monotime();

@@ -199,6 +199,8 @@ struct piv_ecdh_box;
 
 const char *piv_token_rdrname(const struct piv_token *token);
 
+boolean_t piv_token_in_txn(const struct piv_token *token);
+
 const uint8_t *piv_token_fascn(const struct piv_token *token, size_t *len);
 const uint8_t *piv_token_guid(const struct piv_token *token);
 const char *piv_token_guid_hex(const struct piv_token *token);
