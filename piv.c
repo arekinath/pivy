@@ -1637,17 +1637,12 @@ retry:
 		} else {
 			err = ioerrf(pcscerrf("SCardReconnect", rv),
 			    key->pt_rdrname);
-			bunyan_log(ERROR, "SCardBeginTransaction failed, and "
-			    "attempt to ack reset failed",
-			    "error", BNY_ERF, err, NULL);
 			return (err);
 		}
 	}
 	if (rv != SCARD_S_SUCCESS) {
 		err = ioerrf(pcscerrf("SCardBeginTransaction", rv),
 		    key->pt_rdrname);
-		bunyan_log(ERROR, "SCardBeginTransaction failed",
-		    "error", BNY_ERF, err, NULL);
 		return (err);
 	}
 	key->pt_intxn = B_TRUE;
@@ -1805,7 +1800,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	err = piv_apdu_transceive(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(WARN, "piv_auth_admin.transceive_chain failed",
+		bunyan_log(DEBUG, "piv_auth_admin.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
@@ -1904,7 +1899,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	err = piv_apdu_transceive(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(WARN, "piv_auth_admin.transceive_chain failed",
+		bunyan_log(DEBUG, "piv_auth_admin.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);

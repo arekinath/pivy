@@ -186,7 +186,12 @@ SocketEntry *sockets = NULL;
 
 int max_fd = 0;
 
-time_t card_probe_interval = 120;
+const time_t card_probe_interval_nopin = 120;
+const time_t card_probe_interval_pin = 60;
+const uint card_probe_limit = 3;
+
+time_t card_probe_interval = card_probe_interval_nopin;
+uint card_probe_fails = 0;
 
 /* pid of shell == parent of agent */
 pid_t parent_pid = -1;
@@ -287,10 +292,12 @@ agent_piv_close(boolean_t force)
 static void
 drop_pin(void)
 {
-	bunyan_log(DEBUG, "dropping PIN", NULL);
-	if (pin_len != 0)
+	if (pin_len != 0) {
+		bunyan_log(INFO, "clearing PIN from memory", NULL);
 		explicit_bzero(pin, pin_len);
+	}
 	pin_len = 0;
+	card_probe_interval = card_probe_interval_nopin;
 }
 
 static errf_t *
@@ -385,6 +392,7 @@ agent_piv_open(void)
 	bunyan_log(TRACE, "opened new txn", NULL);
 	txnopen = B_TRUE;
 	txntimeout = monotime() + 2000;
+	card_probe_fails = 0;
 	return (NULL);
 }
 
@@ -392,6 +400,8 @@ static void
 probe_card(void)
 {
 	errf_t *err;
+	if (card_probe_fails > card_probe_limit)
+		return;
 	bunyan_log(TRACE, "doing idle probe", NULL);
 
 	last_op = monotime();
@@ -399,20 +409,27 @@ probe_card(void)
 		bunyan_log(TRACE, "error opening for idle probe",
 		    "error", BNY_ERF, err, NULL);
 		erfree(err);
+		/*
+		 * Allow one failure due to connectivity issues before we
+		 * drop the PIN (so that transient glitches aren't so
+		 * inconvenient).
+		 */
+		if (card_probe_fails > 0)
+			drop_pin();
+		selk = NULL;
 		goto nope;
 	}
 	if (cak != NULL && (err = auth_cak())) {
 		bunyan_log(WARN, "CAK authentication failed",
 		    "error", BNY_ERF, err, NULL);
 		agent_piv_close(B_TRUE);
-		goto nope;
+		/* Always drop PIN on a CAK failure. */
+		drop_pin();
+		selk = NULL;
+		return;
 	}
 	agent_piv_close(B_FALSE);
-	return;
-
-nope:
-	drop_pin();
-	selk = NULL;
+	card_probe_fails = 0;
 }
 
 static errf_t *
@@ -1174,6 +1191,8 @@ process_lock_agent(SocketEntry *e, int lock)
 			pin_len = pwlen;
 			bcopy(passwd, pin, pwlen + 1);
 			send_status(e, 1);
+			bunyan_log(INFO, "storing PIN in memory", NULL);
+			card_probe_interval = card_probe_interval_pin;
 			goto out;
 		}
 		agent_piv_close(B_TRUE);
@@ -1614,7 +1633,7 @@ static void
 cleanup_handler(int sig)
 {
 	cleanup_socket();
-	if (piv_token_in_txn(selk))
+	if (selk != NULL && piv_token_in_txn(selk))
 		piv_txn_end(selk);
 	piv_release(ks);
 	SCardReleaseContext(ctx);
