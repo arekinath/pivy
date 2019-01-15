@@ -536,7 +536,7 @@ cmd_list(void)
 		printf("\n");
 	}
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -626,11 +626,11 @@ cmd_init(void)
 		return (err);
 	assert_select(selk);
 	err = piv_auth_admin(selk, admin_key, 24);
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		err = piv_write_file(selk, PIV_TAG_CARDCAP,
 		    tlv_buf(ccc), tlv_len(ccc));
 	}
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		err = piv_write_file(selk, PIV_TAG_CHUID,
 		    tlv_buf(chuid), tlv_len(chuid));
 	}
@@ -657,7 +657,7 @@ cmd_init(void)
 	bcopy(nguid, guid, sizeof (nguid));
 	guid_len = 16;
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -681,7 +681,7 @@ cmd_set_admin(uint8_t *new_admin_key)
 
 	if (err)
 		return (err);
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 #if 0
@@ -810,7 +810,7 @@ again:
 		return (err);
 	}
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -876,7 +876,7 @@ again:
 		return (err);
 	}
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -968,7 +968,7 @@ cmd_generate(uint slotid, enum piv_alg alg)
 		return (err);
 	assert_select(selk);
 	err = piv_auth_admin(selk, admin_key, 24);
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		if (pinpolicy == YKPIV_PIN_DEFAULT &&
 		    touchpolicy == YKPIV_TOUCH_DEFAULT) {
 			err = piv_generate(selk, slotid, alg, &pub);
@@ -1125,7 +1125,7 @@ signagain:
 	flags = PIV_COMP_NONE;
 	err = piv_write_cert(selk, slotid, cdata, cdlen, flags);
 
-	if (err == ERF_OK && slotid >= 0x82 && slotid <= 0x95 &&
+	if (err == ERRF_OK && slotid >= 0x82 && slotid <= 0x95 &&
 	    piv_token_keyhistory_oncard(selk) <= slotid - 0x82) {
 		uint oncard, offcard;
 		const char *url;
@@ -1143,7 +1143,7 @@ signagain:
 			    "history object with new cert, trying to "
 			    "continue anyway...");
 			perrf(err);
-			err = ERF_OK;
+			err = ERRF_OK;
 		}
 	}
 
@@ -1162,7 +1162,7 @@ signagain:
 	}
 	fprintf(stdout, " PIV_slot_%02X@%s\n", slotid,
 	    piv_token_guid_hex(selk));
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1182,18 +1182,18 @@ cmd_attest(uint slotid)
 		return (err);
 	assert_select(selk);
 	err = piv_read_cert(selk, slotid);
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		slot = piv_get_slot(selk, slotid);
 		VERIFY(slot != NULL);
 		err = ykpiv_attest(selk, slot, &cert, &certlen);
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			err = piv_read_file(selk, PIV_TAG_CERT_YK_ATTESTATION,
 			    &chain, &chainlen);
 		}
 	}
 	piv_txn_end(selk);
 
-	if (err != ERF_OK)
+	if (err != ERRF_OK)
 		goto error;
 
 	ptr = cert;
@@ -1230,7 +1230,7 @@ cmd_attest(uint slotid)
 
 	free(cert);
 	free(chain);
-	return (ERF_OK);
+	return (ERRF_OK);
 error:
 	err = funcerrf(err, "attestation failed");
 	return (err);
@@ -1271,7 +1271,7 @@ cmd_pubkey(uint slotid)
 	}
 	fprintf(stdout, " PIV_slot_%02X@%s \"%s\"\n", slotid,
 	    piv_token_guid_hex(selk), piv_slot_subject(cert));
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1297,7 +1297,7 @@ cmd_cert(uint slotid)
 
 	VERIFY(i2d_X509_fp(stdout, piv_slot_cert(cert)) == 1);
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1307,7 +1307,7 @@ cmd_sign(uint slotid)
 	uint8_t *buf, *sig;
 	enum sshdigest_types hashalg;
 	size_t inplen, siglen;
-	errf_t *err = ERF_OK;
+	errf_t *err = ERRF_OK;
 
 	assert_slotid(slotid);
 
@@ -1353,7 +1353,7 @@ again:
 
 	free(buf);
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1413,7 +1413,7 @@ cmd_box(uint slotid)
 	explicit_bzero(buf, len);
 	free(buf);
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1469,12 +1469,17 @@ again:
 		return (funcerrf(err, "failed to open box"));
 	}
 
-	VERIFY0(piv_box_take_data(box, &buf, &len));
+	if ((err = piv_box_take_data(box, &buf, &len))) {
+		explicit_bzero(buf, len);
+		free(buf);
+		return (err);
+	}
+
 	fwrite(buf, 1, len, stdout);
 	explicit_bzero(buf, len);
 	free(buf);
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 
@@ -1538,7 +1543,7 @@ cmd_sgdebug(void)
 
 	piv_apdu_free(apdu);
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1580,7 +1585,7 @@ cmd_box_info(void)
 	printf("kdf:          %s\n", piv_box_kdf(box));
 	printf("encsize:      %lu\n", piv_box_encsize(box));
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1653,7 +1658,7 @@ again:
 		return (err);
 	}
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1664,7 +1669,7 @@ cmd_ecdh(uint slotid)
 	uint8_t *buf, *secret;
 	char *ptr;
 	size_t boff, seclen;
-	errf_t *err = ERF_OK;
+	errf_t *err = ERRF_OK;
 	int rv;
 
 	switch (slotid) {
@@ -1739,7 +1744,7 @@ again:
 
 	fwrite(secret, 1, seclen, stdout);
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 static void
@@ -1867,7 +1872,7 @@ again9d:
 
 	fprintf(stderr, "Done!\n");
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 const char *
@@ -1961,7 +1966,7 @@ int
 main(int argc, char *argv[])
 {
 	LONG rv;
-	errf_t *err = ERF_OK;
+	errf_t *err = ERRF_OK;
 	extern char *optarg;
 	extern int optind;
 	int c;

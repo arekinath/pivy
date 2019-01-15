@@ -53,6 +53,7 @@
 #endif
 
 #include "tlv.h"
+#include "errf.h"
 #include "ebox.h"
 #include "piv.h"
 #include "bunyan.h"
@@ -60,54 +61,63 @@
 int
 main(int argc, char *argv[])
 {
+	errf_t *err = NULL;
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *config;
 	struct ebox_tpl_part *part;
 	struct ebox *ebox, *ebox2;
 	struct sshbuf *buf, *rbuf;
-	uint8_t key[8] = {1,2,3,4,5,6,7,8};
+	struct sshkey *k;
+	//uint8_t key[8] = {1,2,3,4,5,6,7,8};
+	uint8_t guid[16] = { 0x12, 0x34 };
 
-	tpl = calloc(1, sizeof (struct ebox_tpl));
-	config = calloc(1, sizeof (struct ebox_tpl_config));
-	part = calloc(1, sizeof (struct ebox_tpl_part));
+	tpl = ebox_tpl_alloc();
 
-	part->etp_name = strdup("testing");
-	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &part->etp_pubkey));
-	part->etp_guid[0] = 0x12;
-	part->etp_guid[1] = 0x34;
+	/* First our primary config for a single yubikey */
+	config = ebox_tpl_config_alloc(EBOX_PRIMARY);
 
-	config->etc_parts = part;
-	config->etc_n = 1;
-	config->etc_m = 1;
-	config->etc_type = EBOX_PRIMARY;
+	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &k));
+	part = ebox_tpl_part_alloc(guid, sizeof (guid), k);
+	sshkey_free(k);
+	ebox_tpl_part_set_name(part, "testing");
+	ebox_tpl_config_add_part(config, part);
 
-	tpl->et_configs = config;
+	ebox_tpl_add_config(tpl, config);
 
-	config = (config->etc_next = calloc(1, sizeof (struct ebox_tpl_config)));
-	config->etc_n = 2;
-	config->etc_m = 2;
-	config->etc_type = EBOX_RECOVERY;
-	part = calloc(1, sizeof (struct ebox_tpl_part));
-	part->etp_name = strdup("k1");
-	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &part->etp_pubkey));
-	part->etp_guid[0] = 0x21;
-	part->etp_guid[1] = 0x43;
-	config->etc_parts = part;
-	part = (part->etp_next = calloc(1, sizeof (struct ebox_tpl_part)));
-	part->etp_name = strdup("k2");
-	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &part->etp_pubkey));
-	part->etp_guid[0] = 0x44;
-	part->etp_guid[1] = 0x55;
+	/* And a secondary 2/2 recovery config */
+	config = ebox_tpl_config_alloc(EBOX_RECOVERY);
 
-	ebox = ebox_create(tpl, key, sizeof (key), NULL, 0);
+	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &k));
+	guid[0] = 0x23;
+	guid[1] = 0x43;
+	part = ebox_tpl_part_alloc(guid, sizeof (guid), k);
+	sshkey_free(k);
+	ebox_tpl_part_set_name(part, "k1");
+	ebox_tpl_config_add_part(config, part);
+
+	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &k));
+	guid[0] = 0x41;
+	guid[1] = 0x26;
+	part = ebox_tpl_part_alloc(guid, sizeof (guid), k);
+	sshkey_free(k);
+	ebox_tpl_part_set_name(part, "k2");
+	ebox_tpl_config_add_part(config, part);
+
+	ebox_tpl_config_set_n(config, 2);
+
+	ebox_tpl_add_config(tpl, config);
+
+	//ebox = ebox_create(tpl, key, sizeof (key), NULL, 0);
 
 	buf = sshbuf_new();
-	VERIFY0(sshbuf_put_ebox(buf, ebox));
+	err = sshbuf_put_ebox_tpl(buf, tpl);
+	if (err)
+		perrfexit(err);
 
 	fprintf(stdout, "%s\n", sshbuf_dtob64(buf));
 
-	rbuf = sshbuf_fromb(buf);
-	VERIFY0(sshbuf_get_ebox(rbuf, &ebox2));
+	/*rbuf = sshbuf_fromb(buf);
+	VERIFY0(sshbuf_get_ebox(rbuf, &ebox2));*/
 
 	return (0);
 }

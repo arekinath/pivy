@@ -21,6 +21,7 @@
 #include "libssh/digest.h"
 #include "libssh/digest.h"
 #include "libssh/cipher.h"
+#include "libssh/ssherr.h"
 
 #include "sss/hazmat.h"
 
@@ -40,6 +41,7 @@ struct buf {
 
 struct ebox_tpl {
 	struct ebox_tpl_config *et_configs;
+	struct ebox_tpl_config *et_lastconfig;
 	void *et_priv;
 };
 
@@ -49,6 +51,7 @@ struct ebox_tpl_config {
 	uint8_t etc_n;
 	uint8_t etc_m;
 	struct ebox_tpl_part *etc_parts;
+	struct ebox_tpl_part *etc_lastpart;
 	void *etc_priv;
 };
 
@@ -150,6 +153,14 @@ struct ebox_stream_chunk {
 	uint32_t esc_nextklen;
 };
 
+#define boxderrf(cause) \
+    errf("InvalidDataError", cause, \
+    "ebox contained invalid or corrupted data")
+
+#define boxverrf(cause) \
+    errf("NotSupportedError", cause, \
+    "ebox is not supported")
+
 void
 ebox_tpl_free(struct ebox_tpl *tpl)
 {
@@ -244,10 +255,11 @@ ebox_tpl_clone(struct ebox_tpl *tpl)
 	return (ntpl);
 }
 
-static int
+static errf_t *
 sshbuf_put_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part *part)
 {
 	int rc = 0;
+	errf_t *err;
 	struct sshbuf *kbuf;
 
 	kbuf = sshbuf_new();
@@ -255,44 +267,55 @@ sshbuf_put_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part *part)
 
 	if ((rc = sshbuf_put_u8(buf, EBOX_PART_PUBKEY)) ||
 	    (rc = sshkey_putb(part->etp_pubkey, kbuf)) ||
-	    (rc = sshbuf_put_stringb(buf, kbuf)))
+	    (rc = sshbuf_put_stringb(buf, kbuf))) {
+		err = ssherrf("sshbuf_put_*", rc);
 		goto out;
+	}
 
 	if ((rc = sshbuf_put_u8(buf, EBOX_PART_GUID)) ||
 	    (rc = sshbuf_put_string8(buf, part->etp_guid,
-	    sizeof (part->etp_guid))))
+	    sizeof (part->etp_guid)))) {
+		err = ssherrf("sshbuf_put_u8/string8", rc);
 		goto out;
+	}
 
 	if (part->etp_name != NULL) {
 		if ((rc = sshbuf_put_u8(buf, EBOX_PART_NAME)) ||
-		    (rc = sshbuf_put_cstring8(buf, part->etp_name)))
+		    (rc = sshbuf_put_cstring8(buf, part->etp_name))) {
+			err = ssherrf("sshbuf_put_u8/cstring8", rc);
 			goto out;
+		}
 	}
 
 	if (part->etp_cak != NULL) {
 		sshbuf_reset(kbuf);
 		if ((rc = sshbuf_put_u8(buf, EBOX_PART_CAK)) ||
 		    (rc = sshkey_putb(part->etp_cak, buf)) ||
-		    (rc = sshbuf_put_stringb(buf, kbuf)))
+		    (rc = sshbuf_put_stringb(buf, kbuf))) {
+			err = ssherrf("sshbuf_put_*", rc);
 			goto out;
+		}
 	}
 
-	if ((rc = sshbuf_put_u8(buf, EBOX_PART_END)))
+	if ((rc = sshbuf_put_u8(buf, EBOX_PART_END))) {
+		err = ssherrf("sshbuf_put_u8", rc);
 		goto out;
+	}
 
-	rc = 0;
+	err = NULL;
 
 out:
 	sshbuf_free(kbuf);
-	return (rc);
+	return (err);
 }
 
-static int
+static errf_t *
 sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 {
 	struct ebox_tpl_part *part;
 	struct sshbuf *kbuf;
 	int rc = 0;
+	errf_t *err = NULL;
 	size_t len;
 	uint8_t tag, *guid;
 
@@ -302,39 +325,55 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	kbuf = sshbuf_new();
 	VERIFY(kbuf != NULL);
 
-	if ((rc = sshbuf_get_u8(buf, &tag)))
+	if ((rc = sshbuf_get_u8(buf, &tag))) {
+		err = ssherrf("sshbuf_get_u8", rc);
 		goto out;
+	}
 	while (tag != EBOX_PART_END) {
 		switch (tag) {
 		case EBOX_PART_PUBKEY:
 			sshbuf_reset(kbuf);
 			rc = sshbuf_get_stringb(buf, kbuf);
-			if (rc)
+			if (rc) {
+				err = ssherrf("sshbuf_get_stringb", rc);
 				goto out;
+			}
 			rc = sshkey_fromb(kbuf, &part->etp_pubkey);
-			if (rc)
+			if (rc) {
+				err = ssherrf("sshkey_fromb", rc);
 				goto out;
+			}
 			break;
 		case EBOX_PART_CAK:
 			sshbuf_reset(kbuf);
 			rc = sshbuf_get_stringb(buf, kbuf);
-			if (rc)
+			if (rc) {
+				err = ssherrf("sshbuf_get_stringb", rc);
 				goto out;
+			}
 			rc = sshkey_fromb(kbuf, &part->etp_cak);
-			if (rc)
+			if (rc) {
+				err = ssherrf("sshkey_fromb", rc);
 				goto out;
+			}
 			break;
 		case EBOX_PART_NAME:
 			rc = sshbuf_get_cstring8(buf, &part->etp_name, &len);
-			if (rc)
+			if (rc) {
+				err = ssherrf("sshbuf_get_cstring8", rc);
 				goto out;
+			}
 			break;
 		case EBOX_PART_GUID:
 			rc = sshbuf_get_string8(buf, &guid, &len);
-			if (rc)
+			if (rc) {
+				err = ssherrf("sshbuf_get_string8", rc);
 				goto out;
+			}
 			if (len != sizeof (part->etp_guid)) {
-				rc = EBADF;
+				err = errf("LengthError", NULL, "ebox part "
+				    "GUID tag must be %d bytes long (is %d)",
+				    sizeof (part->etp_guid), len);
 				goto out;
 			}
 			bcopy(guid, part->etp_guid, len);
@@ -342,13 +381,14 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 			guid = NULL;
 			break;
 		default:
-			fprintf(stderr, "unknown tag %d at +%lx\n", tag,
-			    buf->off);
-			rc = EBADF;
+			err = errf("UnknownTagError", NULL, "unknown tag %d "
+			    "at +%lx", tag, buf->off);
 			goto out;
 		}
-		if ((rc = sshbuf_get_u8(buf, &tag)))
+		if ((rc = sshbuf_get_u8(buf, &tag))) {
+			err = ssherrf("sshbuf_get_u8", rc);
 			goto out;
+		}
 	}
 
 	*ppart = part;
@@ -356,34 +396,42 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 out:
 	sshbuf_free(kbuf);
 	ebox_tpl_part_free(part);
-	return (rc);
+	return (err);
 }
 
-static int
+static errf_t *
 sshbuf_put_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config *config)
 {
 	struct ebox_tpl_part *part;
 	int rc = 0;
+	uint i = 0;
+	errf_t *err;
 
 	if ((rc = sshbuf_put_u8(buf, config->etc_type)) ||
 	    (rc = sshbuf_put_u8(buf, config->etc_n)) ||
-	    (rc = sshbuf_put_u8(buf, config->etc_m)))
-		return (rc);
-
-	for (part = config->etc_parts; part != NULL; part = part->etp_next) {
-		if ((rc = sshbuf_put_ebox_tpl_part(buf, part)))
-			return (rc);
+	    (rc = sshbuf_put_u8(buf, config->etc_m))) {
+		return (ssherrf("sshbuf_put_u8", rc));
 	}
 
-	return (0);
+	for (part = config->etc_parts; part != NULL; part = part->etp_next) {
+		if ((err = sshbuf_put_ebox_tpl_part(buf, part))) {
+			err = errf("PartError", err, "error writing out part "
+			    "%u", i);
+			return (err);
+		}
+		++i;
+	}
+
+	return (ERRF_OK);
 }
 
-static int
+static errf_t *
 sshbuf_get_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config **pconfig)
 {
 	struct ebox_tpl_config *config;
 	struct ebox_tpl_part *part;
 	int rc = 0;
+	errf_t *err = NULL;
 	uint8_t type;
 	uint i;
 
@@ -392,29 +440,35 @@ sshbuf_get_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config **pconfig)
 
 	if ((rc = sshbuf_get_u8(buf, &type)) ||
 	    (rc = sshbuf_get_u8(buf, &config->etc_n)) ||
-	    (rc = sshbuf_get_u8(buf, &config->etc_m)))
+	    (rc = sshbuf_get_u8(buf, &config->etc_m))) {
+		err = ssherrf("sshbuf_get_u8", rc);
 		goto out;
+	}
 	config->etc_type = (enum ebox_config_type)type;
 	if (config->etc_type != EBOX_PRIMARY &&
 	    config->etc_type != EBOX_RECOVERY) {
-		fprintf(stderr, "bad etc_type\n");
-		rc = EBADF;
+		err = errf("ArgumentError", NULL, "config can only be type "
+		    "PRIMARY or RECOVERY (is %d)", config->etc_type);
 		goto out;
 	}
 	if (config->etc_type == EBOX_PRIMARY &&
 	    config->etc_n > 1) {
-		fprintf(stderr, "primary n>1\n");
-		rc = EBADF;
+		err = errf("ArgumentError", NULL, "primary configs can only "
+		    "use n=1 (using n=%d)", config->etc_n);
 		goto out;
 	}
 
-	if ((rc = sshbuf_get_ebox_tpl_part(buf, &part)))
+	if ((err = sshbuf_get_ebox_tpl_part(buf, &part))) {
+		err = errf("PartError", err, "error reading part 0");
 		goto out;
+	}
 	config->etc_parts = part;
 
 	for (i = 1; i < config->etc_m; ++i) {
-		if ((rc = sshbuf_get_ebox_tpl_part(buf, &part->etp_next)))
+		if ((err = sshbuf_get_ebox_tpl_part(buf, &part->etp_next))) {
+			err = errf("PartError", err, "error reading part %u", i);
 			goto out;
+		}
 		part = part->etp_next;
 	}
 
@@ -423,14 +477,16 @@ sshbuf_get_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config **pconfig)
 
 out:
 	ebox_tpl_config_free(config);
-	return (rc);
+	return (err);
 }
 
-int
+errf_t *
 sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl)
 {
 	uint8_t nconfigs = 0;
 	int rc = 0;
+	errf_t *err;
+	uint i = 0;
 	struct ebox_tpl_config *config;
 
 	config = tpl->et_configs;
@@ -441,27 +497,33 @@ sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl)
 	if ((rc = sshbuf_put_u8(buf, 0xEB)) ||
 	    (rc = sshbuf_put_u8(buf, 0x0C)) ||
 	    (rc = sshbuf_put_u8(buf, 0x01)) ||
-	    (rc = sshbuf_put_u8(buf, EBOX_TEMPLATE)))
-		return (rc);
+	    (rc = sshbuf_put_u8(buf, EBOX_TEMPLATE))) {
+		return (ssherrf("sshbuf_put_u8", rc));
+	}
 
 	if ((rc = sshbuf_put_u8(buf, nconfigs)))
-		return (rc);
+		return (ssherrf("sshbuf_put_u8", rc));
 
 	config = tpl->et_configs;
 	for (; config != NULL; config = config->etc_next) {
-		if ((rc = sshbuf_put_ebox_tpl_config(buf, config)))
-			return (rc);
+		if ((err = sshbuf_put_ebox_tpl_config(buf, config))) {
+			err = errf("ConfigError", NULL,
+			    "error writing config %u", i);
+			return (err);
+		}
+		++i;
 	}
 
-	return (0);
+	return (ERRF_OK);
 }
 
-int
+errf_t *
 sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 {
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *config;
 	int rc = 0;
+	errf_t *err;
 	uint8_t ver, magic[2], type, nconfigs;
 	uint i;
 
@@ -469,40 +531,49 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 	VERIFY(tpl != NULL);
 
 	if ((rc = sshbuf_get_u8(buf, &magic[0])) ||
-	    (rc = sshbuf_get_u8(buf, &magic[1])))
+	    (rc = sshbuf_get_u8(buf, &magic[1]))) {
+		err = boxderrf(errf("MagicError",
+		    ssherrf("sshbuf_get_u8", rc), "failed reading ebox magic"));
 		goto out;
+	}
 	if (magic[0] != 0xEB && magic[1] != 0x0C) {
-		bunyan_log(TRACE, "bad ebox magic",
-		    "magic[0]", BNY_UINT, (uint)magic[0],
-		    "magic[1]", BNY_UINT, (uint)magic[1], NULL);
-		rc = ENOTSUP;
+		err = boxderrf(errf("MagicError", NULL,
+		    "bad ebox magic number"));
 		goto out;
 	}
 	if ((rc = sshbuf_get_u8(buf, &ver)) ||
-	    (rc = sshbuf_get_u8(buf, &type)))
+	    (rc = sshbuf_get_u8(buf, &type))) {
+		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
+	}
 	if (ver != 0x01) {
-		bunyan_log(TRACE, "bad ebox version",
-		    "version", BNY_UINT, (uint)ver, NULL);
-		rc = ENOTSUP;
+		err = boxverrf(errf("VersionError", NULL,
+		    "unsupported version number 0x%02x", ver));
 		goto out;
 	}
 	if (type != EBOX_TEMPLATE) {
-		bunyan_log(TRACE, "not an ebox template",
-		    "type", BNY_UINT, (uint)type, NULL);
-		rc = EDOM;
+		err = boxderrf(errf("EboxTypeError", NULL,
+		    "buffer does not contain an ebox template"));
 		goto out;
 	}
-	if ((rc = sshbuf_get_u8(buf, &nconfigs)))
+	if ((rc = sshbuf_get_u8(buf, &nconfigs))) {
+		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
+	}
 
-	if ((rc = sshbuf_get_ebox_tpl_config(buf, &config)))
+	if ((err = sshbuf_get_ebox_tpl_config(buf, &config))) {
+		err = boxderrf(errf("ConfigError", err,
+		    "failed to read config 0"));
 		goto out;
+	}
 	tpl->et_configs = config;
 
 	for (i = 1; i < nconfigs; ++i) {
-		if ((rc = sshbuf_get_ebox_tpl_config(buf, &config->etc_next)))
+		if ((err = sshbuf_get_ebox_tpl_config(buf, &config->etc_next))) {
+			err = boxderrf(errf("ConfigError", err,
+			    "failed to read config %u", i));
 			goto out;
+		}
 		config = config->etc_next;
 	}
 
@@ -511,7 +582,7 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 
 out:
 	ebox_tpl_free(tpl);
-	return (rc);
+	return (err);
 }
 
 void
@@ -601,6 +672,7 @@ ebox_stream_init_encrypt(struct ebox_tpl *tpl)
 	struct ebox_stream *es;
 	uint8_t *key;
 	size_t keylen;
+	errf_t *err;
 	const struct sshcipher *cipher;
 
 	es = calloc(1, sizeof (struct ebox_stream));
@@ -619,7 +691,7 @@ ebox_stream_init_encrypt(struct ebox_tpl *tpl)
 	VERIFY(key != NULL);
 	arc4random_buf(key, keylen);
 
-	es->es_ebox = ebox_create(tpl, key, keylen, NULL, 0);
+	err = ebox_create(tpl, key, keylen, NULL, 0, &es->es_ebox);
 	VERIFY(es->es_ebox != NULL);
 
 	explicit_bzero(key, keylen);
@@ -628,7 +700,7 @@ ebox_stream_init_encrypt(struct ebox_tpl *tpl)
 	return (es);
 }
 
-static int
+static errf_t *
 sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 {
 	struct ebox_part *part;
@@ -725,7 +797,7 @@ out:
 	return (rc);
 }
 
-static int
+static errf_t *
 sshbuf_get_ebox_config(struct sshbuf *buf, struct ebox_config **pconfig)
 {
 	struct ebox_config *config;
@@ -786,7 +858,7 @@ out:
 	return (rc);
 }
 
-int
+errf_t *
 sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 {
 	struct ebox *box;
@@ -866,7 +938,7 @@ out:
 	return (rc);
 }
 
-static int
+static errf_t *
 sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox_part *part)
 {
 	struct ebox_tpl_part *tpart;
@@ -911,7 +983,7 @@ out:
 	return (rc);
 }
 
-static int
+static errf_t *
 sshbuf_put_ebox_config(struct sshbuf *buf, struct ebox_config *config)
 {
 	struct ebox_tpl_config *tconfig;
@@ -934,7 +1006,7 @@ sshbuf_put_ebox_config(struct sshbuf *buf, struct ebox_config *config)
 	return (0);
 }
 
-int
+errf_t *
 sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
 {
 	uint8_t nconfigs = 0;
@@ -976,7 +1048,7 @@ sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
 	return (0);
 }
 
-static int
+static errf_t *
 ebox_decrypt_recovery(struct ebox *box)
 {
 	const struct sshcipher *cipher;
@@ -1035,7 +1107,7 @@ ebox_decrypt_recovery(struct ebox *box)
 	box->e_rcv_plain.b_len = reallen;
 }
 
-static void
+static errf_t *
 ebox_encrypt_recovery(struct ebox *box)
 {
 	const struct sshcipher *cipher;
@@ -1091,9 +1163,9 @@ ebox_encrypt_recovery(struct ebox *box)
 	box->e_rcv_enc.b_len = enclen;
 }
 
-struct ebox *
+errf_t *
 ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
-    const uint8_t *token, size_t tokenlen)
+    const uint8_t *token, size_t tokenlen, struct ebox **pebox)
 {
 	struct ebox *box;
 	struct ebox_tpl_config *tconfig;
@@ -1215,11 +1287,11 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 		pconfig = nconfig;
 	}
 
-
-	return (box);
+	*pebox = box;
+	return (ERRF_OK);
 }
 
-int
+errf_t *
 ebox_unlock(struct ebox *ebox, struct ebox_config *config)
 {
 	struct ebox_part *part;
@@ -1236,7 +1308,7 @@ ebox_unlock(struct ebox *ebox, struct ebox_config *config)
 	return (EINVAL);
 }
 
-int
+errf_t *
 ebox_recover(struct ebox *ebox, struct ebox_config *config)
 {
 	struct ebox_part *part;
@@ -1309,7 +1381,7 @@ out:
 	return (rc);
 }
 
-int
+errf_t *
 ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
     const char *descfmt, ...)
 {
@@ -1360,7 +1432,7 @@ out:
 	return (rc);
 }
 
-static int
+static errf_t *
 sshbuf_put_ebox_challenge_raw(struct sshbuf *buf, struct ebox_challenge *chal)
 {
 	int rc = 0;
@@ -1396,7 +1468,7 @@ sshbuf_put_ebox_challenge_raw(struct sshbuf *buf, struct ebox_challenge *chal)
 	return (rc);
 }
 
-int
+errf_t *
 sshbuf_put_ebox_challenge(struct sshbuf *buf, struct ebox_challenge *chal)
 {
 	struct piv_ecdh_box *box;
@@ -1432,7 +1504,7 @@ out:
 	return (rc);
 }
 
-int
+errf_t *
 sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
     struct ebox_challenge **pchal)
 {
@@ -1546,7 +1618,7 @@ out:
 	return (rc);
 }
 
-int
+errf_t *
 ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
     struct ebox_part **ppart)
 {

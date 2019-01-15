@@ -22,7 +22,7 @@
  *
  * E.g.    errf_t *do_something(int arg, int *output);
  *
- * If this returns NULL (equivalent to ERF_OK) then this means "no error" (as
+ * If this returns NULL (equivalent to ERRF_OK) then this means "no error" (as
  * a 0 return value would normally). Otherwise it returns a pointer to an
  * errf_t describing the error that occurred.
  *
@@ -51,8 +51,8 @@
 struct errf;
 typedef struct errf errf_t;
 
-extern struct errf *ERF_OK;
-extern struct errf *ERF_NOMEM;
+extern struct errf *ERRF_OK;
+extern struct errf *ERRF_NOMEM;
 
 /* Print an errf_t to stderr, prefixed by "error: " */
 void perrf(const struct errf *e);

@@ -584,19 +584,19 @@ errf_t *piv_ecdh(struct piv_token *tk, struct piv_slot *slot,
 
 struct piv_ecdh_box *piv_box_new(void);
 struct piv_ecdh_box *piv_box_clone(const struct piv_ecdh_box *box);
-int piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len);
-int piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf);
+errf_t *piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len);
+errf_t *piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf);
 errf_t *piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box);
 errf_t *piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box);
-int piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len);
+errf_t *piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len);
 
 boolean_t piv_box_has_guidslot(const struct piv_ecdh_box *box);
 const uint8_t *piv_box_guid(const struct piv_ecdh_box *box);
 enum piv_slotid piv_box_slot(const struct piv_ecdh_box *box);
 struct sshkey *piv_box_pubkey(const struct piv_ecdh_box *box);
 struct sshkey *piv_box_ephem_pubkey(const struct piv_ecdh_box *box);
-int piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey **tgt);
+errf_t *piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey **tgt);
 const char *piv_box_cipher(const struct piv_ecdh_box *box);
 const char *piv_box_kdf(const struct piv_ecdh_box *box);
 size_t piv_box_encsize(const struct piv_ecdh_box *box);
@@ -612,11 +612,11 @@ errf_t *piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 errf_t *piv_box_open(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box);
 errf_t *piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box);
-int piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
-int piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **buf);
+errf_t *piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
+errf_t *piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **buf);
 void piv_box_free(struct piv_ecdh_box *box);
 
-int sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
+errf_t *sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
 errf_t *sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 
 errf_t *piv_write_file(struct piv_token *pt, uint tag,

@@ -417,7 +417,7 @@ probe_card(void)
 		if (card_probe_fails > 0)
 			drop_pin();
 		selk = NULL;
-		goto nope;
+		return;
 	}
 	if (cak != NULL && (err = auth_cak())) {
 		bunyan_log(WARN, "CAK authentication failed",
@@ -1144,7 +1144,7 @@ process_extension(SocketEntry *e)
 		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
 			perrf(err);
 		erfree(err);
-		err = ERF_OK;
+		err = ERRF_OK;
 	}
 
 out:
@@ -1184,7 +1184,7 @@ process_lock_agent(SocketEntry *e, int lock)
 		err = piv_verify_pin(selk, piv_token_default_auth(selk),
 		    passwd, &retries, B_FALSE);
 
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			agent_piv_close(B_FALSE);
 			if (pin_len != 0)
 				explicit_bzero(pin, pin_len);

@@ -962,7 +962,7 @@ piv_read_chuid(struct piv_token *pk)
 				ssh_digest_free(hctx);
 			}
 		}
-		err = ERF_OK;
+		err = ERRF_OK;
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
 		err = errf("NotFoundError", swerrf("INS_GET_DATA", apdu->a_sw),
@@ -1034,20 +1034,20 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 
 		piv_txn_begin(key);
 		err = piv_select(key);
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			err = piv_read_chuid(key);
 			if (errf_caused_by(err, "NotFoundError")) {
 				erfree(err);
-				err = ERF_OK;
+				err = ERRF_OK;
 				key->pt_nochuid = B_TRUE;
 			}
 		}
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			err = piv_read_discov(key);
 			if (errf_caused_by(err, "NotFoundError") ||
 			    errf_caused_by(err, "NotSupportedError")) {
 				erfree(err);
-				err = ERF_OK;
+				err = ERRF_OK;
 				/*
 				 * Default to preferring the application PIN if
 				 * we have no discovery object.
@@ -1056,27 +1056,27 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 				key->pt_auth = PIV_PIN;
 			}
 		}
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			err = piv_read_keyhist(key);
 			if (errf_caused_by(err, "NotFoundError") ||
 			    errf_caused_by(err, "NotSupportedError")) {
 				erfree(err);
-				err = ERF_OK;
+				err = ERRF_OK;
 			}
 		}
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			err = piv_probe_ykpiv(key);
-			if (err == ERF_OK) {
+			if (err == ERRF_OK) {
 				err = ykpiv_read_serial(key);
 			}
 			if (errf_caused_by(err, "NotSupportedError")) {
 				erfree(err);
-				err = ERF_OK;
+				err = ERRF_OK;
 			}
 		}
 		piv_txn_end(key);
 
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			key->pt_next = ks;
 			ks = key;
 		} else {
@@ -1091,7 +1091,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 	*tokens = ks;
 
 	free(readers);
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -1157,7 +1157,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 		err = piv_read_chuid(key);
 		if (errf_caused_by(err, "NotFoundError") && guidlen == 0) {
 			erfree(err);
-			err = ERF_OK;
+			err = ERRF_OK;
 			key->pt_nochuid = B_TRUE;
 			if (found != NULL) {
 				piv_txn_end(key);
@@ -1220,14 +1220,14 @@ nope:
 	}
 
 	key = found;
-	err = ERF_OK;
+	err = ERRF_OK;
 
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		err = piv_read_discov(key);
 		if (errf_caused_by(err, "NotFoundError") ||
 		    errf_caused_by(err, "NotSupportedError")) {
 			erfree(err);
-			err = ERF_OK;
+			err = ERRF_OK;
 			/*
 			 * Default to preferring the application PIN if
 			 * we have no discovery object.
@@ -1236,22 +1236,22 @@ nope:
 			key->pt_auth = PIV_PIN;
 		}
 	}
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		err = piv_read_keyhist(key);
 		if (errf_caused_by(err, "NotFoundError") ||
 		    errf_caused_by(err, "NotSupportedError")) {
 			erfree(err);
-			err = ERF_OK;
+			err = ERRF_OK;
 		}
 	}
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		err = piv_probe_ykpiv(key);
-		if (err == ERF_OK) {
+		if (err == ERRF_OK) {
 			err = ykpiv_read_serial(key);
 		}
 		if (errf_caused_by(err, "NotSupportedError")) {
 			erfree(err);
-			err = ERF_OK;
+			err = ERRF_OK;
 		}
 	}
 	piv_txn_end(key);
@@ -1268,7 +1268,7 @@ nope:
 
 	*token = key;
 	free(readers);
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 void
@@ -1491,7 +1491,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	cmd = apdu_to_buffer(apdu, &cmdLen);
 	VERIFY(cmd != NULL);
 	if (cmd == NULL || cmdLen < 5)
-		return (ERF_NOMEM);
+		return (ERRF_NOMEM);
 
 	if (r->b_data == NULL) {
 		r->b_data = calloc(1, MAX_APDU_SIZE);
@@ -1548,7 +1548,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	    "lr", BNY_UINT, (uint)r->b_len,
 	    NULL);
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -1585,7 +1585,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 			 * Return any other error straight away -- we can
 			 * only get response chaining on BYTES_REMAINING
 			 */
-			return (ERF_OK);
+			return (ERRF_OK);
 		}
 	} while (rem > 0);
 
@@ -1616,7 +1616,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	apdu->a_reply.b_len += apdu->a_reply.b_offset - offset;
 	apdu->a_reply.b_offset = offset;
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -1669,7 +1669,7 @@ piv_txn_end(struct piv_token *key)
 errf_t *
 piv_select(struct piv_token *tk)
 {
-	errf_t *rv = ERF_OK;
+	errf_t *rv = ERRF_OK;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag, idx;
@@ -1909,7 +1909,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	tlv_free(tlv);
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		err = ERF_OK;
+		err = ERRF_OK;
 	} else if (apdu->a_sw == SW_INCORRECT_P1P2) {
 		err = errf("NotFoundError", swerrf("INS_GEN_AUTH(9b)",
 		    apdu->a_sw), "PIV device '%s' has no admin key",
@@ -1966,7 +1966,7 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 	tlv_free(tlv);
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		err = ERF_OK;
+		err = ERRF_OK;
 	} else if (apdu->a_sw == SW_OUT_OF_MEMORY) {
 		err = errf("DeviceOutOfMemoryError", swerrf("INS_PUT_DATA(%x)",
 		    apdu->a_sw, tag), "Out of memory to store file object on "
@@ -2119,7 +2119,7 @@ tlverr:
 
 		*pubkey = k;
 
-		err = ERF_OK;
+		err = ERRF_OK;
 
 	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
 		err = permerrf(swerrf("INS_GEN_ASYM", apdu->a_sw), pt->pt_rdrname,
@@ -2240,7 +2240,7 @@ piv_write_keyhistory(struct piv_token *pt, uint oncard, uint offcard,
 
 	err = piv_write_file(pt, PIV_TAG_KEYHIST, tlv_buf(tlv), tlv_len(tlv));
 
-	if (err == ERF_OK) {
+	if (err == ERRF_OK) {
 		pt->pt_hist_oncard = oncard;
 		pt->pt_hist_offcard = offcard;
 		pt->pt_hist_url = strdup(offcard_url);
@@ -2337,7 +2337,7 @@ ykpiv_attest(struct piv_token *pt, struct piv_slot *slot, uint8_t **data,
 		*len = apdu->a_reply.b_len;
 		bcopy(apdu->a_reply.b_data + apdu->a_reply.b_offset,
 		    *data, apdu->a_reply.b_len);
-		err = ERF_OK;
+		err = ERRF_OK;
 
 	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
 		err = permerrf(swerrf("INS_ATTEST(%x)", apdu->a_sw,
@@ -2418,7 +2418,7 @@ piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 		*len = tlv_read(tlv, *data, 0, tlv_rem(tlv));
 		tlv_end(tlv);
 		tlv_free(tlv);
-		err = ERF_OK;
+		err = ERRF_OK;
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
 		err = errf("NotFoundError", swerrf("INS_GET_DATA", apdu->a_sw),
@@ -2770,7 +2770,7 @@ piv_read_all_certs(struct piv_token *tk)
 			return (err);
 	}
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -2818,7 +2818,7 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	explicit_bzero(pinbuf, sizeof (pinbuf));
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		err = ERF_OK;
+		err = ERRF_OK;
 		pk->pt_reset = B_TRUE;
 
 	} else if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
@@ -2883,7 +2883,7 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 	explicit_bzero(pinbuf, sizeof (pinbuf));
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		err = ERF_OK;
+		err = ERRF_OK;
 		pk->pt_reset = B_TRUE;
 
 	} else if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
@@ -2925,7 +2925,7 @@ ykpiv_set_pin_retries(struct piv_token *pk, uint pintries, uint puktries)
 	}
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		err = ERF_OK;
+		err = ERRF_OK;
 		pk->pt_reset = B_TRUE;
 
 	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
@@ -2998,7 +2998,7 @@ ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
 	free(databuf);
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		err = ERF_OK;
+		err = ERRF_OK;
 		pk->pt_reset = B_TRUE;
 
 	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
@@ -3036,7 +3036,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	 * This gets a little confusing because there are several valid forms
 	 * of this function:
 	 *   1. piv_verify_pin(tk, type, NULL, NULL, ?);
-	 *     => check if we are already authed and return ERF_OK if so
+	 *     => check if we are already authed and return ERRF_OK if so
 	 *   2. piv_verify_pin(tk, type, NULL, &retries, ?);
 	 *     => check how many retries are left without trying the PIN
 	 *   3. piv_verify_pin(tk, type, pin, NULL, ?);
@@ -3087,11 +3087,11 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 				if (retries != NULL)
 					*retries = (apdu->a_sw & 0x000F);
 				piv_apdu_free(apdu);
-				return (ERF_OK);
+				return (ERRF_OK);
 
 			} else {
 				/* Cases 3, 4 with canskip set */
-				err = ERF_OK;
+				err = ERRF_OK;
 			}
 		} else if (apdu->a_sw == SW_WRONG_LENGTH ||
 		    apdu->a_sw == SW_WRONG_DATA) {
@@ -3116,26 +3116,26 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 				 * faced with a card without empty VERIFY
 				 * support.
 				 */
-				err = ERF_OK;
+				err = ERRF_OK;
 			}
 		} else if (apdu->a_sw == SW_NO_ERROR) {
 			/* We are already authed! */
 			if (pin == NULL) {
 				/* Cases 1 and 2 just return here. */
 				piv_apdu_free(apdu);
-				return (ERF_OK);
+				return (ERRF_OK);
 
 			} else if (canskip) {
 				/* Cases 3 and 4 with canskip just ret too */
 				piv_apdu_free(apdu);
-				return (ERF_OK);
+				return (ERRF_OK);
 			} else {
 
 				/*
 				 * Case 5, continue to try the PIN, we've
 				 * met the retries constraint.
 				 */
-				err = ERF_OK;
+				err = ERRF_OK;
 			}
 		} else {
 			err = swerrf("INS_VERIFY(%x)", apdu->a_sw, type);
@@ -3144,7 +3144,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 			    "error", BNY_ERF, err, NULL);
 		}
 		piv_apdu_free(apdu);
-		if (err != ERF_OK)
+		if (err != ERRF_OK)
 			return (err);
 	}
 
@@ -3181,7 +3181,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	explicit_bzero(pinbuf, sizeof (pinbuf));
 
 	if (apdu->a_sw == SW_NO_ERROR) {
-		err = ERF_OK;
+		err = ERRF_OK;
 		pk->pt_reset = B_TRUE;
 
 	} else if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
@@ -3453,7 +3453,7 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 		tlv_end(tlv);
 		tlv_free(tlv);
 
-		err = ERF_OK;
+		err = ERRF_OK;
 
 	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
 		err = permerrf(swerrf("INS_GEN_AUTH(%x)", apdu->a_sw,
@@ -3566,7 +3566,7 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 		tlv_end(tlv);
 		tlv_free(tlv);
 
-		err = ERF_OK;
+		err = ERRF_OK;
 
 	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
 		err = permerrf(swerrf("INS_GEN_AUTH(%x)", apdu->a_sw,
@@ -3674,7 +3674,7 @@ piv_box_free(struct piv_ecdh_box *box)
 	free(box);
 }
 
-int
+errf_t *
 piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len)
 {
 	uint8_t *buf;
@@ -3682,7 +3682,7 @@ piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len)
 
 	buf = calloc(1, len);
 	if (buf == NULL)
-		return (ENOMEM);
+		return (ERRF_NOMEM);
 	box->pdb_plain.b_data = buf;
 	box->pdb_plain.b_size = len;
 	box->pdb_plain.b_len = len;
@@ -3690,10 +3690,10 @@ piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len)
 
 	bcopy(data, buf, len);
 
-	return (0);
+	return (ERRF_OK);
 }
 
-int
+errf_t *
 piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf)
 {
 	uint8_t *data;
@@ -3703,21 +3703,23 @@ piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf)
 	len = sshbuf_len(buf);
 	data = malloc(len);
 	if (data == NULL)
-		return (ENOMEM);
+		return (ERRF_NOMEM);
 	VERIFY0(sshbuf_get(buf, data, len));
 	box->pdb_plain.b_data = data;
 	box->pdb_plain.b_size = len;
 	box->pdb_plain.b_len = len;
 	box->pdb_plain.b_offset = 0;
 
-	return (0);
+	return (ERRF_OK);
 }
 
-int
+errf_t *
 piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len)
 {
-	if (box->pdb_plain.b_data == NULL)
-		return (EINVAL);
+	if (box->pdb_plain.b_data == NULL) {
+		return (errf("BoxSealed", NULL, "Box is sealed; data cannot "
+		    "be taken (use piv_box_open first)"));
+	}
 
 	*data = calloc(1, box->pdb_plain.b_len);
 	VERIFY(*data != NULL);
@@ -3731,16 +3733,18 @@ piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len)
 	box->pdb_plain.b_len = 0;
 	box->pdb_plain.b_offset = 0;
 
-	return (0);
+	return (ERRF_OK);
 }
 
-int
+errf_t *
 piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **pbuf)
 {
 	struct sshbuf *buf;
 
-	if (box->pdb_plain.b_data == NULL)
-		return (EINVAL);
+	if (box->pdb_plain.b_data == NULL) {
+		return (errf("BoxSealed", NULL, "Box is sealed; data cannot "
+		    "be taken (use piv_box_open first)"));
+	}
 
 	buf = sshbuf_new();
 	sshbuf_put(buf, box->pdb_plain.b_data + box->pdb_plain.b_offset,
@@ -3755,7 +3759,7 @@ piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **pbuf)
 
 	*pbuf = buf;
 
-	return (0);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -3880,7 +3884,7 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	box->pdb_plain.b_len = reallen;
 	box->pdb_plain.b_offset = 0;
 
-	return (ERF_OK);
+	return (ERRF_OK);
 
 paderr:
 	err = boxderrf(errf("PaddingError", NULL, "Padding failed validation"));
@@ -4009,7 +4013,7 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	box->pdb_plain.b_size = plainlen;
 	box->pdb_plain.b_len = reallen;
 
-	return (ERF_OK);
+	return (ERRF_OK);
 
 paderr:
 	err = boxderrf(errf("PaddingError", NULL, "Padding failed validation"));
@@ -4157,7 +4161,7 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	box->pdb_enc.b_len = enclen;
 	box->pdb_enc.b_offset = 0;
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -4174,7 +4178,7 @@ piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
 	bcopy(tk->pt_guid, box->pdb_guid, sizeof (tk->pt_guid));
 	box->pdb_slot = slot->ps_slot;
 
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -4236,75 +4240,84 @@ piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 out:
 	*tk = pt;
 	*slot = s;
-	return (ERF_OK);
+	return (ERRF_OK);
 }
 
-int
+errf_t *
 sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 {
 	int rc;
 	const char *tname;
 
 	if (box->pdb_pub->type != KEY_ECDSA ||
-	    box->pdb_ephem_pub->type != KEY_ECDSA)
-		return (EINVAL);
-	if (box->pdb_pub->ecdsa_nid != box->pdb_ephem_pub->ecdsa_nid)
-		return (EINVAL);
+	    box->pdb_ephem_pub->type != KEY_ECDSA) {
+		return (errf("ArgumentError", NULL,
+		    "Box public key and ephemeral public key must both be "
+		    "ECDSA keys (instead they are %s and %s)",
+		    sshkey_type(box->pdb_pub),
+		    sshkey_type(box->pdb_ephem_pub)));
+	}
+	if (box->pdb_pub->ecdsa_nid != box->pdb_ephem_pub->ecdsa_nid) {
+		return (errf("ArgumentError", NULL,
+		    "Box public and ephemeral key must be on the same "
+		    "EC curve"));
+	}
 
 	if ((rc = sshbuf_put_u8(buf, 0xB0)) ||
 	    (rc = sshbuf_put_u8(buf, 0xC5)))
-		return (rc);
+		return (ssherrf("sshbuf_put_u8", rc));
 	if ((rc = sshbuf_put_u8(buf, 0x01)))
-		return (rc);
+		return (ssherrf("sshbuf_put_u8", rc));
 	if (!box->pdb_guidslot_valid) {
 		if ((rc = sshbuf_put_u8(buf, 0x00)) ||
 		    (rc = sshbuf_put_u8(buf, 0x00)) ||
 		    (rc = sshbuf_put_u8(buf, 0x00)))
-			return (rc);
+			return (ssherrf("sshbuf_put_u8", rc));
 	} else {
 		if ((rc = sshbuf_put_u8(buf, 0x01)))
-			return (rc);
+			return (ssherrf("sshbuf_put_u8", rc));
 		rc = sshbuf_put_string8(buf, box->pdb_guid,
 		    sizeof (box->pdb_guid));
 		if (rc)
-			return (rc);
+			return (ssherrf("sshbuf_put_string8(guid)", rc));
 		if ((rc = sshbuf_put_u8(buf, box->pdb_slot)))
-			return (rc);
+			return (ssherrf("sshbuf_put_u8", rc));
 	}
 	if ((rc = sshbuf_put_cstring8(buf, box->pdb_cipher)) ||
 	    (rc = sshbuf_put_cstring8(buf, box->pdb_kdf)))
-		return (rc);
+		return (ssherrf("sshbuf_put_cstring8", rc));
 
 	tname = sshkey_curve_nid_to_name(box->pdb_pub->ecdsa_nid);
 	VERIFY(tname != NULL);
-	if ((rc = sshbuf_put_cstring8(buf, tname)) ||
-	    (rc = sshbuf_put_eckey8(buf, box->pdb_pub->ecdsa)) ||
+	if ((rc = sshbuf_put_cstring8(buf, tname)))
+		return (ssherrf("sshbuf_put_cstring8", rc));
+	if ((rc = sshbuf_put_eckey8(buf, box->pdb_pub->ecdsa)) ||
 	    (rc = sshbuf_put_eckey8(buf, box->pdb_ephem_pub->ecdsa)))
-		return (rc);
+		return (ssherrf("sshbuf_put_eckey8", rc));
 
 	if ((rc = sshbuf_put_string8(buf, box->pdb_iv.b_data,
 	    box->pdb_iv.b_len)))
-		return (rc);
+		return (ssherrf("sshbuf_put_string8", rc));
 
 	if ((rc = sshbuf_put_string(buf, box->pdb_enc.b_data,
 	    box->pdb_enc.b_len)))
-		return (rc);
+		return (ssherrf("sshbuf_put_string", rc));
 
 	return (0);
 }
 
-int
+errf_t *
 piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len)
 {
 	struct sshbuf *buf;
-	int rc;
+	errf_t *err;
 
 	buf = sshbuf_new();
 	VERIFY3P(buf, !=, NULL);
 
-	if ((rc = sshbuf_put_piv_box(buf, box))) {
+	if ((err = sshbuf_put_piv_box(buf, box))) {
 		sshbuf_free(buf);
-		return (rc);
+		return (err);
 	}
 
 	*len = sshbuf_len(buf);
@@ -4313,7 +4326,7 @@ piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len)
 	bcopy(sshbuf_ptr(buf), *output, *len);
 	sshbuf_free(buf);
 
-	return (0);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -4321,7 +4334,7 @@ sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 {
 	struct piv_ecdh_box *box = NULL;
 	uint8_t ver, magic[2];
-	errf_t *err = ERF_OK;
+	errf_t *err = ERRF_OK;
 	int rc = 0;
 	uint8_t *tmpbuf = NULL;
 	struct sshkey *k = NULL;
@@ -4489,10 +4502,13 @@ piv_box_ephem_pubkey(const struct piv_ecdh_box *box)
 	return (box->pdb_ephem_pub);
 }
 
-int
+errf_t *
 piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey **tgt)
 {
-	return (sshkey_demote(box->pdb_pub, tgt));
+	int rc;
+	if ((rc = sshkey_demote(box->pdb_pub, tgt)))
+		return (ssherrf("sshkey_demote", rc));
+	return (ERRF_OK);
 }
 
 size_t
@@ -4538,7 +4554,7 @@ errf_t *
 piv_box_from_binary(const uint8_t *input, size_t inplen,
     struct piv_ecdh_box **pbox)
 {
-	errf_t *err = ERF_OK;
+	errf_t *err = ERRF_OK;
 	struct sshbuf *buf;
 
 	buf = sshbuf_from(input, inplen);

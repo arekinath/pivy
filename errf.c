@@ -74,7 +74,7 @@ struct errf errf_ok = {
     .errf_line = __LINE__
 };
 
-struct errf *ERF_OK = NULL;
+struct errf *ERRF_OK = NULL;
 
 struct errf errf_nomem = {
     .errf_errno = ENOMEM,
@@ -84,7 +84,7 @@ struct errf errf_nomem = {
     .errf_line = __LINE__
 };
 
-struct errf *ERF_NOMEM = &errf_nomem;
+struct errf *ERRF_NOMEM = &errf_nomem;
 
 const char *
 errf_name(const struct errf *e)
@@ -138,7 +138,7 @@ _errf(const char *name, struct errf *cause, const char *func, const char *file,
 
 	e = calloc(1, sizeof (struct errf));
 	if (e == NULL)
-		return (ERF_NOMEM);
+		return (ERRF_NOMEM);
 
 	strcpy(e->errf_name, name);
 	e->errf_cause = cause;
@@ -169,7 +169,7 @@ _errfno(const char *enofunc, int eno, const char *func ,const char *file,
 
 	e = calloc(1, sizeof (struct errf));
 	if (e == NULL)
-		return (ERF_NOMEM);
+		return (ERRF_NOMEM);
 
 	strcpy(e->errf_name, macro ? macro : "SystemError");
 	e->errf_file = file;
@@ -230,7 +230,7 @@ erfree(struct errf *ep)
 	struct errf *e;
 	while (ep != NULL) {
 		e = ep->errf_cause;
-		if (ep != ERF_NOMEM)
+		if (ep != ERRF_NOMEM)
 			free(ep);
 		ep = e;
 	}

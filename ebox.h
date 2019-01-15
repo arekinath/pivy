@@ -61,21 +61,60 @@ enum ebox_part_tag {
 	EBOX_PART_BOX = 5
 };
 
+struct ebox_tpl;
+struct ebox_tpl_config;
+struct ebox_tpl_part;
+struct ebox;
+struct ebox_config;
+struct ebox_part;
+struct ebox_challenge;
+struct ebox_stream;
+struct ebox_stream_chunk;
+
 void ebox_tpl_free(struct ebox_tpl *tpl);
 void ebox_tpl_config_free(struct ebox_tpl_config *config);
 void ebox_tpl_part_free(struct ebox_tpl_part *part);
 
+struct ebox_tpl *ebox_tpl_alloc(void);
+void *ebox_tpl_private(const struct ebox_tpl *tpl);
+void *ebox_tpl_alloc_private(struct ebox_tpl *tpl, size_t sz);
 struct ebox_tpl *ebox_tpl_clone(struct ebox_tpl *tpl);
+void ebox_tpl_add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config);
+struct ebox_tpl_config *ebox_tpl_next_config(const struct ebox_tpl *tpl,
+    const struct ebox_tpl_config *prev);
 
-int sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
-int sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
+struct ebox_tpl_config *ebox_tpl_config_alloc(enum ebox_config_type type);
+void *ebox_tpl_config_private(const struct ebox_tpl_config *config);
+void *ebox_tpl_config_alloc_private(struct ebox_tpl_config *config, size_t sz);
+errf_t *ebox_tpl_config_set_n(struct ebox_tpl_config *config, uint n);
+uint ebox_tpl_config_n(const struct ebox_tpl_config *config);
+enum ebox_config_type ebox_tpl_config_type(
+    const struct ebox_tpl_config *config);
+void ebox_tpl_config_add_part(struct ebox_tpl_config *config,
+    struct ebox_tpl_part *part);
+struct ebox_tpl_part *ebox_tpl_config_next_part(
+    const struct ebox_config *config, const struct ebox_tpl_part *prev);
+
+struct ebox_tpl_part *ebox_tpl_part_alloc(uint8_t *guid, size_t guidlen,
+    struct sshkey *pubkey);
+void ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name);
+void ebox_tpl_part_set_cak(struct ebox_tpl_part *part, struct sshkey *cak);
+void *ebox_tpl_part_private(const struct ebox_tpl_part *part);
+void *ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz);
+const char *ebox_tpl_part_name(const struct ebox_tpl_part *part);
+struct sshkey *ebox_tpl_part_pubkey(const struct ebox_tpl_part *part);
+struct sshkey *ebox_tpl_part_cak(const struct ebox_tpl_part *part);
+const uint8_t *ebox_tpl_part_guid(const struct ebox_tpl_part *part);
+
+errf_t *sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
+errf_t *sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
 
 void ebox_free(struct ebox *box);
 void ebox_config_free(struct ebox_config *config);
 void ebox_part_free(struct ebox_part *part);
 
-int sshbuf_get_ebox(struct sshbuf *buf, struct ebox **box);
-int sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
+errf_t *sshbuf_get_ebox(struct sshbuf *buf, struct ebox **box);
+errf_t *sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
 
 void ebox_stream_free(struct ebox_stream *str);
 void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
@@ -84,8 +123,8 @@ void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
  * Creates a new ebox based on a given template, sealing up the provided key
  * and (optional) recovery token.
  */
-struct ebox *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
-    size_t keylen, const uint8_t *token, size_t tokenlen);
+errf_t *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
+    size_t keylen, const uint8_t *token, size_t tokenlen, struct ebox **pebox);
 
 /*
  * Generate a challenge for a given recovery config + part.
@@ -98,7 +137,7 @@ struct ebox *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
  * Errors:
  *  - ENOMEM: description was too long for available space
  */
-int ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
+errf_t *ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
     const char *descfmt, ...);
 
 void ebox_challenge_free(struct ebox_challenge *chal);
@@ -108,13 +147,13 @@ void ebox_challenge_free(struct ebox_challenge *chal);
  *
  * The data written in the buf is ready to be transported to a remote machine.
  */
-int sshbuf_put_ebox_challenge(struct sshbuf *buf, struct ebox_challenge *chal);
+errf_t *sshbuf_put_ebox_challenge(struct sshbuf *buf, struct ebox_challenge *chal);
 
 /*
  * De-serializes an ebox challenge from inside a piv_ecdh_box. The piv_ecdh_box
  * must be already unsealed.
  */
-int sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
+errf_t *sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
     struct ebox_challenge **chal);
 
 /*
@@ -124,7 +163,7 @@ int sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
  * The data written in the buf is ready to be transported to the original
  * requesting machine.
  */
-int sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
+errf_t *sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
     struct ebox_challenge *chal);
 
 /*
@@ -136,7 +175,7 @@ int sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
  * Errors:
  *  - EAGAIN: this challenge matched a part that is already unlocked
  */
-int ebox_challenge_response(struct ebox_config *config,
+errf_t *ebox_challenge_response(struct ebox_config *config,
     struct piv_ecdh_box *respbox, struct ebox_part **ppart);
 
 /*
@@ -148,7 +187,7 @@ int ebox_challenge_response(struct ebox_config *config,
  * Errors:
  *  - EINVAL: none of the part boxes were unsealed
  */
-int ebox_unlock(struct ebox *ebox, struct ebox_config *config);
+errf_t *ebox_unlock(struct ebox *ebox, struct ebox_config *config);
 
 /*
  * Perform recovery on an ebox using a recovery config.
@@ -162,7 +201,7 @@ int ebox_unlock(struct ebox *ebox, struct ebox_config *config);
  *  - EAGAIN: the ebox is already unlocked or recovered
  *  - EBADF: the recovery box data was invalid or corrupt
  */
-int ebox_recover(struct ebox *ebox, struct ebox_config *config);
+errf_t *ebox_recover(struct ebox *ebox, struct ebox_config *config);
 
 int sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
 int sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
