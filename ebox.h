@@ -71,11 +71,8 @@ struct ebox_challenge;
 struct ebox_stream;
 struct ebox_stream_chunk;
 
-void ebox_tpl_free(struct ebox_tpl *tpl);
-void ebox_tpl_config_free(struct ebox_tpl_config *config);
-void ebox_tpl_part_free(struct ebox_tpl_part *part);
-
 struct ebox_tpl *ebox_tpl_alloc(void);
+void ebox_tpl_free(struct ebox_tpl *tpl);
 void *ebox_tpl_private(const struct ebox_tpl *tpl);
 void *ebox_tpl_alloc_private(struct ebox_tpl *tpl, size_t sz);
 struct ebox_tpl *ebox_tpl_clone(struct ebox_tpl *tpl);
@@ -84,6 +81,7 @@ struct ebox_tpl_config *ebox_tpl_next_config(const struct ebox_tpl *tpl,
     const struct ebox_tpl_config *prev);
 
 struct ebox_tpl_config *ebox_tpl_config_alloc(enum ebox_config_type type);
+void ebox_tpl_config_free(struct ebox_tpl_config *config);
 void *ebox_tpl_config_private(const struct ebox_tpl_config *config);
 void *ebox_tpl_config_alloc_private(struct ebox_tpl_config *config, size_t sz);
 errf_t *ebox_tpl_config_set_n(struct ebox_tpl_config *config, uint n);
@@ -97,6 +95,7 @@ struct ebox_tpl_part *ebox_tpl_config_next_part(
 
 struct ebox_tpl_part *ebox_tpl_part_alloc(uint8_t *guid, size_t guidlen,
     struct sshkey *pubkey);
+void ebox_tpl_part_free(struct ebox_tpl_part *part);
 void ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name);
 void ebox_tpl_part_set_cak(struct ebox_tpl_part *part, struct sshkey *cak);
 void *ebox_tpl_part_private(const struct ebox_tpl_part *part);
