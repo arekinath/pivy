@@ -201,7 +201,7 @@ printf_buf(const char *fmt, ...)
 {
 	size_t wrote, orig, avail;
 	char *nbuf;
-	va_list ap;
+	va_list ap, ap2;
 
 	if (bunyan_buf_sz == 0) {
 		bunyan_buf_sz = 1024;
@@ -210,6 +210,10 @@ printf_buf(const char *fmt, ...)
 	}
 
 	va_start(ap, fmt);
+
+	/* Make a backup copy of the args so we can try again if we resize. */
+	va_copy(ap2, ap);
+
 	orig = strlen(bunyan_buf);
 	avail = bunyan_buf_sz - orig;
 again:
@@ -224,9 +228,12 @@ again:
 		bunyan_buf = nbuf;
 
 		avail = bunyan_buf_sz - orig;
+		va_end(ap);
+		va_copy(ap, ap2);
 		goto again;
 	}
 	va_end(ap);
+	va_end(ap2);
 }
 
 static void
