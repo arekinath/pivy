@@ -52,15 +52,6 @@ enum ebox_stream_mode {
 	EBOX_MODE_DECRYPT = 0x02
 };
 
-enum ebox_part_tag {
-	EBOX_PART_END = 0,
-	EBOX_PART_PUBKEY = 1,
-	EBOX_PART_NAME = 2,
-	EBOX_PART_CAK = 3,
-	EBOX_PART_GUID = 4,
-	EBOX_PART_BOX = 5
-};
-
 struct ebox_tpl;
 struct ebox_tpl_config;
 struct ebox_tpl_part;

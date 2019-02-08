@@ -154,6 +154,15 @@ struct ebox_stream_chunk {
 	uint32_t esc_nextklen;
 };
 
+enum ebox_part_tag {
+	EBOX_PART_END = 0,
+	EBOX_PART_PUBKEY = 1,
+	EBOX_PART_NAME = 2,
+	EBOX_PART_CAK = 3,
+	EBOX_PART_GUID = 4,
+	EBOX_PART_BOX = 5
+};
+
 #define boxderrf(cause) \
     errf("InvalidDataError", cause, \
     "ebox contained invalid or corrupted data")
@@ -294,7 +303,7 @@ ebox_tpl_config_next_part(const struct ebox_config *config,
     const struct ebox_tpl_part *prev)
 {
 	if (prev == NULL)
-		return (config->etc_parts);
+		return (config->ec_parts);
 	return (prev->etp_next);
 }
 
@@ -338,6 +347,57 @@ ebox_tpl_part_free(struct ebox_tpl_part *part)
 	sshkey_free(part->etp_pubkey);
 	sshkey_free(part->etp_cak);
 	free(part);
+}
+
+void
+ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name)
+{
+	part->etp_name = strdup(name);
+	VERIFY(part->etp_name != NULL);
+}
+
+void
+ebox_tpl_part_set_cak(struct ebox_tpl_part *part, struct sshkey *cak)
+{
+	VERIFY0(sshkey_demote(cak, &part->etp_cak));
+}
+
+void *
+ebox_tpl_part_private(const struct ebox_tpl_part *part)
+{
+	return (part->etp_priv);
+}
+
+void *
+ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz)
+{
+	VERIFY(part->etp_priv == NULL);
+	part->etp_priv = calloc(1, sz);
+	return (part->etp_priv);
+}
+
+const char *
+ebox_tpl_part_name(const struct ebox_tpl_part *part)
+{
+	return (part->etp_name);
+}
+
+struct sshkey *
+ebox_tpl_part_pubkey(const struct ebox_tpl_part *part)
+{
+	return (part->etp_pubkey);
+}
+
+struct sshkey *
+ebox_tpl_part_cak(const struct ebox_tpl_part *part)
+{
+	return (part->etp_cak);
+}
+
+const uint8_t *
+ebox_tpl_part_guid(const struct ebox_tpl_part *part)
+{
+	return (part->etp_guid);
 }
 
 struct ebox_tpl *
