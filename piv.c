@@ -50,6 +50,8 @@
 #include "piv.h"
 #include "bunyan.h"
 
+#include "piv-internal.h"
+
 #define	PIV_MAX_CERT_LEN		16384
 
 const uint8_t AID_PIV[] = {
@@ -117,13 +119,6 @@ boolean_t piv_full_apdu_debug = B_FALSE;
 		    (apdubuf).b_size);	\
 	} while (0)
 
-struct apdubuf {
-	uint8_t *b_data;
-	size_t b_offset;
-	size_t b_size;
-	size_t b_len;
-};
-
 struct apdu {
 	enum iso_class a_cls;
 	enum iso_ins a_ins;
@@ -187,23 +182,6 @@ struct piv_token {
 
 	struct piv_slot *pt_slots;
 	struct piv_slot *pt_last_slot;
-};
-
-struct piv_ecdh_box {
-	boolean_t pdb_guidslot_valid;
-	uint8_t pdb_guid[16];
-	enum piv_slotid pdb_slot;
-
-	struct sshkey *pdb_ephem_pub;
-	struct sshkey *pdb_pub;
-
-	boolean_t pdb_free_str;
-	const char *pdb_cipher;
-	const char *pdb_kdf;
-
-	struct apdubuf pdb_iv;
-	struct apdubuf pdb_enc;
-	struct apdubuf pdb_plain;
 };
 
 static inline void

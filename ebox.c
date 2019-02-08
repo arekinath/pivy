@@ -33,6 +33,7 @@
 
 #include "words.h"
 
+#include "piv-internal.h"
 
 struct buf {
 	size_t b_len;
@@ -161,6 +162,50 @@ struct ebox_stream_chunk {
     errf("NotSupportedError", cause, \
     "ebox is not supported")
 
+struct ebox_tpl *
+ebox_tpl_alloc(void)
+{
+	struct ebox_tpl *tpl;
+	tpl = calloc(1, sizeof (struct ebox_tpl));
+	if (tpl == NULL)
+		return (NULL);
+	return (tpl);
+}
+
+void *
+ebox_tpl_private(const struct ebox_tpl *tpl)
+{
+	return (tpl->et_priv);
+}
+
+void *
+ebox_tpl_alloc_private(struct ebox_tpl *tpl, size_t sz)
+{
+	VERIFY(tpl->et_priv == NULL);
+	tpl->et_priv = calloc(1, sz);
+	return (tpl->et_priv);
+}
+
+void
+ebox_tpl_add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config)
+{
+	VERIFY(config->etc_next == NULL);
+	if (tpl->et_lastconfig == NULL)
+		tpl->et_configs = config;
+	else
+		tpl->et_lastconfig->etc_next = config;
+	tpl->et_lastconfig = config;
+}
+
+struct ebox_tpl_config *
+ebox_tpl_next_config(const struct ebox_tpl *tpl,
+    const struct ebox_tpl_config *prev)
+{
+	if (prev == NULL)
+		return (tpl->et_configs);
+	return (prev->etc_next);
+}
+
 void
 ebox_tpl_free(struct ebox_tpl *tpl)
 {
@@ -175,6 +220,84 @@ ebox_tpl_free(struct ebox_tpl *tpl)
 	free(tpl);
 }
 
+struct ebox_tpl_config *
+ebox_tpl_config_alloc(enum ebox_config_type type)
+{
+	struct ebox_tpl_config *config;
+	config = calloc(1, sizeof (struct ebox_tpl_config));
+	if (config == NULL)
+		return (NULL);
+	config->etc_type = type;
+	if (type == EBOX_PRIMARY)
+		config->etc_n = 1;
+	return (config);
+}
+
+void *
+ebox_tpl_config_private(const struct ebox_tpl_config *config)
+{
+	return (config->etc_priv);
+}
+
+void *
+ebox_tpl_config_alloc_private(struct ebox_tpl_config *config, size_t sz)
+{
+	VERIFY(config->etc_priv == NULL);
+	config->etc_priv = calloc(1, sz);
+	return (config->etc_priv);
+}
+
+errf_t *
+ebox_tpl_config_set_n(struct ebox_tpl_config *config, uint n)
+{
+	if (n == 0)
+		return (argerrf("n", "non-zero", "%u", n));
+	if (n > config->etc_m) {
+		return (argerrf("n", "smaller than m (%u)",
+		    "%u", config->etc_m, n));
+	}
+	if (n != 1 && config->etc_type == EBOX_PRIMARY) {
+		return (errf("ArgumentError", NULL, "Primary configs may "
+		    "only have n=1 (tried to set n=%u)", n));
+	}
+	config->etc_n = n;
+	return (ERRF_OK);
+}
+
+uint
+ebox_tpl_config_n(const struct ebox_tpl_config *config)
+{
+	return (config->etc_n);
+}
+
+enum ebox_config_type
+ebox_tpl_config_type(const struct ebox_tpl_config *config)
+{
+	return (config->etc_type);
+}
+
+void
+ebox_tpl_config_add_part(struct ebox_tpl_config *config,
+    struct ebox_tpl_part *part)
+{
+	VERIFY(part->etp_next == NULL);
+	if (config->etc_lastpart == NULL)
+		config->etc_parts = part;
+	else
+		config->etc_lastpart->etp_next = part;
+	config->etc_lastpart = part;
+	++config->etc_m;
+}
+
+struct ebox_tpl_part *
+ebox_tpl_config_next_part(const struct ebox_config *config,
+    const struct ebox_tpl_part *prev)
+{
+	if (prev == NULL)
+		return (config->etc_parts);
+	return (prev->etp_next);
+}
+
 void
 ebox_tpl_config_free(struct ebox_tpl_config *config)
 {
@@ -187,6 +310,22 @@ ebox_tpl_config_free(struct ebox_tpl_config *config)
 		ebox_tpl_part_free(part);
 	}
 	free(config);
+}
+
+struct ebox_tpl_part *
+ebox_tpl_part_alloc(uint8_t *guid, size_t guidlen, struct sshkey *pubkey)
+{
+	struct ebox_tpl_part *part;
+	part = calloc(1, sizeof (struct ebox_tpl_part));
+	if (part == NULL)
+		return (NULL);
+	VERIFY3U(guidlen, ==, sizeof (part->etp_guid));
+	bcopy(guid, part->etp_guid, guidlen);
+	if (sshkey_demote(pubkey, &part->etp_pubkey)) {
+		free(part);
+		return (NULL);
+	}
+	return (part);
 }
 
 void
