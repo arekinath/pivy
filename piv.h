@@ -189,56 +189,44 @@ enum ykpiv_touch_policy {
 	YKPIV_TOUCH_CACHED = 0x03,
 };
 
-struct apdubuf;
-struct apdu;
-struct piv_slot;
-struct piv_token;
-struct piv_ecdh_box;
-
 #define	GUID_LEN	16
 
-const char *piv_token_rdrname(const struct piv_token *token);
-
-boolean_t piv_token_in_txn(const struct piv_token *token);
-
-const uint8_t *piv_token_fascn(const struct piv_token *token, size_t *len);
-const uint8_t *piv_token_guid(const struct piv_token *token);
-const char *piv_token_guid_hex(const struct piv_token *token);
-const uint8_t *piv_token_chuuid(const struct piv_token *token);
-const uint8_t *piv_token_expiry(const struct piv_token *token, size_t *len);
-size_t piv_token_nalgs(const struct piv_token *token);
-enum piv_alg piv_token_alg(const struct piv_token *token, size_t idx);
-
-boolean_t piv_token_has_chuid(const struct piv_token *token);
-boolean_t piv_token_has_signed_chuid(const struct piv_token *token);
-
-enum piv_pin piv_token_default_auth(const struct piv_token *token);
-boolean_t piv_token_has_auth(const struct piv_token *token, enum piv_pin auth);
-
-boolean_t piv_token_has_vci(const struct piv_token *token);
-
-uint piv_token_keyhistory_oncard(const struct piv_token *token);
-uint piv_token_keyhistory_offcard(const struct piv_token *token);
-const char *piv_token_offcard_url(const struct piv_token *token);
-
-boolean_t piv_token_is_ykpiv(const struct piv_token *token);
-const uint8_t *ykpiv_token_version(const struct piv_token *token);
-int ykpiv_version_compare(const struct piv_token *token, uint8_t major,
-    uint8_t minor, uint8_t patch);
-boolean_t ykpiv_token_has_serial(const struct piv_token *token);
-uint32_t ykpiv_token_serial(const struct piv_token *token);
+struct piv_slot;
+struct piv_token;
 
 /*
  * Enumerates all PIV tokens attached to the given SCARDCONTEXT.
+ *
+ * Note that the PIV tokens will not have their certificates enumerated as
+ * yet and you should use piv_read_cert() / piv_read_all_certs() to populate
+ * the list of slots if you want to use one.
  *
  * Errors:
  *  - PCSCError: a PCSC call failed in a way that is not retryable
  */
 errf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
 
+/*
+ * Retrieves a PIV token on the system which matches a given GUID or GUID
+ * prefix. If guidlen < GUID_LEN, then guid will be interpreted as a prefix
+ * to search for.
+ *
+ * This is faster than using piv_enumerate() and searching the list yourself
+ * since it doesn't try to fully probe each token for capabilities before
+ * checking the GUID.
+ *
+ * Errors:
+ *  - PCSCError: a PCSC call failed in a way that is not retryable
+ *  - DuplicateError: a GUID prefix was given and it is not unique on the system
+ *  - NotFoundError: token matching the guid was not found
+ */
 errf_t *piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
     struct piv_token **token);
 
+/*
+ * Returns the next token on a list of tokens such as that returned by
+ * piv_enumerate().
+ */
 struct piv_token *piv_token_next(struct piv_token *token);
 
 /*
@@ -247,37 +235,127 @@ struct piv_token *piv_token_next(struct piv_token *token);
  */
 void piv_release(struct piv_token *pk);
 
+/* Returns the string PCSC "reader name" for the token. */
+const char *piv_token_rdrname(const struct piv_token *token);
+
+/*
+ * Returns the card's FASC-N (a NIST card identity string). Lots of
+ * non-US-government PIV cards won't have anything here or will have garbage.
+ */
+const uint8_t *piv_token_fascn(const struct piv_token *token, size_t *len);
+
+const uint8_t *piv_token_expiry(const struct piv_token *token, size_t *len);
+
+/* The buffer returned from these is always GUID_LEN bytes in length. */
+const uint8_t *piv_token_guid(const struct piv_token *token);
+const uint8_t *piv_token_chuuid(const struct piv_token *token);
+
+/*
+ * Convenience function: returns the piv_token_guid() data as a hexadecimal
+ * zero-terminated string.
+ */
+const char *piv_token_guid_hex(const struct piv_token *token);
+
+/*
+ * Retrieve the advertised algorithms supported by the card (if any). This is
+ * not a compulsory field.
+ */
+size_t piv_token_nalgs(const struct piv_token *token);
+enum piv_alg piv_token_alg(const struct piv_token *token, size_t idx);
+
+boolean_t piv_token_has_chuid(const struct piv_token *token);
+boolean_t piv_token_has_signed_chuid(const struct piv_token *token);
+
+/*
+ * Returns the default authentication mechanism for the card (typically this
+ * is one of the possible types of PIN). The card may allow other methods to
+ * be used as well, but it specifies this one as the primary method.
+ */
+enum piv_pin piv_token_default_auth(const struct piv_token *token);
+
+/*
+ * Returns true if the card supports a type of user authentication.
+ */
+boolean_t piv_token_has_auth(const struct piv_token *token, enum piv_pin auth);
+
+/*
+ * Returns true if the card supports VCI (virtual contact interface) secure
+ * messaging -- this is used to provide secure communications with the card
+ * over contactless interfaces.
+ */
+boolean_t piv_token_has_vci(const struct piv_token *token);
+
+/*
+ * Returns the number of key history slots in use on the token which have
+ * certs stored on the actual card itself.
+ */
+uint piv_token_keyhistory_oncard(const struct piv_token *token);
+/*
+ * Returns the number of key history slots in use on the token which have
+ * certs stored at a URL instead of on the card (see also
+ * piv_token_offcard_url()).
+ */
+uint piv_token_keyhistory_offcard(const struct piv_token *token);
+/* Returns the URL used to retrieve off-card key history certs. */
+const char *piv_token_offcard_url(const struct piv_token *token);
+
+/*
+ * Returns true if the card advertises that it implements YubicoPIV extensions
+ */
+boolean_t piv_token_is_ykpiv(const struct piv_token *token);
+
+/* The buffer is always 3 bytes long. */
+const uint8_t *ykpiv_token_version(const struct piv_token *token);
+/*
+ * Compares the YubicoPIV version advertised by the card to the given tuple of
+ * (major, minor, patch). Returns -1 if the card version is earlier than the
+ * given version, 0 if it is the same, and 1 if it is later.
+ */
+int ykpiv_version_compare(const struct piv_token *token, uint8_t major,
+    uint8_t minor, uint8_t patch);
+
+/*
+ * Returns true if the card allows reading the YubiKey serial number over
+ * PIV interface. Only YubicoPIV >=5.0.0 supports this command.
+ */
+boolean_t ykpiv_token_has_serial(const struct piv_token *token);
+/* Retrieves a YubiKey serial number. */
+uint32_t ykpiv_token_serial(const struct piv_token *token);
+
 /*
  * Gets a reference to a particular key/cert slot on the card. This must have
  * been enumerated using piv_read_cert, or else this will return NULL.
  */
 struct piv_slot *piv_get_slot(struct piv_token *tk, enum piv_slotid slotid);
+
+/*
+ * Iterate over all the key slots found on a given card. Give NULL for the
+ * "slot" argument to retrieve the first slot.
+ */
 struct piv_slot *piv_slot_next(struct piv_token *tk, struct piv_slot *slot);
 
 /*
  * Forces the enumeration of a slot which doesn't have a valid certificate on
  * the card. This can useful to ask the card for a signature from a particular
- * slot even though no certificate has been written there yet.
+ * slot even though no certificate has been written there yet (or is stored
+ * off-card in the case of key history slots).
  */
 struct piv_slot *piv_force_slot(struct piv_token *tk, enum piv_slotid slotid,
    enum piv_alg alg);
 
+/* Returns the key reference ID for the given slot. */
 enum piv_slotid piv_slot_id(const struct piv_slot *slot);
+
+/* Returns the algorithm ID for the given slot. */
 enum piv_alg piv_slot_alg(const struct piv_slot *slot);
+
+/* Returns the certificate stored for a given slot. */
 X509 *piv_slot_cert(const struct piv_slot *slot);
+/* Helper: retrieves the subject DN from the certificate for a slot. */
 const char *piv_slot_subject(const struct piv_slot *slot);
+
+/* Returns the public key for a slot. */
 struct sshkey *piv_slot_pubkey(const struct piv_slot *slot);
-
-/* Low-level APDU access */
-struct apdu *piv_apdu_make(enum iso_class cls, enum iso_ins ins, uint8_t p1,
-    uint8_t p2);
-void piv_apdu_set_cmd(struct apdu *apdu, const uint8_t *data, size_t len);
-uint16_t piv_apdu_sw(const struct apdu *apdu);
-const uint8_t *piv_apdu_get_reply(const struct apdu *apdu, size_t *len);
-void piv_apdu_free(struct apdu *pdu);
-
-errf_t *piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
-errf_t *piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
 
 /*
  * Begins a new transaction on the card. Needs to be called before any
@@ -292,6 +370,9 @@ errf_t *piv_txn_begin(struct piv_token *key);
  * Ends a transaction.
  */
 void piv_txn_end(struct piv_token *key);
+
+/* Returns true if the token is in an open transaction (from piv_txn_begin) */
+boolean_t piv_token_in_txn(const struct piv_token *token);
 
 /*
  * Selects the PIV applet on the card. You should run this first in each
@@ -418,12 +499,45 @@ errf_t *ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
  * Errors:
  *  - IOError: general card communication failure
  *  - DeviceOutOfMemoryError: certificate is too large to fit on card
- *  - EPERM: admin authentication required to write a cert
- *  - ENOENT: slot unsupported
- *  - EINVAL: other card error
+ *  - PermissionError: admin authentication required to write a cert
+ *  - NotSupportedError: slot unsupported
+ *  - APDUError: other card error
  */
 errf_t *piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
     const uint8_t *data, size_t datalen, uint flags);
+
+/*
+ * Writes a file object on the PIV token by its bare tag number.
+ *
+ * The "data" buffer should contain everything that goes inside the '53' tag
+ * in the INS_PUT_DATA command. You do not need to include the '53' tag itself.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - DeviceOutOfMemoryError: file is too large to fit on card
+ *  - PermissionError: admin authentication required to write a cert
+ *  - NotSupportedError: file object tag unsupported
+ *  - APDUError: other card error
+ */
+errf_t *piv_write_file(struct piv_token *pt, uint tag,
+    const uint8_t *data, size_t len);
+
+/*
+ * Reads a file object on the PIV token by its bare tag number.
+ *
+ * Like piv_write_file() this returns a data buffer containing the contents
+ * of the '53' tag returned by INS_GET_DATA. The '53' tag itself is not
+ * included.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - PermissionError: card didn't allow this object to be read (might require
+ *                     PIN or is only retrievable over contact interface)
+ *  - NotFoundError: no file found at the given tag
+ *  - InvalidDataError: the tag structure returned by the card made no sense
+ */
+errf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
+    size_t *len);
 
 /*
  * Tries to unlock the PIV token using a PIN code.
@@ -468,9 +582,10 @@ errf_t *piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  * string of the PIN to use. Max length is 10 digits.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EINVAL: the card rejected the command (e.g. because applet not selected)
- *  - EACCES: the old PIN code was incorrect.
+ *  - IOError: general card communication failure
+ *  - APDUError: the card rejected the command (e.g. because applet not
+ *               selected)
+ *  - PermissionError: the old PIN code was incorrect.
  */
 errf_t *piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
     const char *newpin);
@@ -482,9 +597,9 @@ errf_t *piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  * string of the PIN to use. Max length is 10 digits.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EINVAL: the card rejected the command (e.g. because applet not selected)
- *  - EACCES: the PUK was incorrect.
+ *  - IOError: general card communication failure
+ *  - APDUError: the card rejected the command (e.g. because applet not selected)
+ *  - PermissionError: the PUK was incorrect.
  */
 errf_t *piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
     const char *newpin);
@@ -496,11 +611,11 @@ errf_t *piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
  * transaction.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EINVAL: the card rejected the command (e.g. because applet not selected)
- *            or the card does not support YubicoPIV extensions
- *  - EPERM: the necessary auth has not been done before calling
- *            (piv_auth_admin() and piv_verify_pin()).
+ *  - IOError: general card communication failure
+ *  - APDUError: the card rejected the command (e.g. because applet not selected)
+ *  - NotSupportedError: the card does not support YubicoPIV extensions
+ *  - PermissionError: the necessary auth has not been done before calling
+ *                     (piv_auth_admin() and piv_verify_pin()).
  */
 errf_t *ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
 
@@ -526,9 +641,9 @@ errf_t *piv_auth_key(struct piv_token *tk, struct piv_slot *slot,
  * Requests an attestation certificate.
  *
  * Errors:
- *  - EIO: general card communication failure
- *  - EINVAL: the card rejected the command (e.g. because applet not selected,
- *            or the command is unsupported)
+ *  - IOError: general card communication failure
+ *  - NotSupportedError: the card does not support YubicoPIV extensions
+ *  - APDUError: the card rejected the command (e.g. because applet not selected)
  */
 errf_t *ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
     uint8_t **data, size_t *len);
@@ -573,14 +688,18 @@ errf_t *piv_sign_prehash(struct piv_token *tk, struct piv_slot *slot,
  * containing the output shared secret. It should be released with freezero().
  *
  * Errors:
- *   - EIO: general card communication failure
- *   - EPERM: the key slot in question is locked and cannot be used. You might
- *            need to unlock the card with piv_verify_pin.
- *   - EINVAL: the card rejected the command (e.g. because applet not selected)
- *   - ENOTSUP: the card returned a GEN_AUTH payload type that isn't supported
+ *   - IOError: general card communication failure
+ *   - PermissionError: the key slot in question is locked and cannot be used.
+ *                      You might need to unlock the card with piv_verify_pin.
+ *   - APDUError: the card rejected the command (e.g. because applet not selected)
+ *   - InvalidDataError: the card returned a GEN_AUTH payload type that isn't
+ *                       supported or was invalid
  */
 errf_t *piv_ecdh(struct piv_token *tk, struct piv_slot *slot,
     struct sshkey *pubkey, uint8_t **secret, size_t *seclen);
+
+
+struct piv_ecdh_box;
 
 struct piv_ecdh_box *piv_box_new(void);
 struct piv_ecdh_box *piv_box_clone(const struct piv_ecdh_box *box);
@@ -619,9 +738,17 @@ void piv_box_free(struct piv_ecdh_box *box);
 errf_t *sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
 errf_t *sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 
-errf_t *piv_write_file(struct piv_token *pt, uint tag,
-    const uint8_t *data, size_t len);
-errf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
-    size_t *len);
+/* Low-level APDU access */
+struct apdu;
+
+struct apdu *piv_apdu_make(enum iso_class cls, enum iso_ins ins, uint8_t p1,
+    uint8_t p2);
+void piv_apdu_set_cmd(struct apdu *apdu, const uint8_t *data, size_t len);
+uint16_t piv_apdu_sw(const struct apdu *apdu);
+const uint8_t *piv_apdu_get_reply(const struct apdu *apdu, size_t *len);
+void piv_apdu_free(struct apdu *pdu);
+
+errf_t *piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
+errf_t *piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
 
 #endif
