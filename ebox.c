@@ -1326,6 +1326,12 @@ ebox_part_box(const struct ebox_part *part)
 	return (part->ep_box);
 }
 
+const struct ebox_challenge *
+ebox_part_challenge(const struct ebox_part *part)
+{
+	return (part->ep_chal);
+}
+
 const uint8_t *
 ebox_key(const struct ebox *box, size_t *len)
 {
@@ -1679,45 +1685,74 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 	char desc[255] = {0};
 	va_list ap;
 	size_t wrote;
+	errf_t *err = NULL;
 
 	chal = calloc(1, sizeof (struct ebox_challenge));
-	VERIFY(chal != NULL);
+	if (chal == NULL)
+		return (ERRF_NOMEM);
 
 	chal->c_version = 1;
 	chal->c_type = CHAL_RECOVERY;
 	chal->c_id = part->ep_id;
-	VERIFY0(gethostname(hostname, sizeof (hostname)));
+	if (gethostname(hostname, sizeof (hostname))) {
+		err = errfno("gethostname", errno, NULL);
+		goto out;
+	}
 	chal->c_hostname = strdup(hostname);
+	if (chal->c_hostname == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 	chal->c_ctime = time(NULL);
+	if (chal->c_ctime == (time_t)-1) {
+		err = errfno("time", errno, NULL);
+		goto out;
+	}
 	chal->c_keybox = piv_box_clone(part->ep_box);
+	if (chal->c_keybox == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 
 	if (config->ec_chalkey == NULL) {
 		uint bits;
 		VERIFY3S(part->ep_box->pdb_pub->type, ==, KEY_ECDSA);
 		bits = sshkey_size(part->ep_box->pdb_pub);
-		VERIFY0(sshkey_generate(KEY_ECDSA, bits, &config->ec_chalkey));
+		rc = sshkey_generate(KEY_ECDSA, bits, &config->ec_chalkey);
+		if (rc) {
+			err = ssherrf("sshkey_generate", rc);
+			goto out;
+		}
 	} else {
 		VERIFY3S(part->ep_box->pdb_pub->type, ==, KEY_ECDSA);
 		VERIFY3S(config->ec_chalkey->ecdsa_nid, ==,
 		    part->ep_box->pdb_pub->ecdsa_nid);
 	}
-	VERIFY0(sshkey_demote(config->ec_chalkey, &chal->c_destkey));
+	if ((rc = sshkey_demote(config->ec_chalkey, &chal->c_destkey))) {
+		err = ssherrf("sshkey_demote", rc);
+		goto out;
+	}
 
 	va_start(ap, descfmt);
 	wrote = vsnprintf(desc, sizeof (desc), descfmt, ap);
 	if (wrote >= sizeof (desc)) {
-		rc = ENOMEM;
+		err = errf("LengthError", NULL, "description field is too "
+		    "long to fit in challenge");
 		goto out;
 	}
 	va_end(ap);
 	chal->c_description = strdup(desc);
+	if (chal->c_description == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 
 	part->ep_chal = chal;
 	chal = NULL;
 
 out:
 	ebox_challenge_free(chal);
-	return (rc);
+	return (err);
 }
 
 static errf_t *
@@ -1732,13 +1767,13 @@ sshbuf_put_ebox_challenge_raw(struct sshbuf *buf,
 	if ((rc = sshbuf_put_u8(buf, chal->c_version)) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_type)) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_id)))
-		return (rc);
+		return (ssherrf("sshbuf_put_u8", rc));
 	if ((rc = sshbuf_put_eckey8(buf, chal->c_destkey->ecdsa)))
-		return (rc);
+		return (ssherrf("sshbuf_put_eckey8", rc));
 	if ((rc = sshbuf_put_eckey8(buf, kb->pdb_ephem_pub->ecdsa)) ||
 	    (rc = sshbuf_put_string8(buf, iv->b_data, iv->b_len)) ||
 	    (rc = sshbuf_put_string8(buf, enc->b_data, enc->b_len)))
-		return (rc);
+		return (ssherrf("sshbuf_put_*", rc));
 	if ((rc = sshbuf_put_u8(buf, CTAG_HOSTNAME)) ||
 	    (rc = sshbuf_put_cstring8(buf, chal->c_hostname)) ||
 	    (rc = sshbuf_put_u8(buf, CTAG_CTIME)) ||
@@ -1752,9 +1787,9 @@ sshbuf_put_ebox_challenge_raw(struct sshbuf *buf,
 	    (rc = sshbuf_put_u8(buf, chal->c_words[1])) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_words[2])) ||
 	    (rc = sshbuf_put_u8(buf, chal->c_words[3])))
-		return (rc);
+		return (ssherrf("sshbuf_put_*", rc));
 
-	return (rc);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -1763,7 +1798,7 @@ sshbuf_put_ebox_challenge(struct sshbuf *buf, const struct ebox_challenge *chal)
 	struct piv_ecdh_box *box;
 	struct sshbuf *cbuf;
 	struct piv_ecdh_box *kb = chal->c_keybox;
-	int rc = 0;
+	errf_t *err;
 
 	box = piv_box_new();
 	VERIFY(box != NULL);
@@ -1771,7 +1806,7 @@ sshbuf_put_ebox_challenge(struct sshbuf *buf, const struct ebox_challenge *chal)
 	cbuf = sshbuf_new();
 	VERIFY(cbuf != NULL);
 
-	if ((rc = sshbuf_put_ebox_challenge_raw(cbuf, chal)))
+	if ((err = sshbuf_put_ebox_challenge_raw(cbuf, chal)))
 		goto out;
 
 	box->pdb_cipher = strdup(kb->pdb_cipher);
@@ -1779,18 +1814,18 @@ sshbuf_put_ebox_challenge(struct sshbuf *buf, const struct ebox_challenge *chal)
 	bcopy(kb->pdb_guid, box->pdb_guid, sizeof (box->pdb_guid));
 	box->pdb_slot = kb->pdb_slot;
 	box->pdb_guidslot_valid = kb->pdb_guidslot_valid;
-	if ((rc = piv_box_set_datab(box, cbuf)))
+	if ((err = piv_box_set_datab(box, cbuf)))
 		goto out;
-	if ((rc = piv_box_seal_offline(kb->pdb_pub, box)))
+	if ((err = piv_box_seal_offline(kb->pdb_pub, box)))
 		goto out;
-	if ((rc = sshbuf_put_piv_box(buf, box)))
+	if ((err = sshbuf_put_piv_box(buf, box)))
 		goto out;
-	rc = 0;
+	err = ERRF_OK;
 
 out:
 	sshbuf_free(cbuf);
 	piv_box_free(box);
-	return (rc);
+	return (err);
 }
 
 errf_t *

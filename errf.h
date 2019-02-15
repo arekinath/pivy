@@ -54,10 +54,10 @@ typedef struct errf errf_t;
 extern struct errf *ERRF_OK;
 extern struct errf *ERRF_NOMEM;
 
-/* Print an errf_t to stderr, prefixed by "error: " */
-void perrf(const struct errf *e);
-/* perrf() and exit(1); */
-void perrfexit(const struct errf *e);
+/* Print an errf_t and message to stderr, like warnx/warn */
+void warnfx(const struct errf *e, const char *fmt, ...);
+/* Print an errf_t and message to stderr and exit, like errx/err */
+void errfx(int status, const struct errf *e, const char *fmt, ...);
 
 /* Frees an errf_t and its cause chain. */
 void erfree(struct errf *e);

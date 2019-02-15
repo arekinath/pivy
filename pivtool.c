@@ -20,6 +20,7 @@
 #include <strings.h>
 #include <limits.h>
 #include <endian.h>
+#include <err.h>
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -82,9 +83,21 @@ SCARDCONTEXT ctx;
 #ifndef LINT
 #define	funcerrf(cause, fmt, ...)	\
     errf(__func__, cause, fmt __VA_OPT__(,) __VA_ARGS__)
+#define pcscerrf(call, rv)	\
+    errf("PCSCError", NULL, call " failed: %d (%s)", \
+    rv, pcsc_stringify_error(rv))
 #endif
 
 extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
+
+enum pivtool_exit_status {
+	EXIT_OK = 0,
+	EXIT_IO_ERROR = 1,
+	EXIT_BAD_ARGS = 2,
+	EXIT_NO_CARD = 3,
+	EXIT_PIN = 4,
+	EXIT_PIN_LOCKED = 5,
+};
 
 static boolean_t
 sniff_hex(uint8_t *buf, uint len)
@@ -147,8 +160,7 @@ parse_hex(const char *str, uint *outlen)
 		    c == '\n' || c == '\r') {
 			skip = B_TRUE;
 		} else {
-			fprintf(stderr, "error: invalid hex digit: '%c'\n", c);
-			exit(1);
+			errx(EXIT_BAD_ARGS, "invalid hex digit: '%c'", c);
 		}
 		if (skip == B_FALSE) {
 			if (shift == 4) {
@@ -159,11 +171,8 @@ parse_hex(const char *str, uint *outlen)
 			}
 		}
 	}
-	if (shift == 0) {
-		fprintf(stderr, "error: odd number of hex digits "
-		    "(incomplete)\n");
-		exit(1);
-	}
+	if (shift == 0)
+		errx(EXIT_BAD_ARGS, "odd number of hex digits (incomplete)");
 	*outlen = idx;
 	return (data);
 }
@@ -178,24 +187,17 @@ read_key_file(const char *fname, uint *outlen)
 	uint8_t *buf;
 
 	f = fopen(fname, "r");
-	if (f == NULL) {
-		fprintf(stderr, "error: failed to open %s: %s\n", fname,
-		    strerror(errno));
-		exit(2);
-	}
+	if (f == NULL)
+		err(EXIT_BAD_ARGS, "failed to open '%s'", fname);
 
 	buf = calloc(1, MAX_KEYFILE_LEN);
 	VERIFY(buf != NULL);
 
 	len = fread(buf, 1, MAX_KEYFILE_LEN, f);
-	if (len <= 0) {
-		fprintf(stderr, "error: keyfile %s is too short\n", fname);
-		exit(2);
-	}
-	if (!feof(f)) {
-		fprintf(stderr, "error: keyfile %s is too long\n", fname);
-		exit(2);
-	}
+	if (len <= 0)
+		errx(EXIT_BAD_ARGS, "keyfile '%s' is too short", fname);
+	if (!feof(f))
+		errx(EXIT_BAD_ARGS, "keyfile '%s' is too long", fname);
 
 	*outlen = len;
 
@@ -211,17 +213,11 @@ read_stdin(size_t limit, size_t *outlen)
 	size_t n;
 
 	n = fread(buf, 1, limit * 3 - 1, stdin);
-	if (!feof(stdin)) {
-		fprintf(stderr, "error: input too long (max %lu bytes)\n",
-		    limit);
-		exit(1);
-	}
+	if (!feof(stdin))
+		errx(EXIT_BAD_ARGS, "input too long (max %lu bytes)", limit);
 
-	if (n > limit) {
-		fprintf(stderr, "error: input too long (max %lu bytes)\n",
-		    limit);
-		exit(1);
-	}
+	if (n > limit)
+		errx(EXIT_BAD_ARGS, "input too long (max %lu bytes)", limit);
 
 	*outlen = n;
 	return (buf);
@@ -244,7 +240,7 @@ assert_select(struct piv_token *tk)
 	err = piv_select(tk);
 	if (err) {
 		piv_txn_end(tk);
-		perrfexit(err);
+		errfx(1, err, "error while selecting applet");
 	}
 }
 
@@ -271,15 +267,14 @@ assert_slotid(uint slotid)
 		return;
 	if (slotid >= PIV_SLOT_RETIRED_1 && slotid <= PIV_SLOT_RETIRED_20)
 		return;
-	fprintf(stderr, "error: PIV slot %02X cannot be used for asymmetric "
-	    "signing\n", slotid);
-	exit(3);
+	errx(EXIT_BAD_ARGS, "PIV slot %02X cannot be used for asymmetric "
+	    "signing", slotid);
 }
 
 static void
 assert_pin(struct piv_token *pk, boolean_t prompt)
 {
-	errf_t *err;
+	errf_t *er;
 	uint retries = min_retries;
 	enum piv_pin auth = piv_token_default_auth(pk);
 
@@ -304,45 +299,40 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		} while (pin == NULL && errno == EINTR);
 		if ((pin == NULL && errno == ENXIO) || strlen(pin) < 1) {
 			piv_txn_end(pk);
-			fprintf(stderr, "error: a PIN is required to "
-			    "unlock token %s\n", guid);
-			exit(4);
+			errx(EXIT_PIN, "a PIN is required to unlock "
+			    "token %s", guid);
 		} else if (pin == NULL) {
 			piv_txn_end(pk);
-			perror("getpass");
-			exit(3);
+			err(EXIT_PIN, "failed to read PIN");
 		} else if (strlen(pin) < 6 || strlen(pin) > 8) {
 			const char *charType = "digits";
 			if (piv_token_is_ykpiv(selk))
 				charType = "characters";
-			fprintf(stderr, "error: a valid PIN must be 6-8 "
-			    "%s in length\n", charType);
-			exit(4);
+			errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+			    charType);
 		}
 		pin = strdup(pin);
 		free(guid);
 	}
-	err = piv_verify_pin(pk, auth, pin, &retries, B_FALSE);
-	if (errf_caused_by(err, "PermissionError")) {
+	er = piv_verify_pin(pk, auth, pin, &retries, B_FALSE);
+	if (errf_caused_by(er, "PermissionError")) {
 		piv_txn_end(pk);
 		if (retries == 0) {
-			fprintf(stderr, "error: token is locked due to too "
-			    "many invalid PIN entries\n");
-			exit(10);
+			errx(EXIT_PIN_LOCKED, "token is locked due to too "
+			    "many invalid PIN attempts");
 		}
-		fprintf(stderr, "error: invalid PIN (%d attempts "
-		    "remaining)\n", retries);
-		exit(4);
-	} else if (errf_caused_by(err, "MinRetriesError")) {
+		errx(EXIT_PIN, "invalid PIN (%d attempts remaining)", retries);
+	} else if (errf_caused_by(er, "MinRetriesError")) {
 		piv_txn_end(pk);
-		fprintf(stderr, "error: insufficient retries remaining "
-		    "(%d left)\n", retries);
-		exit(4);
-	} else if (err) {
+		if (retries == 0) {
+			errx(EXIT_PIN_LOCKED, "token is locked due to too "
+			    "many invalid PIN attempts");
+		}
+		errx(EXIT_PIN, "insufficient PIN retries remaining (%d left)",
+		    retries);
+	} else if (er) {
 		piv_txn_end(pk);
-		err = errf("verify-pin", err, "Failed to verify PIN");
-		perrf(err);
-		exit(4);
+		errfx(EXIT_PIN, er, "failed to verify PIN");
 	}
 }
 
@@ -776,7 +766,7 @@ again:
 		return (err);
 	}
 	if (strlen(p) < 6 || strlen(p) > 8) {
-		fprintf(stderr, "error: PIN must be 6-8 %s\n", charType);
+		warnx("PIN must be 6-8 %s", charType);
 		goto again;
 	}
 	newpin = strdup(p);
@@ -790,7 +780,7 @@ again:
 		return (err);
 	}
 	if (strcmp(p, newpin) != 0) {
-		fprintf(stderr, "error: PINs do not match\n");
+		warnx("PINs do not match");
 		goto again;
 	}
 	free(guidhex);
@@ -843,7 +833,7 @@ again:
 		return (err);
 	}
 	if (strlen(p) < 6 || strlen(p) > 8) {
-		fprintf(stderr, "error: PIN must be 6-8 %s\n", charType);
+		warnx("PIN must be 6-8 %s", charType);
 		goto again;
 	}
 	newpin = strdup(p);
@@ -856,13 +846,13 @@ again:
 		return (err);
 	}
 	if (strcmp(p, newpin) != 0) {
-		fprintf(stderr, "error: PINs do not match\n");
+		warnx("PINs do not match");
 		goto again;
 	}
 	free(guidhex);
 
 	if ((err = piv_txn_begin(selk)))
-		perrfexit(err);
+		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
 	err = piv_reset_pin(selk, PIV_PIN, pin, newpin);
 	piv_txn_end(selk);
@@ -1139,10 +1129,9 @@ signagain:
 		err = piv_write_keyhistory(selk, oncard, offcard, url);
 
 		if (err) {
-			err = errf("generate", err, "failed to update key "
+			warnfx(err, "failed to update key "
 			    "history object with new cert, trying to "
 			    "continue anyway...");
-			perrf(err);
 			err = ERRF_OK;
 		}
 	}
@@ -1283,7 +1272,7 @@ cmd_cert(uint slotid)
 	assert_slotid(slotid);
 
 	if ((err = piv_txn_begin(selk)))
-		perrfexit(err);
+		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
 	err = piv_read_cert(selk, slotid);
 	piv_txn_end(selk);
@@ -1643,7 +1632,7 @@ cmd_auth(uint slotid)
 	}
 
 	if ((err = piv_txn_begin(selk)))
-		perrfexit(err);
+		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
 	assert_pin(selk, B_FALSE);
 again:
@@ -1757,12 +1746,12 @@ check_select_key(void)
 	if (guid_len == 0) {
 		err = piv_enumerate(ctx, &t);
 		if (err)
-			perrfexit(err);
+			errfx(EXIT_IO_ERROR, err,
+			    "failed to enumerate PIV tokens");
 		if (piv_token_next(t) != NULL) {
-			fprintf(stderr, "error: multiple PIV cards "
+			errx(EXIT_NO_CARD, "multiple PIV cards "
 			    "present and no system token set; you "
-			    "must provide -g|--guid to select one\n");
-			exit(3);
+			    "must provide -g|--guid to select one");
 		}
 		selk = (ks = t);
 		return;
@@ -1773,17 +1762,14 @@ check_select_key(void)
 		len = 0;
 
 	err = piv_find(ctx, guid, len, &t);
-	if (errf_caused_by(err, "DuplicateError")) {
-		fprintf(stderr, "error: GUID prefix specified is not unique\n");
-		exit(3);
-	}
+	if (errf_caused_by(err, "DuplicateError"))
+		errx(EXIT_NO_CARD, "GUID prefix specified is not unique");
 	if (errf_caused_by(err, "NotFoundError")) {
-		fprintf(stderr, "error: no PIV card present matching given "
-		    "GUID\n");
-		exit(3);
+		errx(EXIT_NO_CARD, "no PIV card present matching given "
+		    "GUID");
 	}
 	if (err)
-		perrfexit(err);
+		errfx(EXIT_IO_ERROR, err, "while finding PIV token with GUID");
 	selk = (ks = t);
 }
 
@@ -1948,7 +1934,7 @@ usage(void)
 	    "Options for 'box'/'unbox':\n"
 	    "  -k <pubkey>            Use a public key for box operation\n"
 	    "                         instead of a slot\n");
-	exit(3);
+	exit(EXIT_BAD_ARGS);
 }
 
 /*const char *optstring =
@@ -2002,9 +1988,8 @@ main(int argc, char *argv[])
 				admin_key = parse_hex(optarg, &len);
 			}
 			if (len != 24) {
-				fprintf(stderr, "error: admin key must be "
-				    "24 bytes in length (you gave %d)\n", len);
-				exit(3);
+				errx(EXIT_BAD_ARGS, "admin key must be "
+				    "24 bytes in length (%d given)", len);
 			}
 			break;
 		case 'n':
@@ -2044,8 +2029,8 @@ main(int argc, char *argv[])
 			} else if (strcasecmp(optarg, "3des") == 0) {
 				overalg = PIV_ALG_3DES;
 			} else {
-				fprintf(stderr, "error: invalid algorithm\n");
-				exit(3);
+				errx(EXIT_BAD_ARGS, "invalid algorithm: '%s'",
+				    optarg);
 			}
 			/* ps_slot will be set after we've parsed the slot */
 			break;
@@ -2053,9 +2038,8 @@ main(int argc, char *argv[])
 			guid = parse_hex(optarg, &len);
 			guid_len = len;
 			if (len > 16) {
-				fprintf(stderr, "error: GUID must be <=16 bytes"
-				    " in length (you gave %d)\n", len);
-				exit(3);
+				errx(EXIT_BAD_ARGS, "GUID must be <=16 bytes "
+				    "(%d given)", len);
 			}
 			break;
 		case 'P':
@@ -2070,16 +2054,15 @@ main(int argc, char *argv[])
 			ptr = optarg;
 			rv = sshkey_read(opubkey, &ptr);
 			if (rv != 0) {
-				fprintf(stderr, "error: failed to parse public "
-				    "key: %ld\n", rv);
-				exit(3);
+				errfx(EXIT_BAD_ARGS, ssherrf("sshkey_read",
+				    rv), "failed to parse public key in -k");
 			}
 			break;
 		}
 	}
 
 	if (optind >= argc) {
-		fprintf(stderr, "error: operation required\n");
+		warnx("operation required");
 		usage();
 	}
 
@@ -2087,9 +2070,8 @@ main(int argc, char *argv[])
 
 	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
 	if (rv != SCARD_S_SUCCESS) {
-		fprintf(stderr, "SCardEstablishContext failed: %s\n",
-		    pcsc_stringify_error(rv));
-		return (1);
+		errfx(EXIT_IO_ERROR, pcscerrf("SCardEstablishContext", rv),
+		    "failed to initialise libpcsc");
 	}
 
 #if 0
@@ -2100,14 +2082,14 @@ main(int argc, char *argv[])
 	if (strcmp(op, "list") == 0) {
 		err = piv_enumerate(ctx, &ks);
 		if (err)
-			perrfexit(err);
+			errfx(1, err, "failed to enumerate PIV tokens");
 		if (optind < argc)
 			usage();
 		err = cmd_list();
 
 	} else if (strcmp(op, "init") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
@@ -2125,7 +2107,7 @@ main(int argc, char *argv[])
 
 	} else if (strcmp(op, "change-pin") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
@@ -2152,21 +2134,20 @@ main(int argc, char *argv[])
 		}
 
 		if (++optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
 		if (len != 24) {
-			fprintf(stderr, "error: admin key must be "
-			    "24 bytes in length (you gave %d)\n", len);
-			exit(3);
+			errx(EXIT_BAD_ARGS, "admin key must be 24 bytes in "
+			    "length (%d given)", len);
 		}
 		check_select_key();
 		err = cmd_set_admin(new_admin);
 
 	} else if (strcmp(op, "change-puk") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
@@ -2174,7 +2155,7 @@ main(int argc, char *argv[])
 
 	} else if (strcmp(op, "reset-pin") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
@@ -2183,12 +2164,16 @@ main(int argc, char *argv[])
 	} else if (strcmp(op, "sign") == 0) {
 		uint slotid;
 
-		if (optind >= argc)
+		if (optind >= argc) {
+			warnx("not enough arguments for %s", op);
 			usage();
+		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
-		if (optind < argc)
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
 			usage();
+		}
 
 		check_select_key();
 		if (hasover)
@@ -2199,13 +2184,14 @@ main(int argc, char *argv[])
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
@@ -2216,13 +2202,14 @@ main(int argc, char *argv[])
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
@@ -2231,7 +2218,7 @@ main(int argc, char *argv[])
 
 	} else if (strcmp(op, "setup") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
@@ -2241,13 +2228,14 @@ main(int argc, char *argv[])
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
@@ -2258,13 +2246,14 @@ main(int argc, char *argv[])
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
@@ -2277,13 +2266,14 @@ main(int argc, char *argv[])
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
@@ -2307,7 +2297,7 @@ main(int argc, char *argv[])
 		}
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
@@ -2315,21 +2305,21 @@ main(int argc, char *argv[])
 
 	} else if (strcmp(op, "unbox") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		err = cmd_unbox();
 
 	} else if (strcmp(op, "box-info") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		err = cmd_box_info();
 
 	} else if (strcmp(op, "sgdebug") == 0) {
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 		check_select_key();
@@ -2339,18 +2329,19 @@ main(int argc, char *argv[])
 		uint slotid;
 
 		if (optind >= argc) {
-			fprintf(stderr, "error: slot required\n");
+			warnx("not enough arguments for %s (slot required)",
+			    op);
 			usage();
 		}
 		slotid = strtol(argv[optind++], NULL, 16);
 
 		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
+			warnx("too many arguments for %s", op);
 			usage();
 		}
 
 		if (!hasover) {
-			fprintf(stderr, "error: algorithm required\n");
+			warnx("%s requires the -a (algorithm) option", op);
 			usage();
 		}
 
@@ -2360,14 +2351,12 @@ main(int argc, char *argv[])
 		err = cmd_generate(slotid, overalg);
 
 	} else {
-		fprintf(stderr, "error: invalid operation '%s'\n", op);
+		warnx("invalid operation '%s'", op);
 		usage();
 	}
 
-	if (err) {
-		err = errf(op, err, "failed to complete command");
-		perrfexit(err);
-	}
+	if (err)
+		errfx(1, err, "error occurred while executing '%s'", op);
 
 	return (0);
 }

@@ -69,7 +69,7 @@ errno_to_macro(int eno)
 
 struct errf errf_ok = {
     .errf_name = "NoError",
-    .errf_message = "perrf() called on a non-error",
+    .errf_message = "warnfx/errfx() called on a non-error",
     .errf_file = "erf.c",
     .errf_line = __LINE__
 };
@@ -156,7 +156,7 @@ _errf(const char *name, struct errf *cause, const char *func, const char *file,
 }
 
 struct errf *
-_errfno(const char *enofunc, int eno, const char *func ,const char *file,
+_errfno(const char *enofunc, int eno, const char *func, const char *file,
     uint line, const char *fmt, ...)
 {
 	struct errf *e;
@@ -178,40 +178,57 @@ _errfno(const char *enofunc, int eno, const char *func ,const char *file,
 	e->errf_function = func;
 
 	wrote = snprintf(e->errf_message, sizeof (e->errf_message),
-	    "%s returned error %d (%s): %s: ", enofunc, eno, macro,
-	    strerror(eno));
-	p = &e->errf_message[wrote];
-	va_start(ap, fmt);
-	wrote += vsnprintf(p, sizeof (e->errf_message) - wrote, fmt, ap);
-	va_end(ap);
+	    "%s returned error %d (%s): %s%s", enofunc, eno, macro,
+	    strerror(eno), fmt ? ": " : "");
+	if (fmt != NULL) {
+		p = &e->errf_message[wrote];
+		va_start(ap, fmt);
+		wrote += vsnprintf(p, sizeof (e->errf_message) - wrote,
+		    fmt, ap);
+		va_end(ap);
+	}
 	if (wrote >= sizeof (e->errf_message))
 		e->errf_message[sizeof (e->errf_message) - 1] = '\0';
 
 	return (e);
 }
 
-void
-perrf(const struct errf *etop)
+static void
+vperrf(const struct errf *etop, const char *type, const char *fmt, va_list args)
 {
 	const struct errf *e;
-	const char *prefix = "error: ";
 	if (etop == NULL) {
-		perrf(&errf_ok);
+		vperrf(&errf_ok, type, fmt, args);
 		return;
 	}
+	fprintf(stderr, "%s: %s", getprogname(), type);
+	vfprintf(stderr, fmt, args);
+	fprintf(stderr, "\n");
 	for (e = etop; e != NULL; e = e->errf_cause) {
-		fprintf(stderr, "%s%s: %s\n    in %s() at %s:%d\n", prefix,
-		    e->errf_name, e->errf_message, e->errf_function, e->errf_file,
-		    e->errf_line);
-		prefix = "  Caused by ";
+		fprintf(stderr, "  Caused by %s: %s\n", e->errf_name,
+		    e->errf_message);
+		fprintf(stderr, "    in %s() at %s:%d\n", e->errf_function,
+		    e->errf_file, e->errf_line);
 	}
 }
 
 void
-perrfexit(const struct errf *etop)
+warnfx(const struct errf *etop, const char *fmt, ...)
 {
-	perrf(etop);
-	exit(1);
+	va_list ap;
+	va_start(ap, fmt);
+	vperrf(etop, "warning: ", fmt, ap);
+	va_end(ap);
+}
+
+void
+errfx(int status, const struct errf *etop, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	vperrf(etop, "", fmt, ap);
+	va_end(ap);
+	exit(status);
 }
 
 boolean_t

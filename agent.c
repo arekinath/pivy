@@ -1142,7 +1142,7 @@ process_extension(SocketEntry *e)
 		bunyan_log(WARN, "failed to process extension command",
 		    "error", BNY_ERF, err, NULL);
 		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
-			perrf(err);
+			warnfx(err, "denied command due to lack of PIN");
 		erfree(err);
 		err = ERRF_OK;
 	}
@@ -1315,7 +1315,7 @@ process_message(u_int socknum)
 		bunyan_log(WARN, "failed to process command",
 		    "error", BNY_ERF, err, NULL);
 		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
-			perrf(err);
+			warnfx(err, "denied command due to lack of PIN");
 		sshbuf_reset(e->request);
 		send_status(e, 0);
 		erfree(err);
