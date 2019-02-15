@@ -349,12 +349,22 @@ enum piv_slotid piv_slot_id(const struct piv_slot *slot);
 /* Returns the algorithm ID for the given slot. */
 enum piv_alg piv_slot_alg(const struct piv_slot *slot);
 
-/* Returns the certificate stored for a given slot. */
+/*
+ * Returns the certificate stored for a given slot.
+ *
+ * The memory referenced by the returned pointer should be treated as const
+ * and not freed or modified (it will be freed with the piv_slot).
+ */
 X509 *piv_slot_cert(const struct piv_slot *slot);
 /* Helper: retrieves the subject DN from the certificate for a slot. */
 const char *piv_slot_subject(const struct piv_slot *slot);
 
-/* Returns the public key for a slot. */
+/*
+ * Returns the public key for a slot.
+ *
+ * The memory referenced by the returned pointer should be treated as const
+ * and not freed or modified (it will be freed with the piv_slot).
+ */
 struct sshkey *piv_slot_pubkey(const struct piv_slot *slot);
 
 /*
@@ -443,6 +453,8 @@ errf_t *ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
  * Generates a new asymmetric private key in a slot on the token, and returns
  * the public key.
  *
+ * The public key should be freed by the caller with sshkey_free().
+ *
  * Errors:
  *  - IOError: general card communication failure
  *  - ArgumentError: algorithm or slot ID not supported
@@ -529,6 +541,12 @@ errf_t *piv_write_file(struct piv_token *pt, uint tag,
  * of the '53' tag returned by INS_GET_DATA. The '53' tag itself is not
  * included.
  *
+ * The "len" argument will be written with the length of data and the "data"
+ * argument written with a pointer to an allocated data buffer of that length.
+ *
+ * The buffer of file data returned should be released with
+ * piv_file_data_free().
+ *
  * Errors:
  *  - IOError: general card communication failure
  *  - PermissionError: card didn't allow this object to be read (might require
@@ -538,6 +556,11 @@ errf_t *piv_write_file(struct piv_token *pt, uint tag,
  */
 errf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
     size_t *len);
+
+/*
+ * Zeroes and releases a file data buffer allocated by piv_read_file().
+ */
+void piv_file_data_free(uint8_t *data, size_t len);
 
 /*
  * Tries to unlock the PIV token using a PIN code.
@@ -558,7 +581,12 @@ errf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
  * If EACCES is returned, then "retries" will also be written with the new
  * remaining attempts count.
  *
+ * Some cards may accept characters other than numbers in a PIN -- such
+ * behaviour is completely card implementation-defined, but typically a
+ * character-set violation will result in an APDUError being returned.
+ *
  * Errors:
+ *  - ArgumentError: PIN supplied was zero-length or >8 chars long
  *  - IOError: general card communication failure
  *  - APDUError: the card rejected the command (e.g. because applet not
  *               selected)
@@ -579,9 +607,10 @@ errf_t *piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  * Changes the PIV PIN on a token.
  *
  * The "pin" and "newpin" arguments should be a NULL-terminated ASCII numeric
- * string of the PIN to use. Max length is 10 digits.
+ * string of the PIN to use. Max length is 8 digits.
  *
  * Errors:
+ *  - ArgumentError: PIN supplied was zero-length or >8 digits long
  *  - IOError: general card communication failure
  *  - APDUError: the card rejected the command (e.g. because applet not
  *               selected)
@@ -594,9 +623,10 @@ errf_t *piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  * Resets the PIV PIN on a token using the PUK.
  *
  * The "puk" and "newpin" arguments should be a NULL-terminated ASCII numeric
- * string of the PIN to use. Max length is 10 digits.
+ * string of the PIN to use. Max length is 8 digits.
  *
  * Errors:
+ *  - ArgumentError: PIN supplied was zero-length or >8 digits long
  *  - IOError: general card communication failure
  *  - APDUError: the card rejected the command (e.g. because applet not selected)
  *  - PermissionError: the PUK was incorrect.
@@ -651,7 +681,11 @@ errf_t *ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
 /*
  * Signs a payload using a private key stored on the card.
  *
- * "data" must contain "datalen" bytes of payload that will be signed.
+ * "data" must contain "datalen" bytes of payload that will be signed. For
+ * piv_sign() this is the actual raw data (and this function or the card will
+ * hash it for you as part of signing). For piv_sign_prehash() the "data" is
+ * the hash itself instead. If the card only supports hash-on-card for an EC
+ * key slot, piv_sign_prehash() will return NotSupportedError.
  *
  * "hashalgo" will be written with the SSH digest ID of the hash algorithm that
  * was used. It can also be filled out with a desired hash algorithm before
@@ -703,6 +737,8 @@ struct piv_ecdh_box;
 
 struct piv_ecdh_box *piv_box_new(void);
 struct piv_ecdh_box *piv_box_clone(const struct piv_ecdh_box *box);
+void piv_box_free(struct piv_ecdh_box *box);
+
 errf_t *piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len);
 errf_t *piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf);
 errf_t *piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
@@ -733,7 +769,6 @@ errf_t *piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 errf_t *piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box);
 errf_t *piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
 errf_t *piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **buf);
-void piv_box_free(struct piv_ecdh_box *box);
 
 errf_t *sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
 errf_t *sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
@@ -741,14 +776,47 @@ errf_t *sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 /* Low-level APDU access */
 struct apdu;
 
+/*
+ * Creates an APDU with the given class, instruction, p1 and p2 values.
+ */
 struct apdu *piv_apdu_make(enum iso_class cls, enum iso_ins ins, uint8_t p1,
     uint8_t p2);
+
+/*
+ * Sets the command data for an apdu. The command data is not copied, so
+ * the data behind this pointer must remain valid until the apdu has been used
+ * and released by calling piv_apdu_free().
+ */
 void piv_apdu_set_cmd(struct apdu *apdu, const uint8_t *data, size_t len);
+
+/*
+ * Retrieves the status word from a completed APDU.
+ *
+ * Returns 0 if the APDU has not been completed.
+ */
 uint16_t piv_apdu_sw(const struct apdu *apdu);
+/*
+ * Retrieves a reference to the reply data from a completed APDU, writing
+ * the size in "len". The status word is not included.
+ *
+ * This pointer is only valid until piv_apdu_free() is called.
+ */
 const uint8_t *piv_apdu_get_reply(const struct apdu *apdu, size_t *len);
+
+/* Frees an APDU and any reply data held by it. */
 void piv_apdu_free(struct apdu *pdu);
 
+/*
+ * Transceives a single APDU with a given token, sending the command and
+ * receiving a response. If ERRF_OK is returned, the APDU is then completed
+ * and piv_apdu_sw() and piv_apdu_get_reply() can be used on it.
+ */
 errf_t *piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
+/*
+ * Transceives a chain of APDUs, allowing both the command data and reply data
+ * to span multiple APDUs. The struct apdu will be used and filled out as if
+ * one single large APDU had been transceived.
+ */
 errf_t *piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
 
 #endif

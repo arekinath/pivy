@@ -52,6 +52,11 @@ enum ebox_stream_mode {
 	EBOX_MODE_DECRYPT = 0x02
 };
 
+enum ebox_chaltype {
+	CHAL_RECOVERY = 1,
+	CHAL_VERIFY_AUDIT = 2,
+};
+
 struct ebox_tpl;
 struct ebox_tpl_config;
 struct ebox_tpl_part;
@@ -82,7 +87,7 @@ enum ebox_config_type ebox_tpl_config_type(
 void ebox_tpl_config_add_part(struct ebox_tpl_config *config,
     struct ebox_tpl_part *part);
 struct ebox_tpl_part *ebox_tpl_config_next_part(
-    const struct ebox_config *config, const struct ebox_tpl_part *prev);
+    const struct ebox_tpl_config *config, const struct ebox_tpl_part *prev);
 
 struct ebox_tpl_part *ebox_tpl_part_alloc(uint8_t *guid, size_t guidlen,
     struct sshkey *pubkey);
@@ -100,8 +105,22 @@ errf_t *sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
 errf_t *sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
 
 void ebox_free(struct ebox *box);
-void ebox_config_free(struct ebox_config *config);
-void ebox_part_free(struct ebox_part *part);
+
+struct ebox_config *ebox_next_config(const struct ebox *box,
+    const struct ebox_config *prev);
+struct ebox_part *ebox_config_next_part(const struct ebox_config *config,
+    const struct ebox_part *prev);
+
+struct ebox_tpl_config *ebox_config_tpl(const struct ebox_config *config);
+struct ebox_tpl_part *ebox_part_tpl(const struct ebox_part *part);
+
+void *ebox_config_private(const struct ebox_config *config);
+void *ebox_config_alloc_private(struct ebox_config *config, size_t sz);
+
+void *ebox_part_private(const struct ebox_part *part);
+void *ebox_part_alloc_private(struct ebox_part *part, size_t sz);
+
+struct piv_ecdh_box *ebox_part_box(const struct ebox_part *part);
 
 errf_t *sshbuf_get_ebox(struct sshbuf *buf, struct ebox **box);
 errf_t *sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
@@ -114,7 +133,12 @@ void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
  * and (optional) recovery token.
  */
 errf_t *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
-    size_t keylen, const uint8_t *token, size_t tokenlen, struct ebox **pebox);
+    size_t keylen, const uint8_t *rtoken, size_t rtokenlen,
+    struct ebox **pebox);
+
+const char *ebox_cipher(const struct ebox *box);
+const uint8_t *ebox_key(const struct ebox *box, size_t *len);
+const uint8_t *ebox_recovery_token(const struct ebox *box, size_t *len);
 
 /*
  * Generate a challenge for a given recovery config + part.
@@ -129,6 +153,7 @@ errf_t *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
  */
 errf_t *ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
     const char *descfmt, ...);
+const struct ebox_challenge *ebox_part_challenge(const struct ebox_part *part);
 
 void ebox_challenge_free(struct ebox_challenge *chal);
 
@@ -137,7 +162,8 @@ void ebox_challenge_free(struct ebox_challenge *chal);
  *
  * The data written in the buf is ready to be transported to a remote machine.
  */
-errf_t *sshbuf_put_ebox_challenge(struct sshbuf *buf, struct ebox_challenge *chal);
+errf_t *sshbuf_put_ebox_challenge(struct sshbuf *buf,
+    const struct ebox_challenge *chal);
 
 /*
  * De-serializes an ebox challenge from inside a piv_ecdh_box. The piv_ecdh_box
@@ -145,6 +171,17 @@ errf_t *sshbuf_put_ebox_challenge(struct sshbuf *buf, struct ebox_challenge *cha
  */
 errf_t *sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
     struct ebox_challenge **chal);
+
+enum ebox_chaltype ebox_challenge_type(const struct ebox_challenge *chal);
+uint ebox_challenge_id(const struct ebox_challenge *chal);
+const char *ebox_challenge_desc(const struct ebox_challenge *chal);
+const char *ebox_challenge_hostname(const struct ebox_challenge *chal);
+uint64_t ebox_challenge_ctime(const struct ebox_challenge *chal);
+const uint8_t *ebox_challenge_words(const struct ebox_challenge *chal,
+    size_t *len);
+struct sshkey *ebox_challenge_destkey(const struct ebox_challenge *chal);
+struct piv_ecdh_box *ebox_challenge_box(const struct ebox_challenge *chal);
+
 
 /*
  * Serializes a response to an ebox challenge inside a piv_ecdh_box as a
@@ -154,7 +191,7 @@ errf_t *sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
  * requesting machine.
  */
 errf_t *sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
-    struct ebox_challenge *chal);
+    const struct ebox_challenge *chal);
 
 /*
  * Process an incoming response to a recovery challenge for the given config.

@@ -2418,6 +2418,13 @@ piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 	return (err);
 }
 
+void
+piv_file_data_free(uint8_t *data, size_t len)
+{
+	explicit_bzero(data, len);
+	free(data);
+}
+
 errf_t *
 piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 {

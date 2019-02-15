@@ -65,20 +65,24 @@ main(int argc, char *argv[])
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *config;
 	struct ebox_tpl_part *part;
+	struct ebox_config *econfig;
+	struct ebox_part *epart;
 	struct ebox *ebox, *ebox2;
 	struct sshbuf *buf, *rbuf;
-	struct sshkey *k;
-	//uint8_t key[8] = {1,2,3,4,5,6,7,8};
+	struct sshkey *k, *pk;
+	struct piv_ecdh_box *box;
+	uint8_t key[8] = {1,2,3,4,5,6,7,8};
 	uint8_t guid[16] = { 0x12, 0x34 };
+	const uint8_t *key2;
+	size_t keylen;
 
 	tpl = ebox_tpl_alloc();
 
 	/* First our primary config for a single yubikey */
 	config = ebox_tpl_config_alloc(EBOX_PRIMARY);
 
-	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &k));
-	part = ebox_tpl_part_alloc(guid, sizeof (guid), k);
-	sshkey_free(k);
+	VERIFY0(sshkey_generate(KEY_ECDSA, 256, &pk));
+	part = ebox_tpl_part_alloc(guid, sizeof (guid), pk);
 	ebox_tpl_part_set_name(part, "testing");
 	ebox_tpl_config_add_part(config, part);
 
@@ -107,17 +111,34 @@ main(int argc, char *argv[])
 
 	ebox_tpl_add_config(tpl, config);
 
-	//ebox = ebox_create(tpl, key, sizeof (key), NULL, 0);
+	err = ebox_create(tpl, key, sizeof (key), NULL, 0, &ebox);
+	if (err)
+		perrfexit(err);
 
 	buf = sshbuf_new();
-	err = sshbuf_put_ebox_tpl(buf, tpl);
+	err = sshbuf_put_ebox(buf, ebox);
 	if (err)
 		perrfexit(err);
 
 	fprintf(stdout, "%s\n", sshbuf_dtob64(buf));
 
-	/*rbuf = sshbuf_fromb(buf);
-	VERIFY0(sshbuf_get_ebox(rbuf, &ebox2));*/
+	rbuf = sshbuf_fromb(buf);
+	err = sshbuf_get_ebox(rbuf, &ebox2);
+	if (err)
+		perrfexit(err);
+	econfig = ebox_next_config(ebox2, NULL);
+	epart = ebox_config_next_part(econfig, NULL);
+	box = ebox_part_box(epart);
+	err = piv_box_open_offline(pk, box);
+	if (err)
+		perrfexit(err);
+	err = ebox_unlock(ebox2, econfig);
+	if (err)
+		perrfexit(err);
+	key2 = ebox_key(ebox2, &keylen);
+	VERIFY(key2 != NULL);
+	VERIFY3U(sizeof (key), ==, keylen);
+	VERIFY0(bcmp(key2, key, keylen));
 
 	return (0);
 }
