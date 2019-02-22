@@ -118,6 +118,11 @@ enum chaltag {
 	CTAG_WORDS = 4,
 };
 
+enum resptag {
+	RTAG_ID = 1,
+	RTAG_KEYPIECE = 2,
+};
+
 struct ebox_challenge {
 	uint8_t c_version;
 	enum ebox_chaltype c_type;
@@ -1607,32 +1612,53 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 {
 	struct ebox_part *part;
 	struct ebox_tpl_config *tconfig = config->ec_tpl;
-	struct sshbuf *buf;
+	struct sshbuf *buf = NULL;
 	uint n = tconfig->etc_n, m = tconfig->etc_m;
 	uint i = 0, j;
-	int rc = 0;
+	errf_t *err;
+	int rc;
 	uint8_t tag;
 	sss_Keyshare *share, *shares = NULL;
 
-	if (ebox->e_key != NULL || ebox->e_keylen > 0)
-		return (EAGAIN);
-	if (ebox->e_token != NULL || ebox->e_tokenlen > 0)
-		return (EAGAIN);
-	if (ebox->e_rcv_key.b_data != NULL || ebox->e_rcv_key.b_len > 0)
-		return (EAGAIN);
+	if (ebox->e_key != NULL || ebox->e_keylen > 0) {
+		return (errf("AlreadyUnlocked", NULL,
+		    "ebox has already been unlocked"));
+	}
+	if (ebox->e_token != NULL || ebox->e_tokenlen > 0) {
+		return (errf("AlreadyUnlocked", NULL,
+		    "ebox has already been recovered"));
+	}
+	if (ebox->e_rcv_key.b_data != NULL || ebox->e_rcv_key.b_len > 0) {
+		return (errf("AlreadyUnlocked", NULL,
+		    "ebox has already been recovered"));
+	}
 
 	shares = calloc(m, sizeof (sss_Keyshare));
 
 	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
-		if (part->ep_share == NULL || part->ep_sharelen < 1)
-			continue;
-		VERIFY3U(part->ep_sharelen, ==, sizeof (sss_Keyshare));
-		share = &shares[i++];
-		bcopy(part->ep_share, share, sizeof (sss_Keyshare));
+		if (part->ep_share != NULL && part->ep_sharelen >= 1) {
+			VERIFY3U(part->ep_sharelen, ==, sizeof (sss_Keyshare));
+			share = &shares[i++];
+			bcopy(part->ep_share, share, sizeof (sss_Keyshare));
+		} else if (!piv_box_sealed(part->ep_box)) {
+			/*
+			 * We can't use take_data_* because we don't want to
+			 * consume the data buffer (we're not sure yet whether
+			 * we actually have enough pieces here).
+			 */
+			VERIFY3U(part->ep_box->pdb_plain.b_len, ==,
+			    sizeof (sss_Keyshare));
+			share = &shares[i++];
+			bcopy(part->ep_box->pdb_plain.b_data +
+			    part->ep_box->pdb_plain.b_offset,
+			    share, sizeof (sss_Keyshare));
+		}
 	}
 
-	if (i != n) {
-		rc = EINVAL;
+	if (i < n) {
+		err = errf("InsufficientParts", NULL,
+		    "ebox needs %u parts available to recover (has %u)",
+		    n, i);
 		goto out;
 	}
 
@@ -1641,38 +1667,65 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 	sss_combine_keyshares(ebox->e_rcv_key.b_data,
 	    (const sss_Keyshare *)shares, n);
 
-	rc = ebox_decrypt_recovery(ebox);
-	if (rc) {
-		rc = EBADF;
+	err = ebox_decrypt_recovery(ebox);
+	if (err) {
+		err = errf("RecoveryFailed", err, "ebox recovery failed");
 		goto out;
 	}
 
 	buf = sshbuf_from(ebox->e_rcv_plain.b_data, ebox->e_rcv_plain.b_len);
 	VERIFY(buf != NULL);
 
-	if ((rc = sshbuf_get_u8(buf, &tag)))
+	if ((rc = sshbuf_get_u8(buf, &tag))) {
+		err = ssherrf("sshbuf_get_u8", rc);
 		goto out;
+	}
 	if (tag == EBOX_RECOV_TOKEN) {
 		rc = sshbuf_get_string8(buf, &ebox->e_token, &ebox->e_tokenlen);
-		if (rc)
+		if (rc) {
+			err = ssherrf("sshbuf_get_string8", rc);
 			goto out;
-		if ((rc = sshbuf_get_u8(buf, &tag)))
+		}
+		if ((rc = sshbuf_get_u8(buf, &tag))) {
+			err = ssherrf("sshbuf_get_u8", rc);
 			goto out;
+		}
 	}
 	if (tag != EBOX_RECOV_KEY) {
-		rc = EBADF;
+		err = errf("RecoveryFailed", errf("InvalidTagError", NULL,
+		    "Invalid or unsupported recovery data tag: 0x%02x", tag),
+		    "ebox recovery failed");
 		goto out;
 	}
 	rc = sshbuf_get_string8(buf, &ebox->e_key, &ebox->e_keylen);
-	if (rc)
+	if (rc) {
+		err = ssherrf("sshbuf_get_string8", rc);
 		goto out;
+	}
+
+	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
+		if (part->ep_share != NULL) {
+			explicit_bzero(part->ep_share, part->ep_sharelen);
+			free(part->ep_share);
+		}
+		if (!piv_box_sealed(part->ep_box)) {
+			explicit_bzero(part->ep_box->pdb_plain.b_data,
+			    part->ep_box->pdb_plain.b_size);
+			free(part->ep_box->pdb_plain.b_data);
+			part->ep_box->pdb_plain.b_data = NULL;
+			part->ep_box->pdb_plain.b_len = 0;
+			part->ep_box->pdb_plain.b_size = 0;
+		}
+	}
+
+	err = NULL;
 
 out:
 	sshbuf_free(buf);
 	for (j = 0; j < m; ++j)
 		explicit_bzero(&shares[j], sizeof (sss_Keyshare));
 	free(shares);
-	return (rc);
+	return (err);
 }
 
 errf_t *
@@ -1942,6 +1995,55 @@ out:
 	return (rc);
 }
 
+uint
+ebox_challenge_id(const struct ebox_challenge *chal)
+{
+	return (chal->c_id);
+}
+
+enum ebox_chaltype
+ebox_challenge_type(const struct ebox_challenge *chal)
+{
+	return (chal->c_type);
+}
+
+const char *
+ebox_challenge_desc(const struct ebox_challenge *chal)
+{
+	return (chal->c_description);
+}
+
+const char *
+ebox_challenge_hostname(const struct ebox_challenge *chal)
+{
+	return (chal->c_hostname);
+}
+
+uint64_t
+ebox_challenge_ctime(const struct ebox_challenge *chal)
+{
+	return (chal->c_ctime);
+}
+
+const uint8_t *
+ebox_challenge_words(const struct ebox_challenge *chal, size_t *len)
+{
+	*len = sizeof (chal->c_words);
+	return (chal->c_words);
+}
+
+struct sshkey *
+ebox_challenge_destkey(const struct ebox_challenge *chal)
+{
+	return (chal->c_destkey);
+}
+
+struct piv_ecdh_box *
+ebox_challenge_box(const struct ebox_challenge *chal)
+{
+	return (chal->c_keybox);
+}
+
 errf_t *
 ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
     struct ebox_part **ppart)
@@ -1949,20 +2051,138 @@ ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
 	int rc = 0;
 	struct ebox_part *part;
 	struct sshbuf *buf = NULL;
+	boolean_t gotid = B_FALSE;
+	uint8_t tag, id;
+	errf_t *err;
+	uint8_t *keypiece = NULL;
+	size_t klen;
 
 	VERIFY(config->ec_chalkey != NULL);
-	rc = piv_box_open_offline(config->ec_chalkey, rbox);
-	if (rc)
+	if ((err = piv_box_open_offline(config->ec_chalkey, rbox)))
 		goto out;
-	rc = piv_box_take_datab(rbox, &buf);
-	if (rc)
+	if ((err = piv_box_take_datab(rbox, &buf)))
 		goto out;
 
+	while (sshbuf_len(buf) > 0) {
+		if ((rc = sshbuf_get_u8(buf, &tag))) {
+			err = ssherrf("sshbuf_get_u8", rc);
+			goto out;
+		}
+		switch ((enum resptag)tag) {
+		case RTAG_ID:
+			if ((rc = sshbuf_get_u8(buf, &id))) {
+				err = ssherrf("sshbuf_get_u8", rc);
+				goto out;
+			}
+			gotid = B_TRUE;
+			break;
+		case RTAG_KEYPIECE:
+			if ((rc = sshbuf_get_string8(buf, &keypiece, &klen))) {
+				err = ssherrf("sshbuf_get_string8", rc);
+				goto out;
+			}
+			break;
+		default:
+			/* For forwards compatibility, ignore unknown tags. */
+			break;
+		}
+	}
+
+	if (!gotid || keypiece == NULL) {
+		err = errf("InvalidDataError", NULL,
+		    "Challenge response data was missing compulsory fields");
+		goto out;
+	}
+
+	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
+		if (part->ep_id == id)
+			break;
+	}
+	if (part == NULL || part->ep_id != id) {
+		err = errf("InvalidDataError", NULL,
+		    "Challenge response refers to challenge ID that was not "
+		    "generated as part of this configuration");
+		goto out;
+	}
+	if (part->ep_share != NULL)
+		explicit_bzero(part->ep_share, part->ep_sharelen);
+	free(part->ep_share);
+	part->ep_sharelen = klen;
+	part->ep_share = keypiece;
+	*ppart = part;
+	keypiece = NULL;
+	err = NULL;
 
 out:
+	if (keypiece != NULL)
+		explicit_bzero(keypiece, klen);
+	free(keypiece);
 	piv_box_free(rbox);
 	sshbuf_free(buf);
-	return (rc);
+	return (err);
+}
+
+errf_t *
+sshbuf_put_ebox_challenge_response(struct sshbuf *dbuf,
+    const struct ebox_challenge *chal)
+{
+	struct sshbuf *buf;
+	errf_t *err;
+	int rc;
+	uint8_t *keypiece = NULL;
+	size_t klen;
+	struct piv_ecdh_box *box = NULL;
+
+	buf = sshbuf_new();
+	if (buf == NULL)
+		return (ERRF_NOMEM);
+
+	if ((rc = sshbuf_put_u8(buf, RTAG_ID)) ||
+	    (rc = sshbuf_put_u8(buf, chal->c_id))) {
+		err = ssherrf("sshbuf_put_u8", rc);
+		goto out;
+	}
+
+	if ((rc = sshbuf_put_u8(buf, RTAG_KEYPIECE))) {
+		err = ssherrf("sshbuf_put_u8", rc);
+		goto out;
+	}
+
+	if ((err = piv_box_take_data(chal->c_keybox, &keypiece, &klen)))
+		goto out;
+
+	if ((rc = sshbuf_put_string8(buf, keypiece, klen))) {
+		err = ssherrf("sshbuf_put_string8", rc);
+		goto out;
+	}
+
+	explicit_bzero(keypiece, klen);
+	free(keypiece);
+	keypiece = NULL;
+
+	box = piv_box_new();
+	if (box == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	if ((err = piv_box_set_datab(box, buf)))
+		goto out;
+	if ((err = piv_box_seal_offline(chal->c_destkey, box)))
+		goto out;
+
+	if ((err = sshbuf_put_piv_box(dbuf, box)))
+		goto out;
+
+	err = NULL;
+
+out:
+	sshbuf_free(buf);
+	if (keypiece != NULL)
+		explicit_bzero(keypiece, klen);
+	free(keypiece);
+	piv_box_free(box);
+	return (err);
 }
 
 void

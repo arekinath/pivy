@@ -4502,6 +4502,12 @@ piv_box_encsize(const struct piv_ecdh_box *box)
 	return (box->pdb_enc.b_len);
 }
 
+boolean_t
+piv_box_sealed(const struct piv_ecdh_box *box)
+{
+	return (box->pdb_plain.b_data == NULL);
+}
+
 const char *
 piv_box_cipher(const struct piv_ecdh_box *box)
 {

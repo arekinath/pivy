@@ -118,8 +118,6 @@ main(int argc, char *argv[])
 	if (err)
 		errfx(1, err, "sshbuf_put_ebox failed");
 
-	fprintf(stdout, "%s\n", sshbuf_dtob64(buf));
-
 	rbuf = sshbuf_fromb(buf);
 	err = sshbuf_get_ebox(rbuf, &ebox2);
 	if (err)
@@ -127,7 +125,10 @@ main(int argc, char *argv[])
 	econfig = ebox_next_config(ebox2, NULL);
 	econfig = ebox_next_config(ebox2, econfig);
 
+	sshbuf_free(rbuf);
+
 	const struct ebox_challenge *chals[2];
+	struct ebox_challenge *chal;
 
 	epart = ebox_config_next_part(econfig, NULL);
 	if ((err = ebox_gen_challenge(econfig, epart, "test challenge 1")))
@@ -139,11 +140,40 @@ main(int argc, char *argv[])
 	chals[1] = ebox_part_challenge(epart);
 
 	sshbuf_reset(buf);
-	err = sshbuf_put_ebox_challenge(buf, chals[0]);
-	if (err)
+	if ((err = sshbuf_put_ebox_challenge(buf, chals[0])))
 		errfx(1, err, "sshbuf_put_ebox_challenge failed");
 
-	fprintf(stdout, "%s\n", sshbuf_dtob64(buf));
+	if ((err = sshbuf_get_piv_box(buf, &box)))
+		errfx(1, err, "sshbuf_get_piv_box failed");
+
+	if ((err = piv_box_open_offline(k[0], box)))
+		errfx(1, err, "piv_box_open_offline failed");
+
+	if ((err = sshbuf_get_ebox_challenge(box, &chal)))
+		errfx(1, err, "sshbuf_get_ebox_challenge failed");
+
+	box = ebox_challenge_box(chal);
+	if ((err = piv_box_open_offline(k[0], box)))
+		errfx(1, err, "piv_box_open_offline failed");
+	sshbuf_reset(buf);
+	if ((err = sshbuf_put_ebox_challenge_response(buf, chal)))
+		errfx(1, err, "sshbuf_put_ebox_challenge_response failed");
+
+	if ((err = sshbuf_get_piv_box(buf, &box)))
+		errfx(1, err, "sshbuf_get_piv_box failed");
+
+	err = ebox_challenge_response(econfig, box, &epart);
+	if (err)
+		errfx(1, err, "ebox_challenge_response failed");
+
+	epart = ebox_config_next_part(econfig, epart);
+	box = ebox_part_box(epart);
+	if ((err = piv_box_open_offline(k[1], box)))
+		errfx(1, err, "piv_box_open_offline failed");
+
+	err = ebox_recover(ebox2, econfig);
+	if (err)
+		errfx(1, err, "ebox_recover failed");
 
 	/*box = ebox_part_box(epart);
 	err = piv_box_open_offline(pk, box);
@@ -151,12 +181,12 @@ main(int argc, char *argv[])
 		errfx(1, err, "piv_box_open_offline failed");
 	err = ebox_unlock(ebox2, econfig);
 	if (err)
-		errfx(1, err, "ebox_unlock failed");
+		errfx(1, err, "ebox_unlock failed");*/
 
 	key2 = ebox_key(ebox2, &keylen);
 	VERIFY(key2 != NULL);
 	VERIFY3U(sizeof (key), ==, keylen);
-	VERIFY0(bcmp(key2, key, keylen));*/
+	VERIFY0(bcmp(key2, key, keylen));
 
 	return (0);
 }

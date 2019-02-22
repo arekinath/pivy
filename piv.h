@@ -755,6 +755,7 @@ errf_t *piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey **tgt)
 const char *piv_box_cipher(const struct piv_ecdh_box *box);
 const char *piv_box_kdf(const struct piv_ecdh_box *box);
 size_t piv_box_encsize(const struct piv_ecdh_box *box);
+boolean_t piv_box_sealed(const struct piv_ecdh_box *box);
 
 void piv_box_set_guid(struct piv_ecdh_box *box, const uint8_t *guid,
     size_t len);
