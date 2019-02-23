@@ -187,7 +187,7 @@ SocketEntry *sockets = NULL;
 int max_fd = 0;
 
 const time_t card_probe_interval_nopin = 120;
-const time_t card_probe_interval_pin = 60;
+const time_t card_probe_interval_pin = 30;
 const uint card_probe_limit = 3;
 
 time_t card_probe_interval = card_probe_interval_nopin;
@@ -414,7 +414,7 @@ probe_card(void)
 		 * drop the PIN (so that transient glitches aren't so
 		 * inconvenient).
 		 */
-		if (card_probe_fails > 0)
+		if (card_probe_fails++ > 0)
 			drop_pin();
 		selk = NULL;
 		return;
@@ -426,6 +426,7 @@ probe_card(void)
 		/* Always drop PIN on a CAK failure. */
 		drop_pin();
 		selk = NULL;
+		card_probe_fails++;
 		return;
 	}
 	agent_piv_close(B_FALSE);
@@ -906,7 +907,7 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 		goto out;
 	}
 
-	err = piv_box_from_binary(sshbuf_ptr(boxbuf), sshbuf_len(boxbuf), &box);
+	err = sshbuf_get_piv_box(boxbuf, &box);
 	if (err)
 		goto out;
 
@@ -935,8 +936,10 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	newbox = piv_box_new();
 	VERIFY(newbox != NULL);
 
-	piv_box_set_guid(newbox, sshbuf_ptr(guid), GUID_LEN);
-	piv_box_set_slot(newbox, slotid);
+	if (sshbuf_len(guid) > 0) {
+		piv_box_set_guid(newbox, sshbuf_ptr(guid), GUID_LEN);
+		piv_box_set_slot(newbox, slotid);
+	}
 	VERIFY0(piv_box_set_data(newbox, secret, seclen));
 	if ((err = piv_box_seal_offline(partner, newbox)))
 		goto out;

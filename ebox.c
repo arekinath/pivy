@@ -171,6 +171,14 @@ enum ebox_part_tag {
     errf("NotSupportedError", cause, \
     "ebox is not supported")
 
+#define	chalderrf(cause) \
+    errf("InvalidDataError", cause, \
+    "ebox challenge contained invalid or corrupted data")
+
+#define	chalverrf(cause) \
+    errf("NotSupportedError", cause, \
+    "ebox challenge is not supported")
+
 struct ebox_tpl *
 ebox_tpl_alloc(void)
 {
@@ -1355,13 +1363,18 @@ ebox_decrypt_recovery(struct ebox *box)
 	size_t ivlen, authlen, blocksz, keylen;
 	size_t plainlen, padding;
 	size_t enclen, reallen;
-	uint8_t *iv, *enc, *plain, *key;
+	uint8_t *iv, *enc, *plain = NULL, *key;
 	size_t i;
-	int rc = 0;
+	int rc;
+	errf_t *err;
 
 	cipher = cipher_by_name(box->e_rcv_cipher);
-	if (cipher == NULL)
-		return (ENOTSUP);
+	if (cipher == NULL) {
+		err = errf("BadAlgorithmError", NULL,
+		    "recovery box uses cipher '%s' which is not supported",
+		    box->e_rcv_cipher);
+		goto out;
+	}
 	ivlen = cipher_ivlen(cipher);
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
@@ -1369,41 +1382,77 @@ ebox_decrypt_recovery(struct ebox *box)
 
 	iv = box->e_rcv_iv.b_data;
 	VERIFY(iv != NULL);
-	VERIFY3U(box->e_rcv_iv.b_len, >=, ivlen);
+	if (box->e_rcv_iv.b_len < ivlen) {
+		err = errf("LengthError", NULL, "IV length (%d) is not "
+		    "appropriate for cipher '%s'", box->e_rcv_iv.b_len,
+		    box->e_rcv_cipher);
+		goto out;
+	}
 
 	key = box->e_rcv_key.b_data;
 	VERIFY(key != NULL);
-	VERIFY3U(box->e_rcv_key.b_len, >=, keylen);
+	if (box->e_rcv_key.b_len < keylen) {
+		err = errf("LengthError", NULL, "Key length (%d) is too "
+		    "short for cipher '%s'", box->e_rcv_key.b_len,
+		    box->e_rcv_cipher);
+		goto out;
+	}
 
 	enc = box->e_rcv_enc.b_data;
 	VERIFY(enc != NULL);
 	enclen = box->e_rcv_enc.b_len;
-	VERIFY3U(enclen, >=, blocksz + authlen);
+	if (enclen < blocksz + authlen) {
+		err = errf("LengthError", NULL, "Ciphertext length is too "
+		    "short for cipher '%s'", box->e_rcv_cipher);
+		goto out;
+	}
 
 	plainlen = enclen - authlen;
 	plain = malloc(plainlen);
-	VERIFY(plain != NULL);
+	if (plain == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 
-	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
+	if ((rc = cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0))) {
+		err = ssherrf("cipher_init", rc);
+		goto out;
+	}
 	rc = cipher_crypt(cctx, 0, plain, enc, enclen - authlen, 0, authlen);
 	cipher_free(cctx);
 	if (rc) {
-		explicit_bzero(plain, plainlen);
-		free(plain);
-		return (rc);
+		err = ssherrf("cipher_crypt", rc);
+		goto out;
 	}
 
 	/* Strip off the pkcs#7 padding and verify it. */
 	padding = plain[plainlen - 1];
-	VERIFY3U(padding, <=, blocksz);
-	VERIFY3U(padding, >, 0);
+	if (padding > blocksz || padding <= 0) {
+		err = errf("InvalidPadding", NULL,
+		    "recovery box padding was invalid");
+		goto out;
+	}
 	reallen = plainlen - padding;
-	for (i = reallen; i < plainlen; ++i)
-		VERIFY3U(plain[i], ==, padding);
+	for (i = reallen; i < plainlen; ++i) {
+		if (plain[i] != padding) {
+			err = errf("InvalidPadding", NULL,
+			    "recovery box padding was inconsistent");
+			goto out;
+		}
+	}
 
 	explicit_bzero(&plain[reallen], padding);
 	box->e_rcv_plain.b_data = plain;
 	box->e_rcv_plain.b_len = reallen;
+
+	err = ERRF_OK;
+	plain = NULL;
+
+out:
+	if (plain != NULL)
+		explicit_bzero(plain, plainlen);
+	free(plain);
+	return (err);
 }
 
 static errf_t *
@@ -1460,6 +1509,8 @@ ebox_encrypt_recovery(struct ebox *box)
 
 	box->e_rcv_enc.b_data = enc;
 	box->e_rcv_enc.b_len = enclen;
+
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -1604,7 +1655,8 @@ ebox_unlock(struct ebox *ebox, struct ebox_config *config)
 		return (piv_box_take_data(box, &ebox->e_key, &ebox->e_keylen));
 	}
 
-	return (EINVAL);
+	return (errf("InsufficientParts", NULL, "ebox_unlock requires at "
+	    "least one part box to be unlocked"));
 }
 
 errf_t *
@@ -1885,99 +1937,162 @@ errf_t *
 sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
     struct ebox_challenge **pchal)
 {
-	int rc = 0;
+	int rc;
+	errf_t *err;
 	struct sshbuf *buf = NULL, *kbuf = NULL;
 	struct ebox_challenge *chal;
 	uint8_t type;
 	struct sshkey *k;
-	size_t len;
 
 	VERIFY0(piv_box_take_datab(box, &buf));
 
 	chal = calloc(1, sizeof (struct ebox_challenge));
 	VERIFY(chal != NULL);
 
-	if ((rc = sshbuf_get_u8(buf, &chal->c_version)))
+	if ((rc = sshbuf_get_u8(buf, &chal->c_version))) {
+		err = ssherrf("sshbuf_get_u8", rc);
 		goto out;
+	}
 	if (chal->c_version != 1) {
-		fprintf(stderr, "error: invalid challenge version: v%d "
-		    "(only v1 is supported)\n", (int)chal->c_version);
-		rc = ENOTSUP;
+		err = chalverrf(errf("VersionError", NULL,
+		    "unsupported challenge version: v%d",
+		    (int)chal->c_version));
 		goto out;
 	}
 
-	if ((rc = sshbuf_get_u8(buf, &type)))
+	if ((rc = sshbuf_get_u8(buf, &type))) {
+		err = ssherrf("sshbuf_get_u8", rc);
 		goto out;
+	}
 	chal->c_type = (enum ebox_chaltype)type;
 
-	if ((rc = sshbuf_get_u8(buf, &chal->c_id)))
+	if ((rc = sshbuf_get_u8(buf, &chal->c_id))) {
+		err = ssherrf("sshbuf_get_u8", rc);
 		goto out;
+	}
 
 	chal->c_destkey = (k = sshkey_new(KEY_ECDSA));
+	if (k == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY(k->ecdsa != NULL);
-	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
-	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa))))
+	if (k->ecdsa == NULL) {
+		err = ERRF_NOMEM;
 		goto out;
+	}
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa))) {
+		err = ssherrf("sshbuf_get_eckey8", rc);
+		goto out;
+	}
+	if ((rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa)))) {
+		err = ssherrf("sshkey_ec_validate_public", rc);
+		goto out;
+	}
 
 	chal->c_keybox = piv_box_new();
-	VERIFY(chal->c_keybox != NULL);
+	if (chal->c_keybox == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 
 	chal->c_keybox->pdb_cipher = strdup(box->pdb_cipher);
 	chal->c_keybox->pdb_kdf = strdup(box->pdb_kdf);
 	chal->c_keybox->pdb_free_str = B_TRUE;
+	if (chal->c_keybox->pdb_cipher == NULL ||
+	    chal->c_keybox->pdb_kdf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 
-	VERIFY0(sshkey_demote(box->pdb_pub, &chal->c_keybox->pdb_pub));
+	rc = sshkey_demote(box->pdb_pub, &chal->c_keybox->pdb_pub);
+	if (rc) {
+		err = ssherrf("sshkey_demote", rc);
+		goto out;
+	}
 
 	chal->c_keybox->pdb_ephem_pub = (k = sshkey_new(KEY_ECDSA));
+	if (k == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
 	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY(k->ecdsa != NULL);
-	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa)) ||
-	    (rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa))))
+	if (k->ecdsa == NULL) {
+		err = ERRF_NOMEM;
 		goto out;
+	}
+	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa))) {
+		err = ssherrf("sshbuf_get_eckey8", rc);
+		goto out;
+	}
+	if ((rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa)))) {
+		err = ssherrf("sshkey_ec_validate_public", rc);
+		goto out;
+	}
 
 	if ((rc = sshbuf_get_string8(buf, &chal->c_keybox->pdb_iv.b_data,
-	    &chal->c_keybox->pdb_iv.b_size)))
+	    &chal->c_keybox->pdb_iv.b_size))) {
+		err = ssherrf("sshbuf_get_string8", rc);
 		goto out;
+	}
 	chal->c_keybox->pdb_iv.b_len = chal->c_keybox->pdb_iv.b_size;
 	if ((rc = sshbuf_get_string8(buf, &chal->c_keybox->pdb_enc.b_data,
-	    &chal->c_keybox->pdb_enc.b_size)))
+	    &chal->c_keybox->pdb_enc.b_size))) {
+		err = ssherrf("sshbuf_get_string8", rc);
 		goto out;
+	}
 	chal->c_keybox->pdb_enc.b_len = chal->c_keybox->pdb_enc.b_size;
 
 	kbuf = sshbuf_new();
-	VERIFY(kbuf != NULL);
+	if (kbuf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 
 	while (sshbuf_len(buf) > 0) {
 		uint8_t tag;
 		sshbuf_reset(kbuf);
-		if ((rc = sshbuf_get_u8(buf, &tag)) ||
-		    (rc = sshbuf_get_stringb8(buf, kbuf)))
+		if ((rc = sshbuf_get_u8(buf, &tag))) {
+			err = ssherrf("sshbuf_get_u8", rc);
 			goto out;
-		len = sshbuf_len(kbuf);
+		}
+		if ((rc = sshbuf_get_stringb8(buf, kbuf))) {
+			err = ssherrf("sshbuf_get_stringb8", rc);
+			goto out;
+		}
 		switch (tag) {
 		case CTAG_HOSTNAME:
 			chal->c_hostname = sshbuf_dup_string(kbuf);
-			VERIFY(chal->c_hostname != NULL);
+			if (chal->c_hostname == NULL) {
+				err = ERRF_NOMEM;
+				goto out;
+			}
 			break;
 		case CTAG_CTIME:
-			if ((rc = sshbuf_get_u64(kbuf, &chal->c_ctime)))
+			if ((rc = sshbuf_get_u64(kbuf, &chal->c_ctime))) {
+				err = ssherrf("sshbuf_get_u64", rc);
 				goto out;
+			}
 			break;
 		case CTAG_DESCRIPTION:
 			chal->c_description = sshbuf_dup_string(kbuf);
-			VERIFY(chal->c_description != NULL);
+			if (chal->c_description == NULL) {
+				err = ERRF_NOMEM;
+				goto out;
+			}
 			break;
 		case CTAG_WORDS:
 			if ((rc = sshbuf_get_u8(kbuf, &chal->c_words[0])) ||
 			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[1])) ||
 			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[2])) ||
-			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[3])))
+			    (rc = sshbuf_get_u8(kbuf, &chal->c_words[3]))) {
+				err = ssherrf("sshbuf_get_u8", rc);
 				goto out;
+			}
 			break;
 		default:
 			/* do nothing */
@@ -1987,12 +2102,13 @@ sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
 
 	*pchal = chal;
 	chal = NULL;
+	err = NULL;
 
 out:
 	sshbuf_free(buf);
 	sshbuf_free(kbuf);
 	ebox_challenge_free(chal);
-	return (rc);
+	return (err);
 }
 
 uint

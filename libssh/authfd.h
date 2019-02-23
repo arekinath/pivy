@@ -16,6 +16,8 @@
 #ifndef AUTHFD_H
 #define AUTHFD_H
 
+#define SSH_AUTHSOCKET_ENV_NAME "SSH_AUTH_SOCK"
+
 /* List of identities returned by ssh_fetch_identitylist() */
 struct ssh_identitylist {
 	size_t nkeys;
@@ -29,8 +31,12 @@ struct ssh_x509chain {
 	size_t *certlen;
 };
 
+int	ssh_get_authentication_socket(int *fdp);
+
 int	ssh_fetch_identitylist(int sock, struct ssh_identitylist **idlp);
 void	ssh_free_identitylist(struct ssh_identitylist *idl);
+
+int	ssh_request_reply(int sock, struct sshbuf *request, struct sshbuf *reply);
 
 int	ssh_agent_sign(int sock, const struct sshkey *key,
 	    u_char **sigp, size_t *lenp,
