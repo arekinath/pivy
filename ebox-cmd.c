@@ -36,6 +36,7 @@
 #include <sys/fork.h>
 #endif
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 #include "libssh/sshkey.h"
 #include "libssh/sshbuf.h"
@@ -63,14 +64,26 @@
 
 static int ebox_authfd;
 static SCARDCONTEXT ebox_ctx;
+static boolean_t ebox_ctx_init = B_FALSE;
 static const char *ebox_pin;
 static uint ebox_min_retries = 1;
 
 enum ebox_exit_status {
 	EXIT_OK = 0,
+	EXIT_USAGE = 1,
+	EXIT_ERROR = 2,
+	EXIT_INTERACTIVE = 3,
 	EXIT_PIN = 4,
 	EXIT_PIN_LOCKED = 5,
 };
+
+static boolean_t ebox_batch = B_FALSE;
+static boolean_t ebox_raw_in = B_FALSE;
+static boolean_t ebox_raw_out = B_FALSE;
+static struct ebox_tpl *ebox_tpl;
+
+#define	TPL_DEFAULT_PATH	"%s/.ebox/tpl/%s"
+#define	TPL_MAX_SIZE		4096
 
 #ifndef LINT
 #define pcscerrf(call, rv)	\
@@ -307,6 +320,7 @@ static errf_t *
 local_unlock(struct piv_ecdh_box *box)
 {
 	errf_t *err, *agerr = NULL;
+	int rc;
 	struct piv_slot *slot;
 	struct piv_token *tokens = NULL, *token;
 
@@ -321,6 +335,15 @@ local_unlock(struct piv_ecdh_box *box)
 			return (agerr);
 		return (errf("NoGUIDSlot", NULL, "box does not have GUID "
 		    "and slot information, can't unlock with local hardware"));
+	}
+
+	if (!ebox_ctx_init) {
+		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
+		    &ebox_ctx);
+		if (rc != SCARD_S_SUCCESS) {
+			errfx(EXIT_ERROR, pcscerrf("SCardEstablishContext", rc),
+			    "failed to initialise libpcsc");
+		}
 	}
 
 	err = piv_find(ebox_ctx, piv_box_guid(box), GUID_LEN, &tokens);
@@ -421,24 +444,500 @@ read_b64_box(struct piv_ecdh_box **outbox)
 	*outbox = box;
 }
 
+static errf_t *
+parse_hex(const char *str, uint8_t **out, uint *outlen)
+{
+	const uint len = strlen(str);
+	uint8_t *data = calloc(1, len / 2 + 1);
+	uint idx = 0;
+	uint shift = 4;
+	uint i;
+	for (i = 0; i < len; ++i) {
+		const char c = str[i];
+		boolean_t skip = B_FALSE;
+		if (c >= '0' && c <= '9') {
+			data[idx] |= (c - '0') << shift;
+		} else if (c >= 'a' && c <= 'f') {
+			data[idx] |= (c - 'a' + 0xa) << shift;
+		} else if (c >= 'A' && c <= 'F') {
+			data[idx] |= (c - 'A' + 0xA) << shift;
+		} else if (c == ':' || c == ' ' || c == '\t' ||
+		    c == '\n' || c == '\r') {
+			skip = B_TRUE;
+		} else {
+			free(data);
+			return (errf("HexParseError", NULL,
+			    "invalid hex digit: '%c'", c));
+		}
+		if (skip == B_FALSE) {
+			if (shift == 4) {
+				shift = 0;
+			} else if (shift == 0) {
+				++idx;
+				shift = 4;
+			}
+		}
+	}
+	if (shift == 0) {
+		free(data);
+		return (errf("HexParseError", NULL,
+		    "odd number of digits (incomplete)"));
+	}
+	*outlen = idx;
+	*out = data;
+	return (ERRF_OK);
+}
+
+static errf_t *
+parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
+    uint *idxp)
+{
+	uint i = *idxp;
+	struct ebox_tpl_part *part = NULL;
+	uint8_t *guid = NULL;
+	struct sshkey *pubkey = NULL;
+	struct sshkey *cak = NULL;
+	const char *name = NULL;
+	size_t len, guidlen;
+	errf_t *error = NULL;
+	unsigned long int parsed;
+	char *p;
+
+	for (; i < argc; ++i) {
+		if (strcmp(argv[i], "part") == 0 ||
+		    strcmp(argv[i], "primary") == 0 ||
+		    strcmp(argv[i], "recovery") == 0 ||
+		    strcmp(argv[i], "add-primary") == 0 ||
+		    strcmp(argv[i], "remove-primary") == 0 ||
+		    strcmp(argv[i], "add-recovery") == 0 ||
+		    strcmp(argv[i], "remove-recovery") == 0) {
+			break;
+		}
+		if (strcmp(argv[i], "guid") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'guid' keyword requires argument");
+				goto out;
+			}
+			error = parse_hex(argv[i], &guid, &guidlen);
+			if (error) {
+				error = errf("SyntaxError", error,
+				    "error parsing argument to 'guid' keyword");
+				goto out;
+			}
+			if (guidlen != GUID_LEN) {
+				error = errf("SyntaxError", errf("LengthError",
+				    NULL, "guid is not the correct length: %u",
+				    guidlen), "error parsing argument to "
+				    "'guid' keyword");
+				goto out;
+			}
+		} else if (strcmp(argv[i], "key") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'key' keyword requires argument");
+				goto out;
+			}
+		} else if (strcmp(argv[i], "cak") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'cak' keyword requires argument");
+				goto out;
+			}
+		} else if (strcmp(argv[i], "local-guid") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'local-guid' keyword requires argument");
+				goto out;
+			}
+			error = parse_hex(argv[i], &guid, &guidlen);
+			if (error) {
+				error = errf("SyntaxError", error,
+				    "error parsing argument to 'local-guid' "
+				    "keyword");
+				goto out;
+			}
+			if (guidlen > GUID_LEN) {
+				error = errf("SyntaxError", errf("LengthError",
+				    NULL, "guid is too long: %u bytes",
+				    guidlen), "error parsing argument to "
+				    "'local-guid' keyword");
+				goto out;
+			}
+		} else {
+			error = errf("SyntaxError", NULL,
+			    "unexpected configuration keyword '%s'", argv[i]);
+			goto out;
+		}
+	}
+
+	if (guid != NULL && pubkey != NULL) {
+		part = ebox_tpl_part_alloc(guid, guidlen, pubkey);
+		if (part == NULL)
+			return (ERRF_NOMEM);
+		ebox_tpl_config_add_part(config, part);
+
+		if (name != NULL)
+			ebox_tpl_part_set_name(part, name);
+		if (cak != NULL)
+			ebox_tpl_part_set_cak(part, cak);
+	}
+
+out:
+	*idxp = i;
+	sshkey_free(pubkey);
+	sshkey_free(cak);
+	free(guid);
+	return (error);
+}
+
+static errf_t *
+parse_keywords_primary(struct ebox_tpl_config *config, int argc, char *argv[],
+    uint *idxp)
+{
+	uint i = *idxp;
+	struct ebox_tpl_part *part = NULL;
+	uint8_t guid[GUID_LEN];
+	boolean_t haveguid = B_FALSE;
+	struct sshkey *pubkey = NULL;
+	struct sshkey *cak = NULL;
+	const char *name = NULL;
+	errf_t *error = NULL;
+
+	for (; i < argc; ++i) {
+		if (strcmp(argv[i], "primary") || strcmp(argv[i], "recovery")) {
+			break;
+		}
+		if (strcmp(argv[i], "guid") == 0) {
+
+		} else if (strcmp(argv[i], "slot") == 0) {
+
+		} else if (strcmp(argv[i], "key") == 0) {
+
+		} else if (strcmp(argv[i], "cak") == 0) {
+
+		} else if (strcmp(argv[i], "local-guid") == 0) {
+
+		} else {
+			error = errf("SyntaxError", NULL,
+			    "unexpected configuration keyword '%s'", argv[i]);
+			goto out;
+		}
+		if (haveguid && pubkey) {
+			part = ebox_tpl_part_alloc(guid, sizeof (guid), pubkey);
+		}
+	}
+
+	if (haveguid && pubkey) {
+		part = ebox_tpl_part_alloc(guid, sizeof (guid), pubkey);
+	}
+
+out:
+	*idxp = i;
+	sshkey_free(pubkey);
+	ebox_tpl_part_free(part);
+	return (error);
+}
+
+static errf_t *
+parse_keywords_recovery(struct ebox_tpl_config *config, int argc, char *argv[],
+    uint *idxp)
+{
+	uint i = *idxp;
+	errf_t *error = NULL;
+
+out:
+	*idxp = i;
+	return (error);
+}
+
+static errf_t *
+cmd_tpl_create(int argc, char *argv[])
+{
+	uint i;
+	struct ebox_tpl *tpl;
+	struct ebox_tpl_config *config = NULL;
+	errf_t *error = NULL;
+
+	tpl = ebox_tpl_alloc();
+
+	for (i = 1; i < argc; ++i) {
+		if (strcmp(argv[i], "primary") == 0) {
+			config = ebox_tpl_config_alloc(EBOX_PRIMARY);
+			ebox_tpl_add_config(tpl, config);
+			error = parse_keywords_primary(config, argc, argv, &i);
+			if (error)
+				return (error);
+		} else if (strcmp(argv[1], "recovery") == 0) {
+			config = ebox_tpl_config_alloc(EBOX_RECOVERY);
+			ebox_tpl_add_config(tpl, config);
+			error = parse_keywords_recovery(config, argc, argv, &i);
+			if (error)
+				return (error);
+		} else {
+			return (errf("SyntaxError", NULL,
+			    "unexpected configuration keyword '%s'", argv[i]));
+		}
+	}
+
+out:
+	ebox_tpl_free(tpl);
+
+}
+
+static errf_t *
+cmd_tpl_edit(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static errf_t *
+cmd_tpl_show(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static errf_t *
+cmd_key_generate(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static errf_t *
+cmd_key_lock(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static errf_t *
+cmd_key_unlock(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static errf_t *
+cmd_key_relock(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static errf_t *
+cmd_stream_encrypt(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static errf_t *
+cmd_stream_decrypt(int argc, char *argv[])
+{
+	return (errf("NotImplemented", NULL,
+	    "Function %s has not yet been implemented", __func__));
+}
+
+static void
+usage(void)
+{
+	exit(EXIT_USAGE);
+}
+
+static void
+read_tpl_file(const char *tpl)
+{
+	errf_t *error;
+	FILE *tplf;
+	struct stat st;
+	char *buf;
+	struct sshbuf *sbuf;
+	size_t len;
+	int rc;
+
+	tplf = fopen(tpl, "r");
+	if (tplf == NULL) {
+		err(EXIT_ERROR, "failed to open template file '%s' for reading",
+		    tpl);
+	}
+	bzero(&st, sizeof (st));
+	if (fstat(fileno(tplf), &st))
+		err(EXIT_ERROR, "failed to get size of '%s'", tpl);
+	if (!S_ISREG(st.st_mode))
+		err(EXIT_ERROR, "'%s' is not a regular file", tpl);
+	if (st.st_size > TPL_MAX_SIZE)
+		err(EXIT_ERROR, "'%s' is too large for an ebox template", tpl);
+	buf = malloc(st.st_size);
+	if (buf == NULL) {
+		err(EXIT_ERROR, "out of memory while allocating template "
+		    "read buffer");
+	}
+	len = fread(buf, 1, st.st_size, tplf);
+	if (len < st.st_size && feof(tplf)) {
+		errx(EXIT_ERROR, "short read while processing template '%s'",
+		    tpl);
+	}
+	if (ferror(tplf))
+		err(EXIT_ERROR, "error reading from template file '%s'", tpl);
+	if (fclose(tplf))
+		err(EXIT_ERROR, "error closing file '%s'", tpl);
+	sbuf = sshbuf_new();
+	if (sbuf == NULL) {
+		err(EXIT_ERROR, "out of memory while allocating template "
+		    "processing buffer");
+	}
+	if ((rc = sshbuf_b64tod(sbuf, buf))) {
+		error = ssherrf("sshbuf_b64tod", rc);
+		errfx(EXIT_ERROR, error, "failed to parse contents of '%s' as "
+		    "base64-encoded data", tpl);
+	}
+	if ((error = sshbuf_get_ebox_tpl(sbuf, &ebox_tpl))) {
+		errfx(EXIT_ERROR, error, "failed to parse contents of '%s' as "
+		    "a base64-encoded ebox template", tpl);
+	}
+	sshbuf_free(sbuf);
+	free(buf);
+}
+
 int
 main(int argc, char *argv[])
 {
-	struct piv_ecdh_box *box;
-	errf_t *err;
-	int rc;
+	const char *optstring = "blirRP:i:o:f:";
+	const char *type, *op, *tplname;
+	int c;
+	char tpl[PATH_MAX] = { 0 };
+	errf_t *error = NULL;
 
-	read_b64_box(&box);
+	if (argc < 1) {
+		warnx("type and operation required");
+		usage();
+		return (EXIT_USAGE);
+	}
+	type = argv[1];
+	if (argc < 2) {
+		warnx("operation required");
+		usage();
+		return (EXIT_USAGE);
+	}
+	op = argv[2];
 
-	rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ebox_ctx);
-	if (rc != SCARD_S_SUCCESS) {
-		errfx(1, pcscerrf("SCardEstablishContext", rc),
-		    "failed to initialise libpcsc");
+	argc -= 2;
+	argv += 2;
+
+	while ((c = getopt(argc, argv, optstring)) != -1) {
+		switch (c) {
+		case 'b':
+			ebox_batch = B_TRUE;
+			break;
+		case 'r':
+			ebox_raw_in = B_TRUE;
+			break;
+		case 'R':
+			ebox_raw_out = B_TRUE;
+			break;
+		case 'f':
+			strlcpy(tpl, optarg, sizeof (tpl));
+			break;
+		default:
+			usage();
+			return (EXIT_USAGE);
+		}
 	}
 
-	err = local_unlock(box);
-	if (err) {
-		errfx(1, err, "failed to unlock box");
+	argc -= optind;
+	argv += optind;
+
+	if (strcmp(type, "tpl") == 0 || strcmp(type, "template") == 0) {
+		if (strcmp(op, "show") == 0) {
+			error = cmd_tpl_show(argc, argv);
+			goto out;
+		}
+
+	} else if (strcmp(type, "key") == 0) {
+		if (strcmp(op, "unlock") == 0) {
+			error = cmd_key_unlock(argc, argv);
+			goto out;
+		}
+
+	} else if (strcmp(type, "stream") == 0) {
+		if (strcmp(op, "decrypt") == 0) {
+			error = cmd_stream_decrypt(argc, argv);
+			goto out;
+		}
+
 	}
+
+	if (tpl[0] == '\0') {
+		const char *home;
+		if (argc < 1) {
+			warnx("template name or path required");
+			usage();
+		}
+		tplname = argv[0];
+		home = getenv("HOME");
+		if (home == NULL) {
+			errx(EXIT_USAGE, "environment variable HOME not set, "
+			    "must use -f to specify full path to template");
+		}
+		snprintf(tpl, sizeof (tpl), TPL_DEFAULT_PATH,
+		    home, tplname);
+	}
+
+	if (strcmp(type, "tpl") == 0 || strcmp(type, "template") == 0) {
+
+		if (strcmp(op, "create") == 0) {
+			error = cmd_tpl_create(argc, argv);
+			goto out;
+
+		} else if (strcmp(op, "edit") == 0) {
+			read_tpl_file(tpl);
+			error = cmd_tpl_edit(argc, argv);
+			goto out;
+		}
+
+	} else if (strcmp(type, "key") == 0) {
+
+		if (strcmp(op, "generate") == 0) {
+			read_tpl_file(tpl);
+			error = cmd_key_generate(argc, argv);
+			goto out;
+
+		} else if (strcmp(op, "lock") == 0) {
+			read_tpl_file(tpl);
+			error = cmd_key_lock(argc, argv);
+			goto out;
+
+		} else if (strcmp(op, "unlock") == 0) {
+			error = cmd_key_unlock(argc, argv);
+			goto out;
+
+		} else if (strcmp(op, "relock") == 0) {
+			read_tpl_file(tpl);
+			error = cmd_key_relock(argc, argv);
+			goto out;
+		}
+
+	} else if (strcmp(type, "stream") == 0) {
+
+		if (strcmp(op, "decrypt") == 0) {
+			error = cmd_stream_decrypt(argc, argv);
+			goto out;
+
+		} else if (strcmp(op, "encrypt") == 0) {
+			read_tpl_file(tpl);
+			error = cmd_stream_encrypt(argc, argv);
+			goto out;
+		}
+	}
+	warnx("unknown operation: '%s %s'", type, op);
+	usage();
+	return (EXIT_USAGE);
+
+out:
+	if (error)
+		errfx(EXIT_ERROR, error, "'%s %s' command failed", type, op);
 	return (0);
 }
