@@ -91,6 +91,8 @@ static struct ebox_tpl *ebox_tpl;
     rv, pcsc_stringify_error(rv))
 #endif
 
+extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
+
 static char *
 piv_token_shortid(struct piv_token *pk)
 {
@@ -445,13 +447,13 @@ read_b64_box(struct piv_ecdh_box **outbox)
 }
 
 static errf_t *
-parse_hex(const char *str, uint8_t **out, uint *outlen)
+parse_hex(const char *str, uint8_t **out, size_t *outlen)
 {
-	const uint len = strlen(str);
+	const size_t len = strlen(str);
 	uint8_t *data = calloc(1, len / 2 + 1);
-	uint idx = 0;
-	uint shift = 4;
-	uint i;
+	size_t idx = 0;
+	size_t shift = 4;
+	size_t i;
 	for (i = 0; i < len; ++i) {
 		const char c = str[i];
 		boolean_t skip = B_FALSE;
@@ -498,10 +500,12 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 	struct sshkey *pubkey = NULL;
 	struct sshkey *cak = NULL;
 	const char *name = NULL;
-	size_t len, guidlen;
+	size_t guidlen;
 	errf_t *error = NULL;
-	unsigned long int parsed;
+	int rc;
 	char *p;
+	struct piv_token *token;
+	struct piv_slot *slot;
 
 	for (; i < argc; ++i) {
 		if (strcmp(argv[i], "part") == 0 ||
@@ -510,7 +514,9 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 		    strcmp(argv[i], "add-primary") == 0 ||
 		    strcmp(argv[i], "remove-primary") == 0 ||
 		    strcmp(argv[i], "add-recovery") == 0 ||
-		    strcmp(argv[i], "remove-recovery") == 0) {
+		    strcmp(argv[i], "remove-recovery") == 0 ||
+		    strcmp(argv[i], "require") == 0) {
+			--i;
 			break;
 		}
 		if (strcmp(argv[i], "guid") == 0) {
@@ -532,16 +538,61 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 				    "'guid' keyword");
 				goto out;
 			}
+		} else if (strcmp(argv[i], "name") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'name' keyword requires argument");
+				goto out;
+			}
+			name = argv[i];
 		} else if (strcmp(argv[i], "key") == 0) {
 			if (++i > argc) {
 				error = errf("SyntaxError", NULL,
 				    "'key' keyword requires argument");
 				goto out;
 			}
+			pubkey = sshkey_new(KEY_ECDSA);
+			if (pubkey == NULL) {
+				error = ERRF_NOMEM;
+				goto out;
+			}
+			p = argv[i];
+			rc = sshkey_read(pubkey, &p);
+			if (rc) {
+				error = errf("SyntaxError", ssherrf(
+				    "sshkey_read", rc), "error parsing "
+				    "argument to 'key' keyword");
+				goto out;
+			}
+			if (*p != '\0') {
+				error = errf("SyntaxError", NULL,
+				    "argument to 'key' keyword has trailing "
+				    "garbage");
+				goto out;
+			}
 		} else if (strcmp(argv[i], "cak") == 0) {
 			if (++i > argc) {
 				error = errf("SyntaxError", NULL,
 				    "'cak' keyword requires argument");
+				goto out;
+			}
+			cak = sshkey_new(KEY_UNSPEC);
+			if (cak == NULL) {
+				error = ERRF_NOMEM;
+				goto out;
+			}
+			p = argv[i];
+			rc = sshkey_read(cak, &p);
+			if (rc) {
+				error = errf("SyntaxError", ssherrf(
+				    "sshkey_read", rc), "error parsing "
+				    "argument to 'cak' keyword");
+				goto out;
+			}
+			if (*p != '\0') {
+				error = errf("SyntaxError", NULL,
+				    "argument to 'cak' keyword has trailing "
+				    "garbage");
 				goto out;
 			}
 		} else if (strcmp(argv[i], "local-guid") == 0) {
@@ -564,6 +615,51 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 				    "'local-guid' keyword");
 				goto out;
 			}
+			if (!ebox_ctx_init) {
+				rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM,
+				    NULL, NULL, &ebox_ctx);
+				if (rc != SCARD_S_SUCCESS) {
+					errfx(EXIT_ERROR, pcscerrf(
+					    "SCardEstablishContext", rc),
+					    "failed to initialise libpcsc");
+				}
+			}
+			error = piv_find(ebox_ctx, guid, guidlen, &token);
+			if (error) {
+				error = errf("LocalGUIDError", error,
+				    "failed to resolve local-guid argument "
+				    "'%s'", argv[i]);
+				goto out;
+			}
+			if ((error = piv_txn_begin(token)))
+				goto out;
+			if ((error = piv_select(token)))
+				goto out;
+			free(guid);
+			guid = malloc(GUID_LEN);
+			bcopy(piv_token_guid(token), guid, GUID_LEN);
+			guidlen = GUID_LEN;
+			error = piv_read_cert(token, PIV_SLOT_CARD_AUTH);
+			if (error == ERRF_OK) {
+				slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
+				rc = sshkey_demote(piv_slot_pubkey(slot),
+				    &cak);
+				if (rc) {
+					error = ssherrf("sshkey_demote", rc);
+					goto out;
+				}
+			}
+			erfree(error);
+			if ((error = piv_read_cert(token, PIV_SLOT_KEY_MGMT)))
+				goto out;
+			slot = piv_get_slot(token, PIV_SLOT_KEY_MGMT);
+			rc = sshkey_demote(piv_slot_pubkey(slot), &pubkey);
+			if (rc) {
+				error = ssherrf("sshkey_demote", rc);
+				goto out;
+			}
+			piv_txn_end(token);
+			piv_release(token);
 		} else {
 			error = errf("SyntaxError", NULL,
 			    "unexpected configuration keyword '%s'", argv[i]);
@@ -571,17 +667,27 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 		}
 	}
 
-	if (guid != NULL && pubkey != NULL) {
-		part = ebox_tpl_part_alloc(guid, guidlen, pubkey);
-		if (part == NULL)
-			return (ERRF_NOMEM);
-		ebox_tpl_config_add_part(config, part);
-
-		if (name != NULL)
-			ebox_tpl_part_set_name(part, name);
-		if (cak != NULL)
-			ebox_tpl_part_set_cak(part, cak);
+	if (guid == NULL) {
+		error = errf("SyntaxError", NULL,
+		    "configuration part missing required 'guid' keyword");
+		goto out;
 	}
+
+	if (pubkey == NULL) {
+		error = errf("SyntaxError", NULL,
+		    "configuration part missing required 'key' keyword");
+		goto out;
+	}
+
+	part = ebox_tpl_part_alloc(guid, guidlen, pubkey);
+	if (part == NULL)
+		return (ERRF_NOMEM);
+	ebox_tpl_config_add_part(config, part);
+
+	if (name != NULL)
+		ebox_tpl_part_set_name(part, name);
+	if (cak != NULL)
+		ebox_tpl_part_set_cak(part, cak);
 
 out:
 	*idxp = i;
@@ -596,46 +702,33 @@ parse_keywords_primary(struct ebox_tpl_config *config, int argc, char *argv[],
     uint *idxp)
 {
 	uint i = *idxp;
-	struct ebox_tpl_part *part = NULL;
-	uint8_t guid[GUID_LEN];
-	boolean_t haveguid = B_FALSE;
-	struct sshkey *pubkey = NULL;
-	struct sshkey *cak = NULL;
-	const char *name = NULL;
 	errf_t *error = NULL;
 
 	for (; i < argc; ++i) {
-		if (strcmp(argv[i], "primary") || strcmp(argv[i], "recovery")) {
+		if (strcmp(argv[i], "primary") == 0 ||
+		    strcmp(argv[i], "recovery") == 0 ||
+		    strcmp(argv[i], "add-primary") == 0 ||
+		    strcmp(argv[i], "remove-primary") == 0 ||
+		    strcmp(argv[i], "add-recovery") == 0 ||
+		    strcmp(argv[i], "remove-recovery") == 0) {
+			--i;
 			break;
 		}
-		if (strcmp(argv[i], "guid") == 0) {
-
-		} else if (strcmp(argv[i], "slot") == 0) {
-
-		} else if (strcmp(argv[i], "key") == 0) {
-
-		} else if (strcmp(argv[i], "cak") == 0) {
-
-		} else if (strcmp(argv[i], "local-guid") == 0) {
-
-		} else {
-			error = errf("SyntaxError", NULL,
-			    "unexpected configuration keyword '%s'", argv[i]);
+		if (strcmp(argv[i], "part") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "unexpected end of arguments after 'part'"
+				    " keyword");
+				goto out;
+			}
+		}
+		error = parse_keywords_part(config, argc, argv, &i);
+		if (error)
 			goto out;
-		}
-		if (haveguid && pubkey) {
-			part = ebox_tpl_part_alloc(guid, sizeof (guid), pubkey);
-		}
-	}
-
-	if (haveguid && pubkey) {
-		part = ebox_tpl_part_alloc(guid, sizeof (guid), pubkey);
 	}
 
 out:
 	*idxp = i;
-	sshkey_free(pubkey);
-	ebox_tpl_part_free(part);
 	return (error);
 }
 
@@ -645,6 +738,57 @@ parse_keywords_recovery(struct ebox_tpl_config *config, int argc, char *argv[],
 {
 	uint i = *idxp;
 	errf_t *error = NULL;
+	unsigned long int parsed;
+	char *p;
+
+	for (; i < argc; ++i) {
+		if (strcmp(argv[i], "primary") == 0 ||
+		    strcmp(argv[i], "recovery") == 0 ||
+		    strcmp(argv[i], "add-primary") == 0 ||
+		    strcmp(argv[i], "remove-primary") == 0 ||
+		    strcmp(argv[i], "add-recovery") == 0 ||
+		    strcmp(argv[i], "remove-recovery") == 0) {
+			--i;
+			break;
+		}
+		if (strcmp(argv[i], "require") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'require' keyword requires argument");
+				goto out;
+			}
+			errno = 0;
+			parsed = strtoul(argv[i], &p, 0);
+			if (errno != 0 || *p != '\0') {
+				error = errf("SyntaxError",
+				    errfno("strtoul", errno, NULL),
+				    "error parsing argument to 'require' "
+				    "keyword: '%s'", argv[i]);
+				goto out;
+			}
+			error = ebox_tpl_config_set_n(config, parsed);
+			if (error) {
+				error = errf("SyntaxError", error,
+				    "error applying argument to 'require' "
+				    "keyword: '%s'", argv[i]);
+				goto out;
+			}
+
+		} else if (strcmp(argv[i], "part") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'part' keyword requires arguments");
+				goto out;
+			}
+			error = parse_keywords_part(config, argc, argv, &i);
+			if (error)
+				goto out;
+
+		} else {
+			return (errf("SyntaxError", NULL,
+			    "unexpected configuration keyword '%s'", argv[i]));
+		}
+	}
 
 out:
 	*idxp = i;
@@ -658,17 +802,28 @@ cmd_tpl_create(int argc, char *argv[])
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *config = NULL;
 	errf_t *error = NULL;
+	struct sshbuf *buf;
 
 	tpl = ebox_tpl_alloc();
 
 	for (i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "primary") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'primary' keyword requires arguments");
+				goto out;
+			}
 			config = ebox_tpl_config_alloc(EBOX_PRIMARY);
 			ebox_tpl_add_config(tpl, config);
 			error = parse_keywords_primary(config, argc, argv, &i);
 			if (error)
 				return (error);
-		} else if (strcmp(argv[1], "recovery") == 0) {
+		} else if (strcmp(argv[i], "recovery") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'recovery' keyword requires arguments");
+				goto out;
+			}
 			config = ebox_tpl_config_alloc(EBOX_RECOVERY);
 			ebox_tpl_add_config(tpl, config);
 			error = parse_keywords_recovery(config, argc, argv, &i);
@@ -680,9 +835,41 @@ cmd_tpl_create(int argc, char *argv[])
 		}
 	}
 
+	buf = sshbuf_new();
+	error = sshbuf_put_ebox_tpl(buf, tpl);
+	if (error)
+		return (error);
+	printwrap(sshbuf_dtob64(buf), 64);
+
 out:
 	ebox_tpl_free(tpl);
+	return (error);
+}
 
+static struct sshbuf *
+read_stdin_b64(size_t limit)
+{
+	char *buf = malloc(limit + 1);
+	struct sshbuf *sbuf;
+	size_t n;
+	int rc;
+
+	n = fread(buf, 1, limit, stdin);
+	if (!feof(stdin))
+		errx(EXIT_USAGE, "input too long (max %lu bytes)", limit);
+	if (n > limit)
+		errx(EXIT_USAGE, "input too long (max %lu bytes)", limit);
+	buf[n] = '\0';
+
+	sbuf = sshbuf_new();
+	if (sbuf == NULL)
+		err(EXIT_ERROR, "failed to allocate buffer");
+	rc = sshbuf_b64tod(sbuf, buf);
+	if (rc) {
+		errf_t *error = ssherrf("sshbuf_b64tod", rc);
+		errfx(EXIT_ERROR, error, "error parsing input as base64");
+	}
+	return (sbuf);
 }
 
 static errf_t *
@@ -695,8 +882,65 @@ cmd_tpl_edit(int argc, char *argv[])
 static errf_t *
 cmd_tpl_show(int argc, char *argv[])
 {
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
+	errf_t *error;
+	struct ebox_tpl_config *config = NULL;
+	int rc;
+
+	if (ebox_tpl == NULL) {
+		struct sshbuf *sbuf = read_stdin_b64(TPL_MAX_SIZE);
+		error = sshbuf_get_ebox_tpl(sbuf, &ebox_tpl);
+		if (error) {
+			errfx(EXIT_ERROR, error, "failed to parse input as "
+			    "a base64-encoded ebox template");
+		}
+	}
+
+	while ((config = ebox_tpl_next_config(ebox_tpl, config))) {
+		fprintf(stderr, "configuration:\n");
+		switch (ebox_tpl_config_type(config)) {
+		case EBOX_PRIMARY:
+			fprintf(stderr, "  type: primary\n");
+			break;
+		case EBOX_RECOVERY:
+			fprintf(stderr, "  type: recovery\n");
+			fprintf(stderr, "  required: %u parts\n",
+			    ebox_tpl_config_n(config));
+			break;
+		}
+		struct ebox_tpl_part *part = NULL;
+		while ((part = ebox_tpl_config_next_part(config, part))) {
+			char *guidhex;
+			fprintf(stderr, "  part:\n");
+			guidhex = buf_to_hex(ebox_tpl_part_guid(part),
+			    GUID_LEN, B_FALSE);
+			fprintf(stderr, "    guid: %s\n", guidhex);
+			free(guidhex);
+			if (ebox_tpl_part_name(part) != NULL) {
+				fprintf(stderr, "    name: %s\n",
+				    ebox_tpl_part_name(part));
+			}
+			fprintf(stderr, "    key: ");
+			rc = sshkey_write(ebox_tpl_part_pubkey(part), stderr);
+			if (rc != 0) {
+				errfx(EXIT_ERROR, ssherrf("sshkey_write", rc),
+				    "failed to print pubkey of ebox part");
+			}
+			fprintf(stderr, "\n");
+			if (ebox_tpl_part_cak(part) != NULL) {
+				fprintf(stderr, "    cak: ");
+				rc = sshkey_write(ebox_tpl_part_cak(part),
+				    stderr);
+				if (rc != 0) {
+					errfx(EXIT_ERROR,
+					    ssherrf("sshkey_write", rc),
+					    "failed to print cak of ebox part");
+				}
+				fprintf(stderr, "\n");
+			}
+		}
+	}
+
+	return (NULL);
 }
 
 static errf_t *
@@ -811,13 +1055,13 @@ main(int argc, char *argv[])
 	char tpl[PATH_MAX] = { 0 };
 	errf_t *error = NULL;
 
-	if (argc < 1) {
+	if (argc < 2) {
 		warnx("type and operation required");
 		usage();
 		return (EXIT_USAGE);
 	}
 	type = argv[1];
-	if (argc < 2) {
+	if (argc < 3) {
 		warnx("operation required");
 		usage();
 		return (EXIT_USAGE);

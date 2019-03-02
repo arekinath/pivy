@@ -497,7 +497,7 @@ sshbuf_put_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part *part)
 	if (part->etp_cak != NULL) {
 		sshbuf_reset(kbuf);
 		if ((rc = sshbuf_put_u8(buf, EBOX_PART_CAK)) ||
-		    (rc = sshkey_putb(part->etp_cak, buf)) ||
+		    (rc = sshkey_putb(part->etp_cak, kbuf)) ||
 		    (rc = sshbuf_put_stringb(buf, kbuf))) {
 			err = ssherrf("sshbuf_put_*", rc);
 			goto out;
