@@ -1081,7 +1081,8 @@ interactive_edit_tpl_part(struct ebox_tpl *tpl,
 	int rc;
 	struct sshbuf *buf;
 	struct sshkey *key;
-	char *line;
+	char *line, *p;
+	errf_t *error;
 
 	buf = sshbuf_new();
 	if (buf == NULL)
@@ -1151,7 +1152,21 @@ again:
 		line = readline("Card auth key? ");
 		if (line == NULL)
 			exit(EXIT_ERROR);
+		key = sshkey_new(KEY_UNSPEC);
+		if (key == NULL)
+			err(EXIT_ERROR, "failed to allocate memory");
+		p = line;
+		rc = sshkey_read(key, &p);
+		if (rc) {
+			error = ssherrf("sshkey_read", rc);
+			warnfx(error, "Invalid card auth key");
+			erfree(error);
+			free(line);
+			goto again;
+		}
 		free(line);
+		ebox_tpl_part_set_cak(part, key);
+		sshkey_free(key);
 		goto again;
 	case 'x':
 		goto out;
