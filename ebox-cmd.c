@@ -80,6 +80,7 @@ enum ebox_exit_status {
 static boolean_t ebox_batch = B_FALSE;
 static boolean_t ebox_raw_in = B_FALSE;
 static boolean_t ebox_raw_out = B_FALSE;
+static boolean_t ebox_interactive = B_FALSE;
 static struct ebox_tpl *ebox_tpl;
 
 #define	TPL_DEFAULT_PATH	"%s/.ebox/tpl/%s"
@@ -490,6 +491,209 @@ parse_hex(const char *str, uint8_t **out, size_t *outlen)
 	return (ERRF_OK);
 }
 
+#if defined(__sun)
+static GetLine *sungl = NULL;
+
+static char *
+readline(const char *prompt)
+{
+	char *line;
+	line = gl_get_line(sungl, prompt, NULL, -1);
+	if (line != NULL)
+		line = strdup(line);
+	return (line);
+}
+#endif
+
+#define	Q_MAX_LEN	2048
+#define	ANS_MAX_LEN	512
+
+struct question {
+	struct answer *q_ans;
+	struct answer *q_lastans;
+	struct answer *q_coms;
+	struct answer *q_lastcom;
+	void *q_priv;
+	size_t q_used;
+	char q_prompt[Q_MAX_LEN];
+};
+
+struct answer {
+	struct answer *a_next;
+	struct answer *a_prev;
+	char a_key;
+	void *a_priv;
+	size_t a_used;
+	char a_text[ANS_MAX_LEN];
+};
+
+void
+add_answer(struct question *q, struct answer *a)
+{
+	if (q->q_lastans == NULL) {
+		q->q_ans = a;
+	} else {
+		q->q_lastans->a_next = a;
+		a->a_prev = q->q_lastans;
+	}
+	q->q_lastans = a;
+}
+
+void
+add_spacer(struct question *q)
+{
+	struct answer *a;
+
+	a = calloc(1, sizeof (struct answer));
+	add_answer(q, a);
+}
+
+void
+remove_answer(struct question *q, struct answer *a)
+{
+	if (a->a_prev != NULL) {
+		a->a_prev->a_next = a->a_next;
+	} else {
+		VERIFY(q->q_ans == a);
+		q->q_ans = a->a_next;
+	}
+	if (a->a_next != NULL) {
+		a->a_next->a_prev = a->a_prev;
+	} else {
+		VERIFY(q->q_lastans == a);
+		q->q_lastans = a->a_prev;
+	}
+}
+
+void
+answer_printf(struct answer *ans, const char *fmt, ...)
+{
+	va_list ap;
+	size_t wrote;
+
+	va_start(ap, fmt);
+	wrote = vsnprintf(&ans->a_text[ans->a_used],
+	    sizeof (ans->a_text) - ans->a_used, fmt, ap);
+	va_end(ap);
+	ans->a_used += wrote;
+	if (ans->a_used >= sizeof (ans->a_text))
+		ans->a_text[sizeof (ans->a_text) - 1] = '\0';
+}
+
+struct answer *
+make_answer(char key, const char *fmt, ...)
+{
+	va_list ap;
+	size_t wrote;
+	struct answer *ans;
+
+	ans = calloc(1, sizeof (struct answer));
+	if (ans == NULL)
+		err(EXIT_ERROR, "failed to allocate memory");
+	ans->a_key = key;
+
+	va_start(ap, fmt);
+	wrote = vsnprintf(&ans->a_text[ans->a_used],
+	    sizeof (ans->a_text) - ans->a_used, fmt, ap);
+	va_end(ap);
+	ans->a_used += wrote;
+	if (ans->a_used >= sizeof (ans->a_text))
+		ans->a_text[sizeof (ans->a_text) - 1] = '\0';
+
+	return (ans);
+}
+
+void
+add_command(struct question *q, struct answer *a)
+{
+	if (q->q_lastcom == NULL) {
+		q->q_coms = a;
+	} else {
+		q->q_lastcom->a_next = a;
+		a->a_prev = q->q_lastcom;
+	}
+	q->q_lastcom = a;
+}
+
+void
+question_printf(struct question *q, const char *fmt, ...)
+{
+	va_list ap;
+	size_t wrote;
+
+	va_start(ap, fmt);
+	wrote = vsnprintf(&q->q_prompt[q->q_used],
+	    sizeof (q->q_prompt) - q->q_used, fmt, ap);
+	va_end(ap);
+	q->q_used += wrote;
+	if (q->q_used >= sizeof (q->q_prompt))
+		q->q_prompt[sizeof (q->q_prompt) - 1] = '\0';
+}
+
+void
+question_free(struct question *q)
+{
+	struct answer *a, *na;
+
+	for (a = q->q_ans; a != NULL; a = na) {
+		na = a->a_next;
+		free(a);
+	}
+	for (a = q->q_coms; a != NULL; a = na) {
+		na = a->a_next;
+		free(a);
+	}
+
+	free(q);
+}
+
+void
+question_prompt(struct question *q, struct answer **ansp)
+{
+	struct answer *ans;
+	char *line = NULL;
+
+again:
+	fprintf(stderr, "%s\n", q->q_prompt);
+	for (ans = q->q_ans; ans != NULL; ans = ans->a_next) {
+		if (ans->a_key == '\0') {
+			fprintf(stderr, "\n");
+			continue;
+		}
+		fprintf(stderr, "  [%c] %s\n", ans->a_key, ans->a_text);
+	}
+	fprintf(stderr, "\nCommands:\n");
+	for (ans = q->q_coms; ans != NULL; ans = ans->a_next) {
+		if (ans->a_key == '\0') {
+			fprintf(stderr, "\n");
+			continue;
+		}
+		fprintf(stderr, "  [%c] %s\n", ans->a_key, ans->a_text);
+	}
+	free(line);
+	line = readline("Choice? ");
+	if (line == NULL)
+		exit(EXIT_ERROR);
+	for (ans = q->q_ans; ans != NULL; ans = ans->a_next) {
+		if (ans->a_key != '\0' &&
+		    line[0] == ans->a_key && line[1] == '\0') {
+			free(line);
+			*ansp = ans;
+			return;
+		}
+	}
+	for (ans = q->q_coms; ans != NULL; ans = ans->a_next) {
+		if (ans->a_key != '\0' &&
+		    line[0] == ans->a_key && line[1] == '\0') {
+			free(line);
+			*ansp = ans;
+			return;
+		}
+	}
+	fprintf(stderr, "Invalid choice.\n");
+	goto again;
+}
+
 static errf_t *
 parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
     uint *idxp)
@@ -795,6 +999,427 @@ out:
 	return (error);
 }
 
+static void
+make_answer_text_for_part(struct ebox_tpl_part *part, struct answer *a)
+{
+	const char *name;
+	char *guidhex = NULL;
+
+	a->a_text[0] = '\0';
+	a->a_used = 0;
+
+	guidhex = buf_to_hex(ebox_tpl_part_guid(part),
+	    4, B_FALSE);
+	answer_printf(a, "%s", guidhex);
+	name = ebox_tpl_part_name(part);
+	if (name != NULL) {
+		answer_printf(a, " (%s)", name);
+	}
+
+	free(guidhex);
+}
+
+static void
+make_answer_text_for_config(struct ebox_tpl_config *config, struct answer *a)
+{
+	struct ebox_tpl_part *part, *npart;
+	const char *name;
+	char *guidhex = NULL;
+
+	a->a_text[0] = '\0';
+	a->a_used = 0;
+
+	switch (ebox_tpl_config_type(config)) {
+	case EBOX_PRIMARY:
+		part = ebox_tpl_config_next_part(config, NULL);
+		if (part == NULL) {
+			answer_printf(a, "primary: none");
+			break;
+		}
+		free(guidhex);
+		guidhex = buf_to_hex(ebox_tpl_part_guid(part),
+		    4, B_FALSE);
+		answer_printf(a, "primary: %s", guidhex);
+		name = ebox_tpl_part_name(part);
+		if (name != NULL) {
+			answer_printf(a, " (%s)", name);
+		}
+		break;
+	case EBOX_RECOVERY:
+		answer_printf(a, "recovery: any %u of: ",
+		    ebox_tpl_config_n(config));
+		part = ebox_tpl_config_next_part(config, NULL);
+		while (part != NULL) {
+			npart = ebox_tpl_config_next_part(
+			    config, part);
+			free(guidhex);
+			guidhex = buf_to_hex(
+			    ebox_tpl_part_guid(part), 4,
+			    B_FALSE);
+			answer_printf(a, "%s", guidhex);
+			name = ebox_tpl_part_name(part);
+			if (name != NULL) {
+				answer_printf(a, " (%s)", name);
+			}
+			if (npart != NULL) {
+				answer_printf(a, ", ");
+			}
+			part = npart;
+		}
+		break;
+	}
+	free(guidhex);
+}
+
+static void
+interactive_edit_tpl_part(struct ebox_tpl *tpl,
+    struct ebox_tpl_config *config, struct ebox_tpl_part *part)
+{
+	struct question *q;
+	struct answer *a;
+	char *guidhex;
+	int rc;
+	struct sshbuf *buf;
+	struct sshkey *key;
+	char *line;
+
+	buf = sshbuf_new();
+	if (buf == NULL)
+		err(EXIT_ERROR, "memory allocation failed");
+
+	q = calloc(1, sizeof (struct question));
+	if (q == NULL)
+		err(EXIT_ERROR, "memory allocation failed");
+	a = (struct answer *)ebox_tpl_part_private(part);
+	if (a == NULL)
+		err(EXIT_ERROR, "memory allocation failed");
+	question_printf(q, "-- Editing part %c --\n", a->a_key);
+
+	question_printf(q, "Read-only attributes:\n");
+	guidhex = buf_to_hex(ebox_tpl_part_guid(part), GUID_LEN, B_FALSE);
+	question_printf(q, "  GUID: %s\n", guidhex);
+	free(guidhex);
+	if ((rc = sshkey_format_text(ebox_tpl_part_pubkey(part), buf))) {
+		errfx(EXIT_ERROR, ssherrf("sshkey_format_text", rc),
+		    "failed to write part public key");
+	}
+	if ((rc = sshbuf_put_u8(buf, '\0'))) {
+		errfx(EXIT_ERROR, ssherrf("sshbuf_put_u8", rc),
+		    "failed to write part public key (null)");
+	}
+	question_printf(q, "  Key: %s\n", (char *)sshbuf_ptr(buf));
+	sshbuf_reset(buf);
+
+	question_printf(q, "\nSelect an attribute to change:");
+
+	a = make_answer('n', "Name: %s", ebox_tpl_part_name(part));
+	add_answer(q, a);
+	key = ebox_tpl_part_cak(part);
+	if (key != NULL) {
+		if ((rc = sshkey_format_text(key, buf))) {
+			errfx(EXIT_ERROR, ssherrf("sshkey_format_text", rc),
+			    "failed to write part public key");
+		}
+		if ((rc = sshbuf_put_u8(buf, '\0'))) {
+			errfx(EXIT_ERROR, ssherrf("sshbuf_put_u8", rc),
+			    "failed to write part public key (null)");
+		}
+		a = make_answer('c', "Card Auth Key: %s",
+		    (char *)sshbuf_ptr(buf));
+		sshbuf_reset(buf);
+	} else {
+		a = make_answer('c', "Card Auth Key: (none set)");
+	}
+	add_answer(q, a);
+
+	a = make_answer('x', "finish and return");
+	add_command(q, a);
+
+again:
+	question_prompt(q, &a);
+	switch (a->a_key) {
+	case 'n':
+		line = readline("Name for part? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		ebox_tpl_part_set_name(part, line);
+		a->a_used = 0;
+		answer_printf(a, "Name: %s", line);
+		free(line);
+		goto again;
+	case 'c':
+		line = readline("Card auth key? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		free(line);
+		goto again;
+	case 'x':
+		goto out;
+	}
+	goto again;
+out:
+	question_free(q);
+}
+
+static void
+interactive_edit_tpl_config(struct ebox_tpl *tpl,
+    struct ebox_tpl_config *config)
+{
+	struct question *q, *q2;
+	struct answer *a;
+	struct ebox_tpl_part *part, *npart;
+	char *line, *p;
+	char k = '0';
+	unsigned long int parsed;
+	errf_t *error;
+	uint8_t *guid;
+	size_t guidlen;
+	struct sshkey *key;
+	int rc;
+
+	q = calloc(1, sizeof (struct question));
+	a = (struct answer *)ebox_tpl_config_private(config);
+	switch (ebox_tpl_config_type(config)) {
+	case EBOX_PRIMARY:
+		question_printf(q, "-- Editing primary config %c --\n",
+		    a->a_key);
+		break;
+	case EBOX_RECOVERY:
+		question_printf(q, "-- Editing recovery config %c --\n",
+		    a->a_key);
+		a = calloc(1, sizeof (struct answer));
+		a->a_key = 'n';
+		answer_printf(a, "%u parts required to recover data (change)",
+		    ebox_tpl_config_n(config));
+		add_command(q, a);
+		break;
+	}
+	question_printf(q, "Select a part to edit:");
+	part = NULL;
+	while ((part = ebox_tpl_config_next_part(config, part)) != NULL) {
+		a = ebox_tpl_part_alloc_private(part, sizeof (struct answer));
+		a->a_key = ++k;
+		a->a_priv = part;
+		make_answer_text_for_part(part, a);
+		add_answer(q, a);
+	}
+
+	a = make_answer('+', "add new part/device");
+	add_command(q, a);
+	a = make_answer('-', "remove a part");
+	add_command(q, a);
+	a = make_answer('x', "finish and return");
+	add_command(q, a);
+
+again:
+	question_prompt(q, &a);
+	switch (a->a_key) {
+	case '+':
+		line = readline("GUID (in hex)? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		error = parse_hex(line, &guid, &guidlen);
+		if (error) {
+			warnfx(error, "Invalid GUID");
+			erfree(error);
+			free(line);
+			goto again;
+		}
+		if (guidlen != GUID_LEN) {
+			fprintf(stderr, "Invalid GUID: not correct length\n");
+			free(line);
+			goto again;
+		}
+		line = readline("Key? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		key = sshkey_new(KEY_ECDSA);
+		if (key == NULL)
+			err(EXIT_ERROR, "failed to allocate memory");
+		p = line;
+		rc = sshkey_read(key, &p);
+		if (rc) {
+			error = ssherrf("sshkey_read", rc);
+			warnfx(error, "Invalid public key");
+			erfree(error);
+			free(line);
+			goto again;
+		}
+		free(line);
+
+		part = ebox_tpl_part_alloc(guid, guidlen, key);
+		if (part == NULL)
+			err(EXIT_ERROR, "failed to allocate memory");
+		sshkey_free(key);
+		free(guid);
+		ebox_tpl_config_add_part(config, part);
+
+		a = ebox_tpl_part_alloc_private(part, sizeof (struct answer));
+		a->a_key = ++k;
+		a->a_priv = part;
+
+		interactive_edit_tpl_part(tpl, config, part);
+
+		make_answer_text_for_part(part, a);
+		add_answer(q, a);
+
+		goto again;
+	case '-':
+		q2 = calloc(1, sizeof (struct question));
+		question_printf(q2, "Remove which part?");
+		q2->q_ans = q->q_ans;
+		q2->q_lastans = q->q_lastans;
+		a = make_answer('x', "cancel");
+		add_command(q2, a);
+
+		question_prompt(q2, &a);
+		if (a->a_key != 'x') {
+			remove_answer(q, a);
+			if (k == a->a_key)
+				--k;
+			part = (struct ebox_tpl_part *)a->a_priv;
+			ebox_tpl_config_remove_part(config, part);
+			ebox_tpl_part_free(part);
+		}
+		q2->q_ans = (q2->q_lastans = NULL);
+		question_free(q2);
+		goto again;
+	case 'n':
+		line = readline("Number of parts required? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		errno = 0;
+		parsed = strtoul(line, &p, 0);
+		if (errno != 0 || *p != '\0') {
+			free(line);
+			fprintf(stderr, "Failed to interpret response as "
+			    "a valid number: %s\n", strerror(errno));
+			goto again;
+		}
+		error = ebox_tpl_config_set_n(config, parsed);
+		if (error) {
+			warnfx(error, "Invalid value for N");
+			erfree(error);
+		}
+		free(line);
+		a->a_used = 0;
+		answer_printf(a, "%u parts required to recover data (change)",
+		    ebox_tpl_config_n(config));
+		goto again;
+	case 'x':
+		goto out;
+	}
+	part = (struct ebox_tpl_part *)a->a_priv;
+	interactive_edit_tpl_part(tpl, config, part);
+	make_answer_text_for_part(part, a);
+	goto again;
+out:
+	part = NULL;
+	while ((part = ebox_tpl_config_next_part(config, part)) != NULL) {
+		a = (struct answer *)ebox_tpl_part_private(part);
+		remove_answer(q, a);
+		ebox_tpl_part_free_private(part);
+	}
+	question_free(q);
+}
+
+static void
+interactive_edit_tpl(struct ebox_tpl *tpl)
+{
+	struct question *q, *q2;
+	struct answer *a;
+	struct ebox_tpl_part *part, *npart;
+	struct ebox_tpl_config *config;
+	char k = '0';
+
+	q = calloc(1, sizeof (struct question));
+	question_printf(q, "-- Editing template --\n");
+	question_printf(q, "Select a configuration to edit:");
+	config = NULL;
+	while ((config = ebox_tpl_next_config(tpl, config)) != NULL) {
+		a = ebox_tpl_config_alloc_private(config,
+		    sizeof (struct answer));
+		a->a_key = ++k;
+		a->a_priv = config;
+		make_answer_text_for_config(config, a);
+		add_answer(q, a);
+	}
+
+	a = make_answer('+', "add new configuration");
+	add_command(q, a);
+	a = make_answer('-', "remove a configuration");
+	add_command(q, a);
+	a = make_answer('w', "write and exit");
+	add_command(q, a);
+
+again:
+	question_prompt(q, &a);
+	switch (a->a_key) {
+	case '+':
+		q2 = calloc(1, sizeof (struct question));
+		question_printf(q2, "Add what type of configuration?");
+		a = make_answer('p', "primary (single device)");
+		add_answer(q2, a);
+		a = make_answer('r', "recovery (multi-device, N out of M)");
+		add_answer(q2, a);
+
+		a = make_answer('x', "cancel");
+		add_command(q2, a);
+
+		question_prompt(q2, &a);
+		if (a->a_key == 'p') {
+			config = ebox_tpl_config_alloc(EBOX_PRIMARY);
+		} else if (a->a_key == 'r') {
+			config = ebox_tpl_config_alloc(EBOX_RECOVERY);
+		} else {
+			question_free(q2);
+			goto again;
+		}
+		ebox_tpl_add_config(tpl, config);
+
+		a = ebox_tpl_config_alloc_private(config,
+		    sizeof (struct answer));
+		a->a_key = ++k;
+		a->a_priv = config;
+
+		interactive_edit_tpl_config(tpl, config);
+
+		make_answer_text_for_config(config, a);
+		add_answer(q, a);
+
+		question_free(q2);
+		goto again;
+	case '-':
+		q2 = calloc(1, sizeof (struct question));
+		question_printf(q2, "Remove which configuration?");
+		q2->q_ans = q->q_ans;
+		q2->q_lastans = q->q_lastans;
+		a = make_answer('x', "cancel");
+		add_command(q2, a);
+
+		question_prompt(q2, &a);
+		if (a->a_key != 'x') {
+			remove_answer(q, a);
+			if (k == a->a_key)
+				--k;
+			config = (struct ebox_tpl_config *)a->a_priv;
+			ebox_tpl_remove_config(tpl, config);
+			ebox_tpl_config_free(config);
+		}
+		q2->q_ans = (q2->q_lastans = NULL);
+		question_free(q2);
+		goto again;
+	case 'w':
+		goto write;
+	}
+	config = (struct ebox_tpl_config *)a->a_priv;
+	interactive_edit_tpl_config(tpl, config);
+	make_answer_text_for_config(config, a);
+	goto again;
+write:
+	return;
+}
+
 static errf_t *
 cmd_tpl_create(int argc, char *argv[])
 {
@@ -833,6 +1458,10 @@ cmd_tpl_create(int argc, char *argv[])
 			return (errf("SyntaxError", NULL,
 			    "unexpected configuration keyword '%s'", argv[i]));
 		}
+	}
+
+	if (ebox_interactive) {
+		interactive_edit_tpl(tpl);
 	}
 
 	buf = sshbuf_new();
@@ -1084,6 +1713,9 @@ main(int argc, char *argv[])
 			break;
 		case 'f':
 			strlcpy(tpl, optarg, sizeof (tpl));
+			break;
+		case 'i':
+			ebox_interactive = B_TRUE;
 			break;
 		default:
 			usage();

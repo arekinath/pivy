@@ -142,6 +142,8 @@ typedef int sshkey_certify_signer(const struct sshkey *, u_char **, size_t *,
 int	 sshkey_certify_custom(struct sshkey *, struct sshkey *, const char *,
     sshkey_certify_signer *, void *);
 
+int	 sshkey_format_text(const struct sshkey *key, struct sshbuf *b);
+
 int		 sshkey_ecdsa_nid_from_name(const char *);
 int		 sshkey_curve_name_to_nid(const char *);
 const char *	 sshkey_curve_nid_to_name(int);

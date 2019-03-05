@@ -48,6 +48,7 @@ struct ebox_tpl {
 
 struct ebox_tpl_config {
 	struct ebox_tpl_config *etc_next;
+	struct ebox_tpl_config *etc_prev;
 	enum ebox_config_type etc_type;
 	uint8_t etc_n;
 	uint8_t etc_m;
@@ -58,6 +59,7 @@ struct ebox_tpl_config {
 
 struct ebox_tpl_part {
 	struct ebox_tpl_part *etp_next;
+	struct ebox_tpl_part *etp_prev;
 	char *etp_name;
 	struct sshkey *etp_pubkey;
 	struct sshkey *etp_cak;
@@ -204,14 +206,42 @@ ebox_tpl_alloc_private(struct ebox_tpl *tpl, size_t sz)
 }
 
 void
+ebox_tpl_free_private(struct ebox_tpl *tpl)
+{
+	VERIFY(tpl->et_priv != NULL);
+	free(tpl->et_priv);
+	tpl->et_priv = NULL;
+}
+
+void
 ebox_tpl_add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config)
 {
 	VERIFY(config->etc_next == NULL);
-	if (tpl->et_lastconfig == NULL)
+	VERIFY(config->etc_prev == NULL);
+	if (tpl->et_lastconfig == NULL) {
 		tpl->et_configs = config;
-	else
+	} else {
+		config->etc_prev = tpl->et_lastconfig;
 		tpl->et_lastconfig->etc_next = config;
+	}
 	tpl->et_lastconfig = config;
+}
+
+void
+ebox_tpl_remove_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config)
+{
+	if (config->etc_prev == NULL) {
+		VERIFY(tpl->et_configs == config);
+		tpl->et_configs = config->etc_next;
+	} else {
+		config->etc_prev->etc_next = config->etc_next;
+	}
+	if (config->etc_next == NULL) {
+		VERIFY(tpl->et_lastconfig == config);
+		tpl->et_lastconfig = config->etc_prev;
+	} else {
+		config->etc_next->etc_prev = config->etc_prev;
+	}
 }
 
 struct ebox_tpl_config *
@@ -264,6 +294,14 @@ ebox_tpl_config_alloc_private(struct ebox_tpl_config *config, size_t sz)
 	return (config->etc_priv);
 }
 
+void
+ebox_tpl_config_free_private(struct ebox_tpl_config *config)
+{
+	VERIFY(config->etc_priv != NULL);
+	free(config->etc_priv);
+	config->etc_priv = NULL;
+}
+
 errf_t *
 ebox_tpl_config_set_n(struct ebox_tpl_config *config, uint n)
 {
@@ -298,12 +336,33 @@ ebox_tpl_config_add_part(struct ebox_tpl_config *config,
     struct ebox_tpl_part *part)
 {
 	VERIFY(part->etp_next == NULL);
-	if (config->etc_lastpart == NULL)
+	VERIFY(part->etp_prev == NULL);
+	if (config->etc_lastpart == NULL) {
 		config->etc_parts = part;
-	else
+	} else {
 		config->etc_lastpart->etp_next = part;
+		part->etp_prev = config->etc_lastpart;
+	}
 	config->etc_lastpart = part;
 	++config->etc_m;
+}
+
+void
+ebox_tpl_config_remove_part(struct ebox_tpl_config *config,
+    struct ebox_tpl_part *part)
+{
+	if (part->etp_prev == NULL) {
+		VERIFY(config->etc_parts == part);
+		config->etc_parts = part->etp_next;
+	} else {
+		part->etp_prev->etp_next = part->etp_next;
+	}
+	if (part->etp_next == NULL) {
+		VERIFY(config->etc_lastpart == part);
+		config->etc_lastpart = part->etp_prev;
+	} else {
+		part->etp_next->etp_prev = part->etp_prev;
+	}
 }
 
 struct ebox_tpl_part *
@@ -384,6 +443,14 @@ ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz)
 	return (part->etp_priv);
 }
 
+void
+ebox_tpl_part_free_private(struct ebox_tpl_part *part)
+{
+	VERIFY(part->etp_priv != NULL);
+	free(part->etp_priv);
+	part->etp_priv = NULL;
+}
+
 const char *
 ebox_tpl_part_name(const struct ebox_tpl_part *part)
 {
@@ -423,10 +490,13 @@ ebox_tpl_clone(struct ebox_tpl *tpl)
 	for (; config != NULL; config = config->etc_next) {
 		nconfig = calloc(1, sizeof (struct ebox_tpl_config));
 		VERIFY(nconfig != NULL);
-		if (pconfig != NULL)
+		if (pconfig != NULL) {
 			pconfig->etc_next = nconfig;
-		else
+			nconfig->etc_prev = pconfig;
+		} else {
 			ntpl->et_configs = nconfig;
+		}
+		ntpl->et_lastconfig = nconfig;
 		nconfig->etc_type = config->etc_type;
 		nconfig->etc_n = config->etc_n;
 		nconfig->etc_m = config->etc_m;
@@ -436,10 +506,13 @@ ebox_tpl_clone(struct ebox_tpl *tpl)
 		for (; part != NULL; part = part->etp_next) {
 			npart = calloc(1, sizeof (struct ebox_tpl_part));
 			VERIFY(npart != NULL);
-			if (ppart != NULL)
+			if (ppart != NULL) {
 				ppart->etp_next = npart;
-			else
+				npart->etp_prev = ppart;
+			} else {
 				nconfig->etc_parts = npart;
+			}
+			nconfig->etc_lastpart = npart;
 			npart->etp_name = strdup(part->etp_name);
 			bcopy(part->etp_guid, npart->etp_guid,
 			    sizeof (npart->etp_guid));
@@ -1081,6 +1154,7 @@ sshbuf_get_ebox_config(struct sshbuf *buf, struct ebox_config **pconfig)
 		part = part->ep_next;
 		part->ep_id = id++;
 		tpart->etp_next = part->ep_tpl;
+		part->ep_tpl->etp_prev = tpart;
 		tpart = part->ep_tpl;
 	}
 
@@ -1175,6 +1249,7 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		}
 		config = config->ec_next;
 		tconfig->etc_next = config->ec_tpl;
+		config->ec_tpl->etc_prev = tconfig;
 		tconfig = config->ec_tpl;
 	}
 
