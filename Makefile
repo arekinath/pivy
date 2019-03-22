@@ -309,10 +309,11 @@ $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	@mkdir .dist
 
 
-install_common: pivy-tool pivy-agent
+install_common: pivy-tool pivy-agent pivy-box
 	install -o root -g wheel -m 0755 -d $(DESTDIR)$(bindir)
 	install -o root -g wheel -m 0755 pivy-agent $(DESTDIR)$(bindir)
 	install -o root -g wheel -m 0755 pivy-tool $(DESTDIR)$(bindir)
+	install -o root -g wheel -m 0755 pivy-box $(DESTDIR)$(bindir)
 
 ifeq ($(SYSTEM), Darwin)
 install: install_common
