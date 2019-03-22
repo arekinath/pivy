@@ -88,7 +88,7 @@ struct errf *errf_cause(const struct errf *e);
  */
 #define errf(name, cause, fmt, ...)	\
     _errf(name, cause, __func__, __FILE__, __LINE__, \
-    fmt __VA_OPT__(,) __VA_ARGS__)
+    fmt, ##__VA_ARGS__)
 
 /*
  * Turn an int errno value into an error object (includes both the macro
@@ -98,15 +98,15 @@ struct errf *errf_cause(const struct errf *e);
  */
 #define errfno(func, eno, fmt, ...)	\
     _errfno(func, eno, __func__, __FILE__, __LINE__, \
-    fmt __VA_OPT__(,) __VA_ARGS__)
+    fmt, ##__VA_ARGS__)
 
 /*
  * An example error subclass used to report an invalid argument.
  */
 #define argerrf(param, mustbe, butis, ...)	\
     errf("ArgumentError", NULL, \
-    "Argument " param " must be " mustbe " but is " butis \
-    __VA_OPT__(,) __VA_ARGS__)
+    "Argument " param " must be " mustbe " but is " butis, \
+    ##__VA_ARGS__)
 
 #else
 

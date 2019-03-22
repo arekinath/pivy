@@ -82,7 +82,8 @@
 const char *ssh_err(int n);
 
 #define ssherrf(func, code, ...)		\
-    errf("LibSSHError", NULL, func " returned %d (%s)", code, ssh_err(code))
+    errf("LibSSHError", NULL, func " returned %d (%s)", ##__VA_ARGS__, \
+    code, ssh_err(code))
 
 #define make_sslerrf(var, call, action, ...)	\
 	do {	\
@@ -92,8 +93,7 @@ const char *ssh_err(int n);
 		ERR_error_string(_ssl_err, _ssl_errbuf); \
 		var = errf("OpenSSLError", NULL, \
 		    call " returned error %u (%s) while " action, \
-		    _ssl_err, _ssl_errbuf \
-		    __VA_OPT__(,) __VA_ARGS__); \
+		    _ssl_err, _ssl_errbuf, ##__VA_ARGS__); \
 	} while (0)
 
 #endif /* _SSHERR_H */

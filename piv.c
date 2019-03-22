@@ -70,11 +70,11 @@ boolean_t piv_full_apdu_debug = B_FALSE;
 
 #define swerrf(ins, sw, ...)	\
     errf("APDUError", NULL, "Card replied with SW=%04x (%s) to " ins, \
-    (uint)sw, sw_to_name(sw) __VA_OPT__(,) __VA_ARGS__)
+    (uint)sw, sw_to_name(sw), ##__VA_ARGS__)
 
 #define tagerrf(ins, tag, ...)	\
     errf("PIVTagError", NULL, "Invalid tag 0x%x in PIV " ins " response", \
-    (uint)tag __VA_OPT__(,) __VA_ARGS__)
+    (uint)tag, ##__VA_ARGS__)
 
 #define ioerrf(cause, rdr)	\
     errf("IOError", cause, "Failed to communicate with PIV device '%s'", rdr)
@@ -88,13 +88,11 @@ boolean_t piv_full_apdu_debug = B_FALSE;
 
 #define permerrf(cause, rdr, doing, ...)	\
     errf("PermissionError", cause, \
-    "Permission denied " doing " on PIV device '%s'" \
-    __VA_OPT__(,) __VA_ARGS__, rdr)
+    "Permission denied " doing " on PIV device '%s'", ##__VA_ARGS__, rdr)
 
 #define notsuperrf(cause, rdr, thing, ...) \
     errf("NotSupportedError", cause, \
-    thing " not supported by PIV device '%s'" \
-    __VA_OPT__(,) __VA_ARGS__, rdr)
+    thing " not supported by PIV device '%s'", ##__VA_ARGS__, rdr)
 
 #endif
 

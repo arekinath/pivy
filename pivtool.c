@@ -88,7 +88,7 @@ SCARDCONTEXT ctx;
 
 #ifndef LINT
 #define	funcerrf(cause, fmt, ...)	\
-    errf(__func__, cause, fmt __VA_OPT__(,) __VA_ARGS__)
+    errf(__func__, cause, fmt , ##__VA_ARGS__)
 #define pcscerrf(call, rv)	\
     errf("PCSCError", NULL, call " failed: %d (%s)", \
     rv, pcsc_stringify_error(rv))
