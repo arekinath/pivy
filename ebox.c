@@ -1861,11 +1861,21 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 {
 	struct ebox_challenge *chal;
 	int rc = 0;
-	char hostname[HOST_NAME_MAX] = {0};
+	size_t hnamelen;
+	char *hostname = NULL;
 	char desc[255] = {0};
 	va_list ap;
 	size_t wrote;
 	errf_t *err = NULL;
+
+#if defined(HOST_NAME_MAX)
+	hnamelen = HOST_NAME_MAX;
+#elif defined(_SC_HOST_NAME_MAX)
+	hnamelen = sysconf(_SC_HOST_NAME_MAX);
+#endif
+	hostname = calloc(1, hnamelen);
+	if (hostname == NULL)
+		return (ERRF_NOMEM);
 
 	chal = calloc(1, sizeof (struct ebox_challenge));
 	if (chal == NULL)
@@ -1874,11 +1884,13 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 	chal->c_version = 1;
 	chal->c_type = CHAL_RECOVERY;
 	chal->c_id = part->ep_id;
-	if (gethostname(hostname, sizeof (hostname))) {
+	if (gethostname(hostname, hnamelen)) {
 		err = errfno("gethostname", errno, NULL);
 		goto out;
 	}
-	chal->c_hostname = strdup(hostname);
+	chal->c_hostname = hostname;
+	free(hostname);
+	hostname = NULL;
 	if (chal->c_hostname == NULL) {
 		err = ERRF_NOMEM;
 		goto out;
@@ -1931,6 +1943,7 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 	chal = NULL;
 
 out:
+	free(hostname);
 	ebox_challenge_free(chal);
 	return (err);
 }
