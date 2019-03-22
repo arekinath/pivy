@@ -7,7 +7,7 @@ LIBRESSL_INC	= $(PWD)/libressl/include
 LIBRESSL_LIB	= $(PWD)/libressl/crypto/.libs
 
 HAVE_ZFS	:= no
-USE_ZFS		?= yes
+USE_ZFS		?= no
 
 TAR		= tar
 CURL		= curl -k
