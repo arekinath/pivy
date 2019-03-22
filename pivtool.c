@@ -19,7 +19,6 @@
 #include <errno.h>
 #include <strings.h>
 #include <limits.h>
-#include <endian.h>
 #include <err.h>
 
 #if defined(__APPLE__)
@@ -54,6 +53,13 @@ int PEM_write_X509(FILE *fp, X509 *x);
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"
+
+#if defined(__sun) || defined(__APPLE__)
+#include <netinet/in.h>
+#define	be16toh(v)	(ntohs(v))
+#else
+#include <endian.h>
+#endif
 
 boolean_t debug = B_FALSE;
 static boolean_t parseable = B_FALSE;
