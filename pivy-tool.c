@@ -513,7 +513,7 @@ cmd_list(void)
 		}
 		if (!piv_token_has_chuid(pk)) {
 			printf("%10s:\n", "action");
-			printf("%10s Initialize this card using 'piv-tool "
+			printf("%10s Initialize this card using 'pivy-tool "
 			    "init'\n", "");
 			printf("%10s No keys can be stored on an uninitialized"
 			    " card\n", "");
@@ -1431,7 +1431,7 @@ cmd_unbox(void)
 
 	if (!piv_box_has_guidslot(box)) {
 		err = funcerrf(NULL, "box has no hardware GUID + slot "
-		    "information; can't be opened by piv-tool");
+		    "information; can't be opened by pivy-tool");
 		return (err);
 	}
 
@@ -1877,7 +1877,7 @@ void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: pivtool [options] <operation>\n"
+	    "usage: pivy-tool [options] <operation>\n"
 	    "Available operations:\n"
 	    "  list                   Lists PIV tokens present\n"
 	    "  pubkey <slot>          Outputs a public key in SSH format\n"
@@ -1970,7 +1970,7 @@ main(int argc, char *argv[])
 	boolean_t hasover = B_FALSE;
 
 	bunyan_init();
-	bunyan_set_name("pivtool");
+	bunyan_set_name("pivy-tool");
 
 	while ((c = getopt(argc, argv, optstring)) != -1) {
 		switch (c) {

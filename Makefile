@@ -1,4 +1,4 @@
-all: piv-tool piv-agent
+all: pivy-tool pivy-agent pivy-box
 
 LIBRESSL_VER	= 2.7.4
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
@@ -12,7 +12,7 @@ USE_ZFS		?= no
 TAR		= tar
 CURL		= curl -k
 
-prefix		?= /opt/piv-agent
+prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
 
 SYSTEM		:= $(shell uname -s)
@@ -106,7 +106,7 @@ _SSS_SOURCES=			\
 SSS_SOURCES=$(_SSS_SOURCES:%=sss/%)
 
 PIVTOOL_SOURCES=		\
-	pivtool.c		\
+	pivy-tool.c		\
 	tlv.c			\
 	piv.c			\
 	debug.c			\
@@ -134,16 +134,16 @@ PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(ZLIB_LIBS) \
 			$(SYSTEM_LIBS)
 
-piv-tool :		CFLAGS=		$(PIVTOOL_CFLAGS)
-piv-tool :		LIBS+=		$(PIVTOOL_LIBS)
-piv-tool :		LDFLAGS+=	$(PIVTOOL_LDFLAGS)
-piv-tool :		HEADERS=	$(PIVTOOL_HEADERS)
+pivy-tool :		CFLAGS=		$(PIVTOOL_CFLAGS)
+pivy-tool :		LIBS+=		$(PIVTOOL_LIBS)
+pivy-tool :		LDFLAGS+=	$(PIVTOOL_LDFLAGS)
+pivy-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 
-piv-tool: $(PIVTOOL_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-tool: $(PIVTOOL_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
 
 EBOX_SOURCES=			\
-	ebox-cmd.c		\
+	pivy-box.c		\
 	ebox.c			\
 	tlv.c			\
 	piv.c			\
@@ -177,15 +177,13 @@ EBOX_LIBS=		$(PCSC_LIBS) \
 			$(RDLINE_LIBS) \
 			$(SYSTEM_LIBS)
 
-ebox :		CFLAGS=		$(EBOX_CFLAGS)
-ebox :		LIBS+=		$(EBOX_LIBS)
-ebox :		LDFLAGS+=	$(EBOX_LDFLAGS)
-ebox :		HEADERS=	$(EBOX_HEADERS)
+pivy-box :		CFLAGS=		$(EBOX_CFLAGS)
+pivy-box :		LIBS+=		$(EBOX_LIBS)
+pivy-box :		LDFLAGS+=	$(EBOX_LDFLAGS)
+pivy-box :		HEADERS=	$(EBOX_HEADERS)
 
-ebox: $(EBOX_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-box: $(EBOX_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(EBOX_OBJS) $(LIBS)
-
-all: ebox
 
 
 PIVZFS_SOURCES=			\
@@ -247,7 +245,7 @@ install: install_pivzfs
 endif
 
 AGENT_SOURCES=			\
-	agent.c			\
+	pivy-agent.c		\
 	tlv.c			\
 	piv.c			\
 	debug.c			\
@@ -275,20 +273,20 @@ AGENT_LIBS=		$(PCSC_LIBS) \
 			$(ZLIB_LIBS) \
 			$(SYSTEM_LIBS)
 
-piv-agent :		CFLAGS=		$(AGENT_CFLAGS)
-piv-agent :		LIBS+=		$(AGENT_LIBS)
-piv-agent :		LDFLAGS+=	$(AGENT_LDFLAGS)
-piv-agent :		HEADERS=	$(AGENT_HEADERS)
+pivy-agent :		CFLAGS=		$(AGENT_CFLAGS)
+pivy-agent :		LIBS+=		$(AGENT_LIBS)
+pivy-agent :		LDFLAGS+=	$(AGENT_LDFLAGS)
+pivy-agent :		HEADERS=	$(AGENT_HEADERS)
 
-piv-agent: $(AGENT_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-agent: $(AGENT_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(AGENT_OBJS) $(LIBS)
 
 %.o: %.c $(HEADERS) $(LIBRESSL_INC)
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
-	rm -f piv-tool $(PIVTOOL_OBJS)
-	rm -f piv-agent $(AGENT_OBJS)
+	rm -f pivy-tool $(PIVTOOL_OBJS)
+	rm -f pivy-agent $(AGENT_OBJS)
 	rm -f piv-zfs $(PIVZFS_OBJS)
 	rm -f ebox $(EBOX_OBJS)
 	rm -fr .dist
@@ -311,56 +309,56 @@ $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	@mkdir .dist
 
 
-install_common: piv-tool piv-agent
+install_common: pivy-tool pivy-agent
 	install -o root -g wheel -m 0755 -d $(DESTDIR)$(bindir)
-	install -o root -g wheel -m 0755 piv-agent $(DESTDIR)$(bindir)
-	install -o root -g wheel -m 0755 piv-tool $(DESTDIR)$(bindir)
+	install -o root -g wheel -m 0755 pivy-agent $(DESTDIR)$(bindir)
+	install -o root -g wheel -m 0755 pivy-tool $(DESTDIR)$(bindir)
 
 ifeq ($(SYSTEM), Darwin)
 install: install_common
 
-.dist/net.cooperi.piv-agent.plist: net.cooperi.piv-agent.plist .dist piv-tool
-	@./piv-tool list
-	@printf "Enter a GUID to use for piv-agent: "
+.dist/net.cooperi.pivy-agent.plist: net.cooperi.pivy-agent.plist .dist pivy-tool
+	@./pivy-tool list
+	@printf "Enter a GUID to use for pivy-agent: "
 	@read guid && \
-	pkey=$$(./piv-tool -g $${guid} pubkey 9e) && \
+	pkey=$$(./pivy-tool -g $${guid} pubkey 9e) && \
 	cat $< | \
 	    sed "s/@@GUID@@/$${guid}/g" | \
 	    sed "s|@@CAK@@|$${pkey}|g" | \
 	    sed "s|@@HOME@@|$${HOME}|g" > $@
 
-setup: .dist/net.cooperi.piv-agent.plist
-	install .dist/net.cooperi.piv-agent.plist $(HOME)/Library/LaunchAgents
-	launchctl load $(HOME)/Library/LaunchAgents/net.cooperi.piv-agent.plist
-	launchctl start net.cooperi.piv-agent
+setup: .dist/net.cooperi.pivy-agent.plist
+	install .dist/net.cooperi.pivy-agent.plist $(HOME)/Library/LaunchAgents
+	launchctl load $(HOME)/Library/LaunchAgents/net.cooperi.pivy-agent.plist
+	launchctl start net.cooperi.pivy-agent
 	@echo "Add the following lines to your .profile or .bashrc:"
-	@echo '  export PATH=/opt/piv-agent/bin:$$PATH'
+	@echo '  export PATH=/opt/pivy/bin:$$PATH'
 	@echo '  if [[ ! -e "$$SSH_AUTH_SOCK" || "$$SSH_AUTH_SOCK" == *"launchd"* ]]; then'
 	@echo '    source $$HOME/.ssh/agent.env >/dev/null'
 	@echo '  fi'
 endif
 
 ifeq ($(SYSTEM), Linux)
-.dist/piv-agent@.service: piv-agent@.service .dist
+.dist/pivy-agent@.service: pivy-agent@.service .dist
 	sed -e 's!@@BINDIR@@!$(bindir)!' < $< > $@
-all: .dist/piv-agent@.service
+all: .dist/pivy-agent@.service
 
-install: install_common .dist/piv-agent@.service
+install: install_common .dist/pivy-agent@.service
 	install -d $(DESTDIR)$(SYSTEMDDIR)
-	install .dist/piv-agent\@.service $(DESTDIR)$(SYSTEMDDIR)
+	install .dist/pivy-agent\@.service $(DESTDIR)$(SYSTEMDDIR)
 
-.dist/default_config: .dist piv-tool
-	@./piv-tool list
-	@printf "Enter a GUID to use for piv-agent: "
+.dist/default_config: .dist pivy-tool
+	@./pivy-tool list
+	@printf "Enter a GUID to use for pivy-agent: "
 	read guid && \
-	pkey=$$(./piv-tool -g $${guid} pubkey 9e | awk '{ print $$1,$$2,$$3 }') && \
+	pkey=$$(./pivy-tool -g $${guid} pubkey 9e | awk '{ print $$1,$$2,$$3 }') && \
 	echo -e "PIV_AGENT_GUID=$${guid}\nPIV_AGENT_CAK=\"$${pkey}\"" > $@
 
 setup: .dist/default_config
-	install -d $(HOME)/.config/piv-agent
-	install .dist/default_config $(HOME)/.config/piv-agent/default
-	systemctl --user enable piv-agent@default.service
-	systemctl --user start piv-agent@default.service
+	install -d $(HOME)/.config/pivy-agent
+	install .dist/default_config $(HOME)/.config/pivy-agent/default
+	systemctl --user enable pivy-agent@default.service
+	systemctl --user start pivy-agent@default.service
 	@echo "Add the following lines to your .profile or .bashrc:"
 	@echo '  export PATH=$(bindir):$$PATH'
 	@echo '  if [[ ! -e "$$SSH_AUTH_SOCK" || "$$SSH_AUTH_SOCK" == *"/keyring/"* ]]; then'

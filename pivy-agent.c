@@ -1661,9 +1661,9 @@ static void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: piv-agent [-c | -s] [-Ddi] [-a bind_address] [-E fingerprint_hash]\n"
+	    "usage: pivy-agent [-c | -s] [-Ddi] [-a bind_address] [-E fingerprint_hash]\n"
 	    "                 [-t life] [-g guid] [-K cak] [command [arg ...]]\n"
-	    "       piv-agent [-c | -s] -k\n");
+	    "       pivy-agent [-c | -s] -k\n");
 	exit(1);
 }
 
@@ -1849,9 +1849,9 @@ main(int ac, char **av)
 	OpenSSL_add_all_algorithms();
 
 	bunyan_init();
-	bunyan_set_name("piv-agent");
+	bunyan_set_name("pivy-agent");
 
-	__progname = "piv-agent";
+	__progname = "pivy-agent";
 
 	while ((ch = getopt(ac, av, "cDdkisE:a:P:g:K:")) != -1) {
 		switch (ch) {

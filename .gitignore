@@ -1,7 +1,7 @@
 *.o
 .dist
 /libressl/
-/piv-agent
-/piv-tool
-/piv-zfs
-/ebox
+/pivy-agent
+/pivy-tool
+/pivy-zfs
+/pivy-box

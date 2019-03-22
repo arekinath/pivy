@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>net.cooperi.piv-agent</string>
+    <string>net.cooperi.pivy-agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/piv-agent/bin/piv-agent</string>
+        <string>/opt/pivy-agent/bin/pivy-agent</string>
         <string>-g</string>
         <string>@@GUID@@</string>
         <string>-K</string>

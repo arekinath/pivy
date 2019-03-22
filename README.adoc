@@ -4,13 +4,16 @@
 :idprefix:
 :docinfo:
 
-# piv-agent
+# pivy
+
+Simple-to-use PIV client for Linux and OSX. Includes the tools `pivy-tool`,
+`pivy-agent`, `pivy-box` and `pivy-zfs`.
 
 ## About
 
 This is an implementation of a simple PIV client for desktop Linux and OSX with
-minimal dependencies. It contains a `piv-tool` binary which can conduct basic
-operations using PIV cards, and the `piv-agent`, which implements the SSH agent
+minimal dependencies. It contains a `pivy-tool` binary which can conduct basic
+operations using PIV cards, and the `pivy-agent`, which implements the SSH agent
 protocol as a drop-in replacement for the OpenSSH `ssh-agent` command (except
 that the keys it contains are always on a PIV card).
 
@@ -24,16 +27,16 @@ where it's been pretty thoroughly battle-hardened.
 ## Using the agent
 
 Using the PIV agent is identical to running the normal `ssh-agent` command,
-with the exception that `piv-agent` requires a `-g` argument specifying the
+with the exception that `pivy-agent` requires a `-g` argument specifying the
 GUID of the PIV card to attach to. You can also give a `-K` argument with
 the public key of the "Card Authentication" slot (9E) for extra security.
 
 For example, the GUID of my PIV card is `995E171383029CDA0D9CDBDBAD580813` (if
-you don't know your GUID, the `piv-tool` command can display it). I can use the
-following command to start the `piv-agent` against my card:
+you don't know your GUID, the `pivy-tool` command can display it). I can use the
+following command to start the `pivy-agent` against my card:
 
 -----
-$ piv-agent -g 995E171383029CDA0D9CDBDBAD580813 bash
+$ pivy-agent -g 995E171383029CDA0D9CDBDBAD580813 bash
 $ ssh-add -l
 256 SHA256:PJ6ucGKUqlQhiJdArDaF65+AVImg8SVq77vL6nVE/ME PIV_slot_9C /CN=Digital Signature (ECDSA)
 256 SHA256:U86TVxP/gxVk4CQibIWit3Q+/5i4aZuXa2NALIahjww PIV_slot_9E /CN=Card Authentication (ECDSA)
@@ -75,12 +78,12 @@ The agent will also forget the PIN automatically if the PIV card is unavailable
 for more than a few minutes, or if unusual conditions occur (e.g. an attacker
 tries to plug in a device with the same GUID that fails the 9E signature test).
 
-Note that it's perfectly fine to leave the `piv-agent` running and remove your
+Note that it's perfectly fine to leave the `pivy-agent` running and remove your
 PIV card: the agent will just return errors on any attempt to use it until
 you insert your card again (you will need to enter your PIN again). You can
 even start the agent without the PIV card present at all.
 
-One useful way to use the `piv-agent` is to set up a systemd unit file for it
+One useful way to use the `pivy-agent` is to set up a systemd unit file for it
 to run whenever you log in, and adjust your shell profile to use it as your
 normal SSH agent. Then your PIV keys are automatically ready for use in any
 shell.
@@ -88,10 +91,10 @@ shell.
 ## Other tools
 
 There are two other tools that can be built as part of this repository as well:
-`piv-tool` and `piv-zfs`. The `piv-tool` utility is a general-purpose PIV
-information and management tool that uses the same client code as `piv-agent`,
+`pivy-tool` and `piv-zfs`. The `pivy-tool` utility is a general-purpose PIV
+information and management tool that uses the same client code as `pivy-agent`,
 which can be useful for testing or debugging (you don't have to use it for
-setting up keys, you can use `yubico-piv-tool` or any other PIV client just as
+setting up keys, you can use `yubico-pivy-tool` or any other PIV client just as
 well).
 
 The `piv-zfs` tool is an early draft of a tool for managing ZFS
@@ -110,10 +113,10 @@ installing `libedit`.
 Then, clone this repository and use `make` to build the binaries:
 
 -----
-$ git clone https://github.com/arekinath/piv-agent
-$ cd piv-agent
+$ git clone https://github.com/arekinath/pivy-agent
+$ cd pivy-agent
 $ make
-$ ./piv-tool list
+$ ./pivy-tool list
       card: 995E1713
     device: Yubico Yubikey NEO OTP+U2F+CCID 02 00
      chuid: ok
@@ -131,7 +134,7 @@ $ ./piv-tool list
 -----
 
 You can run `make install` (as root or with sudo) to install the agent into
-`/opt/piv-agent`.  The `make setup` invocation can be used to set up a user
+`/opt/pivy-agent`.  The `make setup` invocation can be used to set up a user
 systemd service to start it automatically at login.  It will also print out
 lines to add to your `.profile` or `.bashrc` to make sure the agent is
 automatically available in all your shells (while still preferring a forwarded
@@ -139,15 +142,15 @@ SSH agent if you SSH into your machine later).
 
 -----
 $ make setup
-Enter a GUID to use for piv-agent: 995E171383029CDA0D9CDBDBAD580813
+Enter a GUID to use for pivy-agent: 995E171383029CDA0D9CDBDBAD580813
 
-install -d /home/alex/.config/piv-agent
-install .dist/default_config /home/alex/.config/piv-agent/default
-systemctl --user enable piv-agent@default.service
-systemctl --user start piv-agent@default.service
+install -d /home/alex/.config/pivy-agent
+install .dist/default_config /home/alex/.config/pivy-agent/default
+systemctl --user enable pivy-agent@default.service
+systemctl --user start pivy-agent@default.service
 
 Add the following lines to your .profile or .bashrc:
-  export PATH=/opt/piv-agent/bin:$PATH
+  export PATH=/opt/pivy-agent/bin:$PATH
   if [[ ! -e "$SSH_AUTH_SOCK" || "$SSH_AUTH_SOCK" == *"/keyring/"* ]]; then
     export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
   fi
@@ -163,18 +166,18 @@ will handle it all for you.
 
 Note there is no need to install PCSClite or OpenSC or any of the related
 tools or libraries on OSX -- the PCSC framework built into the operating system
-itself works fine for `piv-agent`.
+itself works fine for `pivy-agent`.
 
 The commands you will need to run are as follows:
 
 -----
-## Clone the piv-agent repository
-$ git clone https://github.com/arekinath/piv-agent
-$ cd piv-agent
+## Clone the pivy-agent repository
+$ git clone https://github.com/arekinath/pivy-agent
+$ cd pivy-agent
 
-## Build libressl and then piv-agent
+## Build libressl and then pivy-agent
 $ make -j4
-$ ./piv-tool list
+$ ./pivy-tool list
       card: 995E1713
     device: Yubico Yubikey NEO OTP+U2F+CCID 02 00
      chuid: ok
@@ -189,21 +192,21 @@ $ ./piv-tool list
            9c   ECDSA   256   /CN=Digital Signature
            9e   ECDSA   256   /CN=Card Authentication
 
-## Install in /opt/piv-agent
+## Install in /opt/pivy-agent
 $ sudo make install
-install -o root -g wheel -m 0755 -d /opt/piv-agent/bin
-install -o root -g wheel -m 0755 piv-agent /opt/piv-agent/bin
-install -o root -g wheel -m 0755 piv-tool /opt/piv-agent/bin
+install -o root -g wheel -m 0755 -d /opt/pivy-agent/bin
+install -o root -g wheel -m 0755 pivy-agent /opt/pivy-agent/bin
+install -o root -g wheel -m 0755 pivy-tool /opt/pivy-agent/bin
 ## Configure and add a launchd service for the agent
 $ make setup
-Enter a GUID to use for piv-agent: 995E171383029CDA0D9CDBDBAD580813
+Enter a GUID to use for pivy-agent: 995E171383029CDA0D9CDBDBAD580813
 
-install .dist/net.cooperi.piv-agent.plist /Users/alex/Library/LaunchAgents
-launchctl load /Users/alex/Library/LaunchAgents/net.cooperi.piv-agent.plist
-launchctl start net.cooperi.piv-agent
+install .dist/net.cooperi.pivy-agent.plist /Users/alex/Library/LaunchAgents
+launchctl load /Users/alex/Library/LaunchAgents/net.cooperi.pivy-agent.plist
+launchctl start net.cooperi.pivy-agent
 
 Add the following lines to your .profile or .bashrc:
-  export PATH=/opt/piv-agent/bin:$PATH
+  export PATH=/opt/pivy-agent/bin:$PATH
   if [[ ! -e "$SSH_AUTH_SOCK" || "$SSH_AUTH_SOCK" == *"launchd"* ]]; then
     source $HOME/.ssh/agent.env >/dev/null
   fi
@@ -211,11 +214,11 @@ Add the following lines to your .profile or .bashrc:
 -----
 
 There is one known issue on OSX currently: the PCSC framework does not work
-after calling `fork()`, which forces the `piv-agent` code to not be able to run
-in the background (this means using `piv-agent bash` to start a shell doesn't
+after calling `fork()`, which forces the `pivy-agent` code to not be able to run
+in the background (this means using `pivy-agent bash` to start a shell doesn't
 work, for example). The best way to use it on OSX is set up as a launchd
 service.
 
 Like on Linux, there is a `make install` target that will set up a `launchd`
-service for the `piv-agent` for you and advise you on what to add to `.profile`
+service for the `pivy-agent` for you and advise you on what to add to `.profile`
 to make it available in all new shells.

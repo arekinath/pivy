@@ -4,9 +4,9 @@ Description=PIV SSH Agent
 [Service]
 Type=forking
 Environment=SSH_AUTH_SOCK=%t/piv-ssh-%I.socket
-EnvironmentFile=%h/.config/piv-agent/%I
+EnvironmentFile=%h/.config/pivy-agent/%I
 ExecStartPre=/bin/rm -f $SSH_AUTH_SOCK
-ExecStart=@@BINDIR@@/piv-agent -a $SSH_AUTH_SOCK -g $PIV_AGENT_GUID -K ${PIV_AGENT_CAK}
+ExecStart=@@BINDIR@@/pivy-agent -a $SSH_AUTH_SOCK -g $PIV_AGENT_GUID -K ${PIV_AGENT_CAK}
 Restart=always
 RestartSec=3
 

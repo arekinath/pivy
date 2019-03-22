@@ -1128,21 +1128,21 @@ primary:
 
 	if (token->pt_nochuid) {
 		fprintf(stderr, "error: this token has no CHUID file. "
-		    "Please generate one with `piv-tool init'.\n");
+		    "Please generate one with `pivy-tool init'.\n");
 		exit(1);
 	}
 	slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
 	if (slot == NULL || !slot->ps_pubkey) {
 		fprintf(stderr, "error: this token does not have a CARD_AUTH "
 		    "key generated. Please generate one with "
-		    "`piv-tool generate 9a'.\n");
+		    "`pivy-tool generate 9a'.\n");
 		exit(1);
 	}
 	slot = piv_get_slot(token, PIV_SLOT_KEY_MGMT);
 	if (slot == NULL || !slot->ps_pubkey) {
 		fprintf(stderr, "error: this token does not have a KEY_MGMT "
 		    "key generated. Please generate one with "
-		    "`piv-tool -a eccp256 generate 9d'.\n");
+		    "`pivy-tool -a eccp256 generate 9d'.\n");
 		exit(1);
 	}
 	if (slot->ps_pubkey->type != KEY_ECDSA) {
@@ -1668,7 +1668,7 @@ config_again:
 		    "configuration. At least 2 tokens\nmust be used, in an "
 		    "N-out-of-M scheme for recovery.\n\nEach token's full GUID "
 		    "and Key Management public key is required (these can\nbe "
-		    "obtained from the output of `piv-tool list' and `piv-tool "
+		    "obtained from the output of `pivy-tool list' and `pivy-tool "
 		    "pubkey 9d').\n\n");
 		nvarr[sel] = prompt_new_backup(key, keylen);
 	}
@@ -1831,8 +1831,8 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	    "physically present on this machine,\neither during this setup "
 	    "process or during recovery. Only the Key Management\npublic keys "
 	    "from each token and that token's GUID are required now (these\n"
-	    "can be obtained from the output of `piv-tool list' and "
-	    "`piv-tool pubkey 9d')\n\n");
+	    "can be obtained from the output of `pivy-tool list' and "
+	    "`pivy-tool pubkey 9d')\n\n");
 
 	options[1] = prompt_new_backup(key, keylen);
 
