@@ -57,6 +57,7 @@ enum iso_ins {
 	INS_IMPORT_ASYM = 0xFE,
 	INS_GET_VER = 0xFD,
 	INS_SET_PIN_RETRIES = 0xFA,
+	INS_RESET = 0xFB,
 	INS_GET_SERIAL = 0xF8,
 	INS_ATTEST = 0xF9,
 };
@@ -648,6 +649,22 @@ errf_t *piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  */
 errf_t *piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
     const char *newpin);
+
+/*
+ * YubicoPIV only: resets the entire PIV applet to defaults, including PIN, PUK,
+ * 9B admin key and all certificate keys and slots.
+ *
+ * Requires that the PIN and PUK have both been blocked (i.e. all retries
+ * used up) before executing.
+ *
+ * Errors:
+ *  - APDUError: the card rejected the command (e.g. because applet not selected)
+ *  - NotSupportedError: the card does not support YubicoPIV extensions
+ *  - IOError: general card communication failure
+ *  - ResetConditionsError: conditions to allow a factory reset were not met
+ *                          (need to have PIN and PUK blocked)
+ */
+errf_t *ykpiv_reset(struct piv_token *tk);
 
 /*
  * YubicoPIV only: changes the maximum number of retries for the PIN and PUK.

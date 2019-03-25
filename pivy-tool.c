@@ -233,7 +233,11 @@ static char *
 piv_token_shortid(struct piv_token *pk)
 {
 	char *guid;
-	guid = strdup(piv_token_guid_hex(pk));
+	if (piv_token_has_chuid(pk)) {
+		guid = strdup(piv_token_guid_hex(pk));
+	} else {
+		guid = strdup("0000000000");
+	}
 	guid[8] = '\0';
 	return (guid);
 }
@@ -1888,6 +1892,44 @@ check_select_key(void)
 }
 
 static errf_t *
+cmd_factory_reset(void)
+{
+	char *resp;
+	errf_t *err;
+
+	if (!piv_token_is_ykpiv(selk)) {
+		err = funcerrf(NULL, "factory-reset command is only for "
+		    "YubiKeys");
+		return (err);
+	}
+
+	fprintf(stderr, "Resetting Yubikey %s (%s)\n",
+	    piv_token_shortid(selk), piv_token_rdrname(selk));
+	if (ykpiv_token_has_serial(selk)) {
+		fprintf(stderr, "Serial #%u\n", ykpiv_token_serial(selk));
+	}
+
+	fprintf(stderr, "WARNING: this will completely reset the PIV applet "
+	    "on this Yubikey, erasing all keys and certificates!\n");
+	do {
+		resp = getpass("Type 'YES' to continue: ");
+	} while (resp == NULL && errno == EINTR);
+	if (resp == NULL || strcmp(resp, "YES") != 0) {
+		return (ERRF_OK);
+	}
+
+	if ((err = piv_txn_begin(selk)))
+		return (err);
+	assert_select(selk);
+	err = ykpiv_reset(selk);
+	piv_txn_end(selk);
+
+	if (err)
+		return (err);
+	return (ERRF_OK);
+}
+
+static errf_t *
 cmd_setup(SCARDCONTEXT ctx)
 {
 	boolean_t usetouch = B_FALSE;
@@ -2004,6 +2046,9 @@ usage(void)
 	    "  change-pin             Changes the PIV PIN\n"
 	    "  change-puk             Changes the PIV PUK\n"
 	    "  reset-pin              Resets the PIN using the PUK\n"
+	    "  factory-reset          Factory reset the PIV applet on a\n"
+	    "                         Yubikey, once the PIN and PUK are both\n"
+	    "                         locked (max retries used)\n"
 	    "  set-admin <hex|@file>  Sets the admin 3DES key\n"
 	    "\n"
 	    "  sign <slot>            Signs data on stdin\n"
@@ -2340,6 +2385,14 @@ main(int argc, char *argv[])
 		}
 		check_select_key();
 		err = cmd_setup(ctx);
+
+	} else if (strcmp(op, "factory-reset") == 0) {
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+		check_select_key();
+		err = cmd_factory_reset();
 
 	} else if (strcmp(op, "cert") == 0) {
 		uint slotid;

@@ -1445,6 +1445,8 @@ ins_to_name(enum iso_ins ins)
 		return ("YKPIV_ATTEST");
 	case INS_GET_SERIAL:
 		return ("YKPIV_GET_SERIAL");
+	case INS_RESET:
+		return ("YKPIV_RESET");
 	default:
 		return ("UNKNOWN");
 	}
@@ -2998,6 +3000,51 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 		bunyan_log(DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
+	}
+
+	piv_apdu_free(apdu);
+
+	return (err);
+}
+
+errf_t *
+ykpiv_reset(struct piv_token *pt)
+{
+	errf_t *err;
+	struct apdu *apdu;
+
+	VERIFY(pt->pt_intxn);
+	if (!pt->pt_ykpiv)
+		return (argerrf("tk", "a YubicoPIV-compatible token", "not"));
+
+	apdu = piv_apdu_make(CLA_ISO, INS_RESET, 0, 0);
+
+	err = piv_apdu_transceive(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		piv_apdu_free(apdu);
+		return (err);
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		err = ERRF_OK;
+		pt->pt_reset = B_TRUE;
+
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = permerrf(swerrf("INS_RESET", apdu->a_sw),
+		    pt->pt_rdrname, "resetting YubicoPIV");
+
+	} else if (apdu->a_sw == SW_CONDITIONS_NOT_SATISFIED) {
+		err = errf("ResetConditionsError", swerrf("INS_RESET",
+		    apdu->a_sw), "Conditions for use of INS_RESET "
+		    "not met (all PINs and PUK must be blocked)");
+
+	} else if (apdu->a_sw == SW_INS_NOT_SUP) {
+		err = notsuperrf(swerrf("INS_RESET", apdu->a_sw),
+		    pt->pt_rdrname, "YubicoPIV extensions");
+
+	} else {
+		err = swerrf("INS_RESET", apdu->a_sw);
 	}
 
 	piv_apdu_free(apdu);
