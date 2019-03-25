@@ -504,6 +504,21 @@ errf_t *ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
     enum ykpiv_touch_policy touchpolicy, struct sshkey **pubkey);
 
 /*
+ * YubicoPIV specific: import an asymmetric private key into a given slot.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - ArgumentError: algorithm or slot ID not supported, card is not YubicoPIV
+ *                   or version does not support given policies
+ *  - PermissionError: the card requires admin authentication before generating
+ *                     keys
+ *  - APDUError: the card rejected the command
+ */
+errf_t *ykpiv_import(struct piv_token *tk, enum piv_slotid slotid,
+    struct sshkey *privkey, enum ykpiv_pin_policy pinpolicy,
+    enum ykpiv_touch_policy touchpolicy);
+
+/*
  * Loads a certificate for a given slot on the token.
  *
  * "flags" should include bits from enum piv_certinfo_flags (and piv_cert_comp).

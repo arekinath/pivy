@@ -2179,6 +2179,126 @@ ykpiv_generate(struct piv_token *pt, enum piv_slotid slotid,
 }
 
 errf_t *
+tlv_write_bignum(struct tlv_state *tlv, uint tag, const BIGNUM *v)
+{
+	u_char *d = NULL;
+	errf_t *err = NULL;
+	size_t len;
+
+	d = malloc(SSHBUF_MAX_BIGNUM);
+	if (d == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	len = BN_num_bytes(v);
+	if (BN_bn2bin(v, d) != len) {
+		make_sslerrf(err, "BN_bn2bin", "bignum too long");
+		goto out;
+	}
+	tlv_pushl(tlv, tag, len);
+	tlv_write(tlv, d, 0, len);
+	tlv_pop(tlv);
+
+out:
+	free(d);
+	return (err);
+}
+
+errf_t *
+ykpiv_import(struct piv_token *pt, enum piv_slotid slotid, struct sshkey *key,
+    enum ykpiv_pin_policy pinpolicy, enum ykpiv_touch_policy touchpolicy)
+{
+	struct tlv_state *tlv;
+	errf_t *err;
+	enum piv_alg alg;
+	struct apdu *apdu = NULL;
+
+	VERIFY(pt->pt_intxn);
+
+	tlv = tlv_init_write();
+
+	switch (key->type) {
+	case KEY_RSA:
+		switch (sshkey_size(key)) {
+		case 1024:
+			alg = PIV_ALG_RSA1024;
+			break;
+		case 2048:
+			alg = PIV_ALG_RSA2048;
+			break;
+		default:
+			err = argerrf("privkey", "an RSA private key of "
+			    "a supported size", "a %u-bit RSA key",
+			    sshkey_size(key));
+			goto out;
+		}
+		tlv_write_bignum(tlv, 0x01, key->rsa->p);
+		tlv_write_bignum(tlv, 0x02, key->rsa->q);
+		tlv_write_bignum(tlv, 0x03, key->rsa->dmp1);
+		tlv_write_bignum(tlv, 0x04, key->rsa->dmq1);
+		tlv_write_bignum(tlv, 0x05, key->rsa->iqmp);
+		break;
+	case KEY_ECDSA:
+		switch (sshkey_size(key)) {
+		case 256:
+			alg = PIV_ALG_ECCP256;
+			break;
+		case 384:
+			alg = PIV_ALG_ECCP384;
+			break;
+		default:
+			err = argerrf("privkey", "an ECDSA private key on "
+			    "a supported curve", "on a %u-bit curve",
+			    sshkey_size(key));
+			goto out;
+		}
+		tlv_write_bignum(tlv, 0x06,
+		    EC_KEY_get0_private_key(key->ecdsa));
+		break;
+	default:
+		err = argerrf("privkey", "an RSA or ECDSA private key",
+		    "%s key", sshkey_type(key));
+		goto out;
+	}
+
+	apdu = piv_apdu_make(CLA_ISO, INS_IMPORT_ASYM, alg, slotid);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		goto out;
+	}
+
+	tlv_free(tlv);
+	tlv = NULL;
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		err = ERRF_OK;
+	} else if (apdu->a_sw == SW_OUT_OF_MEMORY) {
+		err = errf("DeviceOutOfMemoryError",
+		    swerrf("INS_IMPORT_ASYM(%x)", apdu->a_sw, slotid),
+		    "Out of memory to store asym key object on "
+		    "PIV device '%s'", pt->pt_rdrname);
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = permerrf(swerrf("INS_IMPORT_ASYM(%x)", apdu->a_sw,
+		    slotid), pt->pt_rdrname, "importing private key");
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("INS_IMPORT_ASYM(%x)", apdu->a_sw,
+		    slotid), pt->pt_rdrname, "Importing private keys");
+	} else {
+		err = swerrf("INS_IMPORT_ASYM(%x)", apdu->a_sw, slotid);
+	}
+
+out:
+	piv_apdu_free(apdu);
+	tlv_free(tlv);
+	return (err);
+}
+
+errf_t *
 piv_write_keyhistory(struct piv_token *pt, uint oncard, uint offcard,
     const char *offcard_url)
 {

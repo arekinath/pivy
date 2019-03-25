@@ -283,6 +283,8 @@ tlv_read(struct tlv_state *ts, uint8_t *dest, size_t offset, size_t maxLen)
 void
 tlv_free(struct tlv_state *ts)
 {
+	if (ts == NULL)
+		return;
 	VERIFY(ts->ts_stack == NULL);
 	if (ts->ts_freebuf) {
 		explicit_bzero(ts->ts_buf, MAX_APDU_SIZE);

@@ -876,11 +876,10 @@ again:
 }
 
 static errf_t *
-cmd_generate(uint slotid, enum piv_alg alg)
+selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 {
 	int rv;
 	errf_t *err;
-	struct sshkey *pub;
 	X509 *cert;
 	EVP_PKEY *pkey;
 	X509_NAME *subj;
@@ -957,26 +956,6 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	default:
 		err = funcerrf(NULL, "PIV slot %02X cannot be "
 		    "used for asymmetric crypto\n", slotid);
-		return (err);
-	}
-
-	if ((err = piv_txn_begin(selk)))
-		return (err);
-	assert_select(selk);
-	err = piv_auth_admin(selk, admin_key, 24);
-	if (err == ERRF_OK) {
-		if (pinpolicy == YKPIV_PIN_DEFAULT &&
-		    touchpolicy == YKPIV_TOUCH_DEFAULT) {
-			err = piv_generate(selk, slotid, alg, &pub);
-		} else {
-			err = ykpiv_generate(selk, slotid, alg, pinpolicy,
-			    touchpolicy, &pub);
-		}
-	}
-
-	if (err) {
-		piv_txn_end(selk);
-		err = funcerrf(err, "key generation failed");
 		return (err);
 	}
 
@@ -1096,13 +1075,11 @@ signagain:
 		assert_pin(selk, B_TRUE);
 		goto signagain;
 	} else if (err) {
-		piv_txn_end(selk);
 		err = funcerrf(err, "failed to sign cert with key");
 		return (err);
 	}
 
 	if (hashalg != wantalg) {
-		piv_txn_end(selk);
 		err = funcerrf(NULL, "card could not sign with the "
 		    "requested hash algorithm");
 		return (err);
@@ -1142,10 +1119,141 @@ signagain:
 		}
 	}
 
+	if (err) {
+		err = errf("generate", err, "failed to write new cert");
+		return (err);
+	}
+
+	return (NULL);
+}
+
+static errf_t *
+cmd_import(uint slotid)
+{
+	errf_t *err;
+	struct sshkey *pub = NULL, *priv = NULL;
+	char *comment;
+	char *pass;
+	uint8_t *rbuf;
+	struct sshbuf *buf;
+	size_t boff;
+	int rv;
+	enum piv_alg alg = PIV_ALG_RSA1024;
+
+	rbuf = read_stdin(16384, &boff);
+	VERIFY(rbuf != NULL);
+
+	buf = sshbuf_from(rbuf, boff);
+	VERIFY(buf != NULL);
+
+	rv = sshkey_parse_private_fileblob(buf, "", &priv, &comment);
+	if (rv == SSH_ERR_KEY_WRONG_PASSPHRASE) {
+		do {
+			pass = getpass("Enter passphrase for key: ");
+		} while (pass == NULL && errno == EINTR);
+		if ((pass == NULL && errno == ENXIO) || strlen(pass) < 1) {
+			errx(EXIT_PIN, "a passphrase is required to unlock "
+			    "the given public key");
+		}
+		rv = sshkey_parse_private_fileblob(buf, pass, &priv, &comment);
+	}
+	if (rv != 0) {
+		err = funcerrf(ssherrf("sshkey_parse_private_fileblob", rv),
+		    "failed to parse key input");
+		return (err);
+	}
+	sshbuf_free(buf);
+	buf = NULL;
+	free(rbuf);
+	rbuf = NULL;
+
+	if ((rv = sshkey_demote(priv, &pub))) {
+		err = funcerrf(ssherrf("sshkey_demote", rv),
+		    "failed to get public key from private");
+		return (err);
+	}
+
+	if ((err = piv_txn_begin(selk)))
+		return (err);
+	assert_select(selk);
+	err = piv_auth_admin(selk, admin_key, 24);
+	if (err == ERRF_OK) {
+		err = ykpiv_import(selk, slotid, priv, pinpolicy, touchpolicy);
+	}
+
+	if (err) {
+		piv_txn_end(selk);
+		err = funcerrf(err, "failed to import key");
+		return (err);
+	}
+
+	switch (pub->type) {
+	case KEY_RSA:
+		switch (sshkey_size(pub)) {
+		case 1024:
+			alg = PIV_ALG_RSA1024;
+			break;
+		case 2048:
+			alg = PIV_ALG_RSA2048;
+			break;
+		}
+		break;
+	case KEY_ECDSA:
+		switch (sshkey_size(pub)) {
+		case 256:
+			alg = PIV_ALG_ECCP256;
+			break;
+		case 384:
+			alg = PIV_ALG_ECCP384;
+			break;
+		}
+		break;
+	}
+
+	override = piv_force_slot(selk, slotid, alg);
+	err = selfsign_slot(slotid, alg, pub);
 	piv_txn_end(selk);
 
 	if (err) {
-		err = errf("generate", err, "failed to write new cert");
+		err = funcerrf(err, "cert generation failed");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
+cmd_generate(uint slotid, enum piv_alg alg)
+{
+	errf_t *err;
+	struct sshkey *pub = NULL;
+	int rv;
+
+	if ((err = piv_txn_begin(selk)))
+		return (err);
+	assert_select(selk);
+	err = piv_auth_admin(selk, admin_key, 24);
+	if (err == ERRF_OK) {
+		if (pinpolicy == YKPIV_PIN_DEFAULT &&
+		    touchpolicy == YKPIV_TOUCH_DEFAULT) {
+			err = piv_generate(selk, slotid, alg, &pub);
+		} else {
+			err = ykpiv_generate(selk, slotid, alg, pinpolicy,
+			    touchpolicy, &pub);
+		}
+	}
+
+	if (err) {
+		piv_txn_end(selk);
+		err = funcerrf(err, "key generation failed");
+		return (err);
+	}
+
+	err = selfsign_slot(slotid, alg, pub);
+	piv_txn_end(selk);
+
+	if (err) {
+		err = funcerrf(err, "key generation failed");
 		return (err);
 	}
 
@@ -1890,6 +1998,9 @@ usage(void)
 	    "                         change-puk + set-admin)\n"
 	    "  generate <slot>        Generate a new private key and a\n"
 	    "                         self-signed cert\n"
+	    "  import <slot>          Accept a SSH private key on stdin\n"
+	    "                         and import it to a Yubikey (generates\n"
+	    "                         a self-signed cert to go with it)\n"
 	    "  change-pin             Changes the PIV PIN\n"
 	    "  change-puk             Changes the PIV PUK\n"
 	    "  reset-pin              Resets the PIN using the PUK\n"
@@ -2355,6 +2466,24 @@ main(int argc, char *argv[])
 		if (hasover)
 			override = piv_force_slot(selk, slotid, overalg);
 		err = cmd_generate(slotid, overalg);
+
+	} else if (strcmp(op, "import") == 0) {
+		uint slotid;
+
+		if (optind >= argc) {
+			warnx("not enough arguments for %s (slot required)",
+			    op);
+			usage();
+		}
+		slotid = strtol(argv[optind++], NULL, 16);
+
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+
+		check_select_key();
+		err = cmd_import(slotid);
 
 	} else {
 		warnx("invalid operation '%s'", op);
