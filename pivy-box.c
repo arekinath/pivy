@@ -390,7 +390,7 @@ out:
 }
 
 static void
-printwrap(const char *data, size_t col)
+printwrap(FILE *stream, const char *data, size_t col)
 {
 	size_t offset = 0;
 	size_t len = strlen(data);
@@ -402,7 +402,7 @@ printwrap(const char *data, size_t col)
 			rem = col;
 		bcopy(&data[offset], buf, rem);
 		buf[rem] = 0;
-		printf("%s\n", buf);
+		fprintf(stream, "%s\n", buf);
 		offset += rem;
 	}
 }
@@ -1436,13 +1436,17 @@ write:
 }
 
 static errf_t *
-cmd_tpl_create(int argc, char *argv[])
+cmd_tpl_create(const char *tplfile, int argc, char *argv[])
 {
 	uint i;
+	size_t len;
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *config = NULL;
 	errf_t *error = NULL;
 	struct sshbuf *buf;
+	FILE *file;
+	char *dirpath;
+	int rc;
 
 	tpl = ebox_tpl_alloc();
 
@@ -1483,7 +1487,33 @@ cmd_tpl_create(int argc, char *argv[])
 	error = sshbuf_put_ebox_tpl(buf, tpl);
 	if (error)
 		return (error);
-	printwrap(sshbuf_dtob64(buf), 64);
+
+	file = fopen(tplfile, "w");
+	if (file == NULL && errno == ENOENT) {
+		dirpath = strdup(tplfile);
+		len = strlen(dirpath);
+		for (i = 1; i < len; ++i) {
+			if (dirpath[i] != '/')
+				continue;
+			dirpath[i] = '\0';
+			if (mkdir(dirpath, 0755)) {
+				if (errno != EEXIST) {
+					return (errfno("mkdir", errno,
+					    "creating directory '%s'",
+					    dirpath));
+				}
+			}
+			dirpath[i] = '/';
+		}
+		free(dirpath);
+		file = fopen(tplfile, "w");
+	}
+	if (file == NULL) {
+		return (errfno("fopen", errno, "opening template file '%s' "
+		    "for writing", tplfile));
+	}
+	printwrap(file, sshbuf_dtob64(buf), 64);
+	fclose(file);
 
 out:
 	ebox_tpl_free(tpl);
@@ -1517,10 +1547,133 @@ read_stdin_b64(size_t limit)
 }
 
 static errf_t *
-cmd_tpl_edit(int argc, char *argv[])
+cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 {
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
+	uint i;
+	size_t len;
+	struct ebox_tpl_config *config = NULL, *nconfig;
+	errf_t *error = NULL;
+	struct sshbuf *buf;
+	FILE *file;
+	char *dirpath;
+	int rc;
+
+	for (i = 1; i < argc; ++i) {
+		if (strcmp(argv[i], "add-primary") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'add-primary' keyword requires arguments");
+				goto out;
+			}
+			config = ebox_tpl_config_alloc(EBOX_PRIMARY);
+			ebox_tpl_add_config(ebox_tpl, config);
+			error = parse_keywords_primary(config, argc, argv, &i);
+			if (error)
+				return (error);
+		} else if (strcmp(argv[i], "add-recovery") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'add-recovery' keyword requires "
+				    "arguments");
+				goto out;
+			}
+			config = ebox_tpl_config_alloc(EBOX_RECOVERY);
+			ebox_tpl_add_config(ebox_tpl, config);
+			error = parse_keywords_recovery(config, argc, argv, &i);
+			if (error)
+				return (error);
+		} else if (strcmp(argv[i], "remove-primary") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'remove-primary' keyword requires "
+				    "arguments");
+				goto out;
+			}
+			if (strcmp(argv[i], "all") == 0) {
+				nconfig = ebox_tpl_next_config(ebox_tpl, NULL);
+				while ((config = nconfig) != NULL) {
+					nconfig = ebox_tpl_next_config(ebox_tpl,
+					    config);
+					if (ebox_tpl_config_type(config) ==
+					    EBOX_PRIMARY) {
+						ebox_tpl_remove_config(ebox_tpl,
+						    config);
+						ebox_tpl_config_free(config);
+					}
+				}
+			} else {
+				return (errf("SyntaxError", NULL,
+				    "unexpected argument to "
+				    "remove-primary: '%s'", argv[i]));
+			}
+		} else if (strcmp(argv[i], "remove-recovery") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'remove-recovery' keyword requires "
+				    "arguments");
+				goto out;
+			}
+			if (strcmp(argv[i], "all") == 0) {
+				nconfig = ebox_tpl_next_config(ebox_tpl, NULL);
+				while ((config = nconfig) != NULL) {
+					nconfig = ebox_tpl_next_config(ebox_tpl,
+					    config);
+					if (ebox_tpl_config_type(config) ==
+					    EBOX_RECOVERY) {
+						ebox_tpl_remove_config(ebox_tpl,
+						    config);
+						ebox_tpl_config_free(config);
+					}
+				}
+			} else {
+				return (errf("SyntaxError", NULL,
+				    "unexpected argument to "
+				    "remove-recovery: '%s'", argv[i]));
+			}
+		} else {
+			return (errf("SyntaxError", NULL,
+			    "unexpected configuration keyword '%s'", argv[i]));
+		}
+	}
+
+	if (ebox_interactive) {
+		interactive_edit_tpl(ebox_tpl);
+	}
+
+	buf = sshbuf_new();
+	error = sshbuf_put_ebox_tpl(buf, ebox_tpl);
+	if (error)
+		return (error);
+
+	file = fopen(tplfile, "w");
+	if (file == NULL && errno == ENOENT) {
+		dirpath = strdup(tplfile);
+		len = strlen(dirpath);
+		for (i = 1; i < len; ++i) {
+			if (dirpath[i] != '/')
+				continue;
+			dirpath[i] = '\0';
+			if (mkdir(dirpath, 0755)) {
+				if (errno != EEXIST) {
+					return (errfno("mkdir", errno,
+					    "creating directory '%s'",
+					    dirpath));
+				}
+			}
+			dirpath[i] = '/';
+		}
+		free(dirpath);
+		file = fopen(tplfile, "w");
+	}
+	if (file == NULL) {
+		return (errfno("fopen", errno, "opening template file '%s' "
+		    "for writing", tplfile));
+	}
+	printwrap(file, sshbuf_dtob64(buf), 64);
+	fclose(file);
+
+out:
+	return (error);
 }
 
 static errf_t *
@@ -1630,12 +1783,6 @@ cmd_stream_decrypt(int argc, char *argv[])
 }
 
 static void
-usage(void)
-{
-	exit(EXIT_USAGE);
-}
-
-static void
 read_tpl_file(const char *tpl)
 {
 	errf_t *error;
@@ -1690,6 +1837,75 @@ read_tpl_file(const char *tpl)
 	free(buf);
 }
 
+static void
+usage(void)
+{
+	fprintf(stderr,
+	    "usage: pivy-box <type> <operation> [options] [tpl]\n"
+	    "Options:\n"
+	    "  -b         batch mode, don't talk to terminal\n"
+	    "  -r         raw input, don't base64-decode stdin\n"
+	    "  -R         raw output, don't base64-encode stdout\n"
+	    "  -i         interactive mode (for editing etc)\n"
+	    "  -f <path>  full path to tpl file instead of using [tpl] arg\n"
+	    "\n");
+	fprintf(stderr,
+	    "If not using -f, templates are stored in " TPL_DEFAULT_PATH "\n\n",
+	    "$HOME", "*");
+	fprintf(stderr,
+	    "Available types and operations:\n"
+	    "\n"
+	    "  tpl|template\n"
+	    "\n"
+	    "    tpl create [-i] <tpl> [builder...]\n"
+	    "      Create a new template from scratch\n"
+	    "      Builder keywords:\n"
+	    "        primary < ... >        specifies a primary config\n"
+	    "          local-guid <guid>    generates based on a local Yubikey\n"
+	    "          name <string>\n"
+	    "          guid <guid>\n"
+	    "          slot <hex>\n"
+	    "          key <'ecdsa-sha2-nistp256 AA...'>       sets 9d key\n"
+	    "          cak <'ecdsa-sha2-nistp256 AA...'>       sets 9e key\n"
+	    "        recovery < ... >       specifies a recovery config\n"
+	    "          require <int>        set # of parts required\n"
+	    "          part < ... >         specifies a part for the config\n"
+	    "            name/guid/slot/key     as above for primary\n"
+	    "\n"
+	    "    tpl edit [-i] <tpl> [builder...]\n"
+	    "      Edit an existing template.\n"
+	    "      Builder keywords:\n"
+	    "        add-primary < ... >    appends a new primary config\n"
+	    "          (same as 'tpl create' primary)\n"
+	    "        add-recovery < ... >   appends a new recovery config\n"
+	    "          (same as 'tpl create' recovery)\n"
+	    "        remove-primary all     removes all primary configs\n"
+	    "        remove-recovery all    removes all recovery configs\n"
+	    "\n"
+	    "    tpl show [tpl]\n"
+	    "      Pretty-prints a template, from a file using [tpl] or -f,\n"
+	    "      or from stdin if neither is given.\n"
+	    "\n"
+	    "  key\n"
+	    "\n"
+	    "    key generate [-l bytes] <tpl>\n"
+	    "    key lock <tpl>\n"
+	    "    key unlock\n"
+	    "    key relock <newtpl>\n"
+	    "\n"
+	    "  stream\n"
+	    "\n"
+	    "    stream encrypt <tpl>\n"
+	    "    stream decrypt\n"
+	    "\n"
+	    "  challenge\n"
+	    "\n"
+	    "    challenge info\n"
+	    "    challenge respond\n"
+	    "\n");
+	exit(EXIT_USAGE);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1742,7 +1958,7 @@ main(int argc, char *argv[])
 	argv += optind;
 
 	if (strcmp(type, "tpl") == 0 || strcmp(type, "template") == 0) {
-		if (strcmp(op, "show") == 0) {
+		if (strcmp(op, "show") == 0 && argc == 0 && tpl[0] == 0) {
 			error = cmd_tpl_show(argc, argv);
 			goto out;
 		}
@@ -1780,12 +1996,17 @@ main(int argc, char *argv[])
 	if (strcmp(type, "tpl") == 0 || strcmp(type, "template") == 0) {
 
 		if (strcmp(op, "create") == 0) {
-			error = cmd_tpl_create(argc, argv);
+			error = cmd_tpl_create(tpl, argc, argv);
 			goto out;
 
 		} else if (strcmp(op, "edit") == 0) {
 			read_tpl_file(tpl);
-			error = cmd_tpl_edit(argc, argv);
+			error = cmd_tpl_edit(tpl, argc, argv);
+			goto out;
+
+		} else if (strcmp(op, "show") == 0) {
+			read_tpl_file(tpl);
+			error = cmd_tpl_show(argc, argv);
 			goto out;
 		}
 

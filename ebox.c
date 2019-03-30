@@ -743,6 +743,7 @@ sshbuf_get_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config **pconfig)
 		goto out;
 	}
 	config->etc_parts = part;
+	config->etc_lastpart = part;
 
 	for (i = 1; i < config->etc_m; ++i) {
 		if ((err = sshbuf_get_ebox_tpl_part(buf, &part->etp_next))) {
@@ -750,6 +751,7 @@ sshbuf_get_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config **pconfig)
 			goto out;
 		}
 		part = part->etp_next;
+		config->etc_lastpart = part;
 	}
 
 	*pconfig = config;
@@ -847,6 +849,7 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 		goto out;
 	}
 	tpl->et_configs = config;
+	tpl->et_lastconfig = config;
 
 	for (i = 1; i < nconfigs; ++i) {
 		if ((err = sshbuf_get_ebox_tpl_config(buf, &config->etc_next))) {
@@ -855,6 +858,7 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 			goto out;
 		}
 		config = config->etc_next;
+		tpl->et_lastconfig = config;
 	}
 
 	*ptpl = tpl;
