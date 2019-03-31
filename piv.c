@@ -223,6 +223,8 @@ sw_to_name(enum iso_sw sw)
 	}
 	if ((sw & 0xFF00) == SW_BYTES_REMAINING_00)
 		return ("BYTES_REMAINING");
+	else if ((sw & 0xFF00) == SW_CORRECT_LE_00)
+		return ("CORRECT_LE");
 	else if ((sw & 0xFFF0) == SW_INCORRECT_PIN)
 		return ("INCORRECT_PIN");
 	else if ((sw & 0xFF00) == SW_WARNING_NO_CHANGE_00)
@@ -497,7 +499,7 @@ piv_probe_ykpiv(struct piv_token *pk)
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_VER, 0x00, 0x00);
 
-	err = piv_apdu_transceive(pk, apdu);
+	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_probe_ykpiv.transceive_apdu failed",
@@ -536,7 +538,7 @@ ykpiv_read_serial(struct piv_token *pt)
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_SERIAL, 0x00, 0x00);
 
-	err = piv_apdu_transceive(pt, apdu);
+	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
 		bunyan_log(WARN, "ykpiv_read_serial.transceive_apdu failed",
@@ -1549,10 +1551,19 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 			apdu->a_cls &= ~CLA_CHAIN;
 			apdu->a_cmd.b_len = rem;
 		}
+again:
 		rv = piv_apdu_transceive(pk, apdu);
 		if (rv)
 			return (rv);
-		if ((apdu->a_sw & 0xFF00) == SW_NO_ERROR ||
+		if ((apdu->a_sw & 0xFF00) == SW_CORRECT_LE_00) {
+			apdu->a_le = apdu->a_sw & 0x00FF;
+			/*
+			 * We have to explicitly jump here because this case
+			 * can happen even on zero-length commands (where rem
+			 * would be 0 too and we would leave this loop)
+			 */
+			goto again;
+		} else if ((apdu->a_sw & 0xFF00) == SW_NO_ERROR ||
 		    (apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00 ||
 		    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
 		    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
@@ -1579,8 +1590,10 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 		apdu->a_ins = INS_CONTINUE;
 		apdu->a_p1 = 0;
 		apdu->a_p2 = 0;
-		if ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00)
+		if ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00 ||
+		    (apdu->a_sw & 0xFF00) == SW_CORRECT_LE_00) {
 			apdu->a_le = apdu->a_sw & 0x00FF;
+		}
 		apdu->a_cmd.b_data = NULL;
 		apdu->a_reply.b_offset += apdu->a_reply.b_len;
 		VERIFY(apdu->a_reply.b_offset < apdu->a_reply.b_size);
@@ -1775,7 +1788,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	apdu->a_cmd.b_data = tlv_buf(tlv);
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
-	err = piv_apdu_transceive(pt, apdu);
+	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
 		bunyan_log(DEBUG, "piv_auth_admin.transceive_chain failed",
@@ -1874,7 +1887,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	explicit_bzero(resp, resplen);
 	free(resp);
 
-	err = piv_apdu_transceive(pt, apdu);
+	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
 		bunyan_log(DEBUG, "piv_auth_admin.transceive_chain failed",
@@ -2911,7 +2924,7 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	apdu->a_cmd.b_data = pinbuf;
 	apdu->a_cmd.b_len = 16;
 
-	err = piv_apdu_transceive(pk, apdu);
+	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_change_pin.transceive failed",
@@ -2976,7 +2989,7 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 	apdu->a_cmd.b_data = pinbuf;
 	apdu->a_cmd.b_len = 16;
 
-	err = piv_apdu_transceive(pk, apdu);
+	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_change_pin.transceive_apdu failed",
@@ -3064,7 +3077,7 @@ ykpiv_set_pin_retries(struct piv_token *pk, uint pintries, uint puktries)
 
 	apdu = piv_apdu_make(CLA_ISO, INS_SET_PIN_RETRIES, pintries, puktries);
 
-	err = piv_apdu_transceive(pk, apdu);
+	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
 		bunyan_log(WARN,
@@ -3134,7 +3147,7 @@ ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
 	apdu->a_cmd.b_data = databuf;
 	apdu->a_cmd.b_len = 3 + keylen;
 
-	err = piv_apdu_transceive(pk, apdu);
+	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
 		bunyan_log(WARN,
@@ -3211,7 +3224,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	if (pin == NULL || canskip || (retries != NULL && *retries > 0)) {
 		apdu = piv_apdu_make(CLA_ISO, INS_VERIFY, 0x00, type);
 
-		err = piv_apdu_transceive(pk, apdu);
+		err = piv_apdu_transceive_chain(pk, apdu);
 		if (err) {
 			err = ioerrf(err, pk->pt_rdrname);
 			bunyan_log(WARN, "piv_verify_pin.transceive failed",
@@ -3319,7 +3332,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	apdu->a_cmd.b_data = pinbuf;
 	apdu->a_cmd.b_len = 8;
 
-	err = piv_apdu_transceive(pk, apdu);
+	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
 		bunyan_log(WARN, "piv_verify_pin.transceive failed",
