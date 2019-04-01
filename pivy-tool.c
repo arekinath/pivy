@@ -1615,7 +1615,7 @@ cmd_sgdebug(void)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
-	err = piv_apdu_transceive(selk, apdu);
+	err = piv_apdu_transceive_chain(selk, apdu);
 	piv_txn_end(selk);
 
 	if (err) {
