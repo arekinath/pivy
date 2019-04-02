@@ -1670,6 +1670,8 @@ cmd_box_info(void)
 		return (err);
 	free(buf);
 
+	printf("version:      %u\n", piv_box_version(box));
+
 	if (piv_box_has_guidslot(box)) {
 		printf("type:         hardware (has guid + slot)\n");
 		hex = buf_to_hex(piv_box_guid(box), 16, B_FALSE);
@@ -1690,7 +1692,8 @@ cmd_box_info(void)
 
 	printf("cipher:       %s\n", piv_box_cipher(box));
 	printf("kdf:          %s\n", piv_box_kdf(box));
-	printf("encsize:      %lu\n", piv_box_encsize(box));
+	printf("encsize:      %lu bytes\n", piv_box_encsize(box));
+	printf("nonce:        %lu bytes\n", piv_box_nonce_size(box));
 
 	return (ERRF_OK);
 }

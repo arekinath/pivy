@@ -3756,6 +3756,7 @@ piv_box_new(void)
 {
 	struct piv_ecdh_box *box;
 	box = calloc(1, sizeof (struct piv_ecdh_box));
+	box->pdb_version = PIV_BOX_VNEXT - 1;
 	return (box);
 }
 
@@ -3766,6 +3767,7 @@ piv_box_clone(const struct piv_ecdh_box *box)
 	nbox = calloc(1, sizeof (struct piv_ecdh_box));
 	if (nbox == NULL)
 		goto err;
+	nbox->pdb_version = box->pdb_version;
 	nbox->pdb_guidslot_valid = box->pdb_guidslot_valid;
 	if (box->pdb_guidslot_valid) {
 		nbox->pdb_guidslot_valid = B_TRUE;
@@ -3830,6 +3832,7 @@ piv_box_free(struct piv_ecdh_box *box)
 	}
 	free(box->pdb_iv.b_data);
 	free(box->pdb_enc.b_data);
+	free(box->pdb_nonce.b_data);
 	if (box->pdb_plain.b_data != NULL) {
 		explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 		free(box->pdb_plain.b_data);
@@ -3984,6 +3987,10 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	dgctx = ssh_digest_start(dgalg);
 	VERIFY3P(dgctx, !=, NULL);
 	VERIFY0(ssh_digest_update(dgctx, sec, seclen));
+	if (box->pdb_nonce.b_len > 0) {
+		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
+		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
+	}
 	key = calloc(1, dglen);
 	VERIFY3P(key, !=, NULL);
 	VERIFY0(ssh_digest_final(dgctx, key, dglen));
@@ -4113,6 +4120,10 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	dgctx = ssh_digest_start(dgalg);
 	VERIFY3P(dgctx, !=, NULL);
 	VERIFY0(ssh_digest_update(dgctx, sec, seclen));
+	if (box->pdb_nonce.b_len > 0) {
+		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
+		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
+	}
 	key = calloc(1, dglen);
 	VERIFY3P(key, !=, NULL);
 	VERIFY0(ssh_digest_final(dgctx, key, dglen));
@@ -4195,8 +4206,8 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	struct sshkey *pkey;
 	struct sshcipher_ctx *cctx;
 	struct ssh_digest_ctx *dgctx;
-	uint8_t *iv, *key, *sec, *enc, *plain;
-	size_t ivlen, authlen, blocksz, keylen, dglen, seclen;
+	uint8_t *iv, *key, *sec, *enc, *plain, *nonce;
+	size_t ivlen, authlen, blocksz, keylen, dglen, seclen, noncelen;
 	size_t fieldsz, plainlen, enclen;
 	size_t padding, i;
 
@@ -4227,6 +4238,20 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
+
+	if (box->pdb_version >= PIV_BOX_V2 && (
+	    box->pdb_nonce.b_data == NULL || box->pdb_nonce.b_len == 0)) {
+		noncelen = 16;
+		nonce = calloc(1, noncelen);
+		VERIFY3P(nonce, !=, NULL);
+		arc4random_buf(nonce, noncelen);
+
+		free(box->pdb_nonce.b_data);
+		box->pdb_nonce.b_data = nonce;
+		box->pdb_nonce.b_offset = 0;
+		box->pdb_nonce.b_size = noncelen;
+		box->pdb_nonce.b_len = noncelen;
+	}
 
 	dgalg = ssh_digest_alg_by_name(box->pdb_kdf);
 	if (dgalg == -1) {
@@ -4260,6 +4285,10 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	dgctx = ssh_digest_start(dgalg);
 	VERIFY3P(dgctx, !=, NULL);
 	VERIFY0(ssh_digest_update(dgctx, sec, seclen));
+	if (box->pdb_nonce.b_len > 0) {
+		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
+		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
+	}
 	key = calloc(1, dglen);
 	VERIFY3P(key, !=, NULL);
 	VERIFY0(ssh_digest_final(dgctx, key, dglen));
@@ -4411,6 +4440,7 @@ sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 {
 	int rc;
 	const char *tname;
+	uint8_t ver;
 
 	if (box->pdb_pub->type != KEY_ECDSA ||
 	    box->pdb_ephem_pub->type != KEY_ECDSA) {
@@ -4429,7 +4459,8 @@ sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 	if ((rc = sshbuf_put_u8(buf, 0xB0)) ||
 	    (rc = sshbuf_put_u8(buf, 0xC5)))
 		return (ssherrf("sshbuf_put_u8", rc));
-	if ((rc = sshbuf_put_u8(buf, 0x01)))
+	ver = box->pdb_version;
+	if ((rc = sshbuf_put_u8(buf, ver)))
 		return (ssherrf("sshbuf_put_u8", rc));
 	if (!box->pdb_guidslot_valid) {
 		if ((rc = sshbuf_put_u8(buf, 0x00)) ||
@@ -4449,6 +4480,15 @@ sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 	if ((rc = sshbuf_put_cstring8(buf, box->pdb_cipher)) ||
 	    (rc = sshbuf_put_cstring8(buf, box->pdb_kdf)))
 		return (ssherrf("sshbuf_put_cstring8", rc));
+
+	if (ver >= PIV_BOX_V2) {
+		if ((rc = sshbuf_put_string8(buf, box->pdb_nonce.b_data,
+		    box->pdb_nonce.b_len)))
+		return (ssherrf("sshbuf_put_string8", rc));
+	} else {
+		VERIFY3U(box->pdb_nonce.b_len, ==, 0);
+		VERIFY3P(box->pdb_nonce.b_data, ==, NULL);
+	}
 
 	tname = sshkey_curve_nid_to_name(box->pdb_pub->ecdsa_nid);
 	VERIFY(tname != NULL);
@@ -4523,11 +4563,12 @@ sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
-	if (ver != 0x01) {
+	if (ver < PIV_BOX_V1 || ver >= PIV_BOX_VNEXT) {
 		err = boxverrf(errf("VersionError", NULL,
 		    "Unsupported version number 0x%02x", ver));
 		goto out;
 	}
+	box->pdb_version = ver;
 
 	if ((rc = sshbuf_get_u8(buf, &temp))) {
 		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
@@ -4561,6 +4602,15 @@ sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	    (rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_kdf, NULL))) {
 		err = boxderrf(ssherrf("sshbuf_get_cstring8", rc));
 		goto out;
+	}
+
+	if (ver >= PIV_BOX_V2) {
+		if ((rc = sshbuf_get_string8(buf, &box->pdb_nonce.b_data,
+		    &box->pdb_nonce.b_size))) {
+			err = boxderrf(ssherrf("sshbuf_get_string8", rc));
+			goto out;
+		}
+		box->pdb_nonce.b_len = box->pdb_nonce.b_size;
 	}
 
 	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
@@ -4678,6 +4728,18 @@ size_t
 piv_box_encsize(const struct piv_ecdh_box *box)
 {
 	return (box->pdb_enc.b_len);
+}
+
+size_t
+piv_box_nonce_size(const struct piv_ecdh_box *box)
+{
+	return (box->pdb_nonce.b_len);
+}
+
+uint
+piv_box_version(const struct piv_ecdh_box *box)
+{
+	return (box->pdb_version);
 }
 
 boolean_t

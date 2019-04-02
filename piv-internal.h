@@ -26,6 +26,7 @@ struct apdubuf {
 };
 
 struct piv_ecdh_box {
+	uint8_t pdb_version;
 	boolean_t pdb_guidslot_valid;
 	uint8_t pdb_guid[16];
 	enum piv_slotid pdb_slot;
@@ -37,9 +38,16 @@ struct piv_ecdh_box {
 	const char *pdb_cipher;
 	const char *pdb_kdf;
 
+	struct apdubuf pdb_nonce;
 	struct apdubuf pdb_iv;
 	struct apdubuf pdb_enc;
 	struct apdubuf pdb_plain;
+};
+
+enum piv_box_version {
+	PIV_BOX_V1 = 0x01,
+	PIV_BOX_V2 = 0x02,
+	PIV_BOX_VNEXT
 };
 
 #endif
