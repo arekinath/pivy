@@ -541,13 +541,20 @@ sshbuf_put_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part *part)
 	int rc = 0;
 	errf_t *err;
 	struct sshbuf *kbuf;
+	const char *tname;
+
+	if (part->etp_pubkey->type != KEY_ECDSA) {
+		return (errf("ArgumentError", NULL,
+		    "ebox part pubkeys must be ECDSA keys"));
+	}
+	tname = sshkey_curve_nid_to_name(part->etp_pubkey->ecdsa_nid);
 
 	kbuf = sshbuf_new();
 	VERIFY(kbuf != NULL);
 
 	if ((rc = sshbuf_put_u8(buf, EBOX_PART_PUBKEY)) ||
-	    (rc = sshkey_putb(part->etp_pubkey, kbuf)) ||
-	    (rc = sshbuf_put_stringb(buf, kbuf))) {
+	    (rc = sshbuf_put_cstring8(buf, tname)) ||
+	    (rc = sshbuf_put_eckey8(buf, part->etp_pubkey->ecdsa))) {
 		err = ssherrf("sshbuf_put_*", rc);
 		goto out;
 	}
@@ -598,6 +605,8 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	errf_t *err = NULL;
 	size_t len;
 	uint8_t tag, *guid;
+	char *tname;
+	struct sshkey *k;
 
 	part = calloc(1, sizeof (struct ebox_tpl_part));
 	VERIFY(part != NULL);
@@ -612,15 +621,33 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	while (tag != EBOX_PART_END) {
 		switch (tag) {
 		case EBOX_PART_PUBKEY:
-			sshbuf_reset(kbuf);
-			rc = sshbuf_get_stringb(buf, kbuf);
-			if (rc) {
-				err = ssherrf("sshbuf_get_stringb", rc);
+			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
+				err = ssherrf("sshbuf_get_cstring8", rc);
 				goto out;
 			}
-			rc = sshkey_fromb(kbuf, &part->etp_pubkey);
+			part->etp_pubkey = (k = sshkey_new(KEY_ECDSA));
+			if (part->etp_pubkey == NULL) {
+				err = ERRF_NOMEM;
+				goto out;
+			}
+			k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+			if (k->ecdsa_nid == -1) {
+				err = errf("CurveError", NULL, "EC curve '%s' "
+				    "not supported", tname);
+				goto out;
+			}
+			k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+			VERIFY(k->ecdsa != NULL);
+			rc = sshbuf_get_eckey8(buf, k->ecdsa);
 			if (rc) {
-				err = ssherrf("sshkey_fromb", rc);
+				err = ssherrf("sshbuf_get_eckey8", rc);
+				goto out;
+			}
+			rc = sshkey_ec_validate_public(
+			    EC_KEY_get0_group(k->ecdsa),
+			    EC_KEY_get0_public_key(k->ecdsa));
+			if (rc) {
+				err = ssherrf("sshkey_ec_validate_public", rc);
 				goto out;
 			}
 			break;
@@ -1016,6 +1043,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 	size_t len;
 	uint8_t tag, *guid;
 	errf_t *err = NULL;
+	char *tname;
+	struct sshkey *k;
 
 	part = calloc(1, sizeof (struct ebox_part));
 	VERIFY(part != NULL);
@@ -1034,15 +1063,33 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 	while (tag != EBOX_PART_END) {
 		switch (tag) {
 		case EBOX_PART_PUBKEY:
-			sshbuf_reset(kbuf);
-			rc = sshbuf_get_stringb(buf, kbuf);
-			if (rc) {
-				err = ssherrf("sshbuf_get_stringb", rc);
+			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
+				err = ssherrf("sshbuf_get_cstring8", rc);
 				goto out;
 			}
-			rc = sshkey_fromb(kbuf, &tpart->etp_pubkey);
+			tpart->etp_pubkey = (k = sshkey_new(KEY_ECDSA));
+			if (tpart->etp_pubkey == NULL) {
+				err = ERRF_NOMEM;
+				goto out;
+			}
+			k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+			if (k->ecdsa_nid == -1) {
+				err = errf("CurveError", NULL, "EC curve '%s' "
+				    "not supported", tname);
+				goto out;
+			}
+			k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+			VERIFY(k->ecdsa != NULL);
+			rc = sshbuf_get_eckey8(buf, k->ecdsa);
 			if (rc) {
-				err = ssherrf("sshkey_fromb", rc);
+				err = ssherrf("sshbuf_get_eckey8", rc);
+				goto out;
+			}
+			rc = sshkey_ec_validate_public(
+			    EC_KEY_get0_group(k->ecdsa),
+			    EC_KEY_get0_public_key(k->ecdsa));
+			if (rc) {
+				err = ssherrf("sshkey_ec_validate_public", rc);
 				goto out;
 			}
 			break;
