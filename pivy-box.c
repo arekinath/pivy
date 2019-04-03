@@ -37,6 +37,7 @@
 #endif
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 
 #include "libssh/sshkey.h"
 #include "libssh/sshbuf.h"
@@ -82,9 +83,11 @@ static boolean_t ebox_raw_in = B_FALSE;
 static boolean_t ebox_raw_out = B_FALSE;
 static boolean_t ebox_interactive = B_FALSE;
 static struct ebox_tpl *ebox_tpl;
+static size_t ebox_keylen = 32;
 
 #define	TPL_DEFAULT_PATH	"%s/.ebox/tpl/%s"
 #define	TPL_MAX_SIZE		4096
+#define	EBOX_MAX_SIZE		16384
 
 #ifndef LINT
 #define pcscerrf(call, rv)	\
@@ -320,12 +323,20 @@ out:
 }
 
 static errf_t *
-local_unlock(struct piv_ecdh_box *box)
+local_unlock(struct ebox_part *part)
 {
 	errf_t *err, *agerr = NULL;
 	int rc;
-	struct piv_slot *slot;
+	struct piv_slot *slot, *cakslot;
 	struct piv_token *tokens = NULL, *token;
+	struct ebox_tpl_part *tpart;
+	struct piv_ecdh_box *box;
+	struct sshkey *cak;
+	const char *partname;
+
+	tpart = ebox_part_tpl(part);
+	box = ebox_part_box(part);
+	partname = ebox_tpl_part_name(tpart);
 
 	if (ssh_get_authentication_socket(&ebox_authfd) != -1) {
 		agerr = local_unlock_agent(box);
@@ -362,11 +373,41 @@ local_unlock(struct piv_ecdh_box *box)
 	if (err)
 		goto out;
 
+	if (partname != NULL) {
+		fprintf(stderr, "Using primary configuration '%s'...\n",
+		    partname);
+	}
+
 	if ((err = piv_txn_begin(token)))
 		goto out;
 	if ((err = piv_select(token))) {
 		piv_txn_end(token);
 		goto out;
+	}
+
+	cak = ebox_tpl_part_cak(tpart);
+	if (cak != NULL) {
+		cakslot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
+		if (cakslot == NULL) {
+			err = piv_read_cert(token, PIV_SLOT_CARD_AUTH);
+			if (err) {
+				err = errf("CardAuthenticationError", err,
+				    "Failed to validate CAK");
+				goto out;
+			}
+			cakslot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
+		}
+		if (cakslot == NULL) {
+			err = errf("CardAuthenticationError", NULL,
+			    "Failed to validate CAK");
+			goto out;
+		}
+		err = piv_auth_key(token, cakslot, cak);
+		if (err) {
+			err = errf("CardAuthenticationError", err,
+			    "Failed to validate CAK");
+			goto out;
+		}
 	}
 
 	boolean_t prompt = B_FALSE;
@@ -387,6 +428,12 @@ pin:
 out:
 	piv_release(tokens);
 	return (err);
+}
+
+static errf_t *
+recovery_unlock(struct ebox_config *config)
+{
+	return (errf("NotImplemented", NULL, "not implemented yet"));
 }
 
 static void
@@ -493,6 +540,7 @@ parse_hex(const char *str, uint8_t **out, size_t *outlen)
 
 #if defined(__sun)
 static GetLine *sungl = NULL;
+FILE *devterm = NULL;
 
 static char *
 readline(const char *prompt)
@@ -1743,8 +1791,36 @@ cmd_tpl_show(int argc, char *argv[])
 static errf_t *
 cmd_key_generate(int argc, char *argv[])
 {
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
+	uint8_t *key;
+	struct ebox *ebox;
+	errf_t *error;
+	struct sshbuf *buf;
+
+	key = calloc(1, ebox_keylen);
+	if (key == NULL)
+		errx(EXIT_ERROR, "failed to allocate memory");
+
+	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+	(void) madvise(key, ebox_keylen, MADV_DONTDUMP);
+
+	arc4random_buf(key, ebox_keylen);
+
+	error = ebox_create(ebox_tpl, key, ebox_keylen, NULL, 0, &ebox);
+	if (error)
+		return (error);
+
+	buf = sshbuf_new();
+	if (buf == NULL)
+		errx(EXIT_ERROR, "failed to allocate memory");
+
+	error = sshbuf_put_ebox(buf, ebox);
+	if (error)
+		return (error);
+
+	printwrap(stdout, sshbuf_dtob64(buf), 64);
+
+	ebox_free(ebox);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1757,8 +1833,78 @@ cmd_key_lock(int argc, char *argv[])
 static errf_t *
 cmd_key_unlock(int argc, char *argv[])
 {
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
+	struct ebox *ebox;
+	struct ebox_config *config;
+	struct ebox_part *part;
+	struct ebox_tpl_config *tconfig;
+	errf_t *error;
+	struct sshbuf *buf;
+	size_t keylen;
+	uint8_t *key;
+	struct question *q;
+	struct answer *a;
+	char k = '0';
+
+	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	error = sshbuf_get_ebox(buf, &ebox);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to parse input as "
+		    "a base64-encoded ebox");
+	}
+
+	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
+			part = ebox_config_next_part(config, NULL);
+			error = local_unlock(part);
+			if (error && !errf_caused_by(error, "NotFoundError"))
+				return (error);
+			if (error) {
+				erfree(error);
+				continue;
+			}
+			error = ebox_unlock(ebox, config);
+			if (error)
+				return (error);
+			goto done;
+		}
+	}
+
+	q = calloc(1, sizeof (struct question));
+	question_printf(q, "-- Recovery mode --\n");
+	question_printf(q, "Select a configuration to recover from:");
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		if (ebox_tpl_config_type(tconfig) == EBOX_RECOVERY) {
+			a = ebox_config_alloc_private(config,
+			    sizeof (struct answer));
+			a->a_key = ++k;
+			a->a_priv = config;
+			make_answer_text_for_config(tconfig, a);
+			add_answer(q, a);
+		}
+	}
+	question_prompt(q, &a);
+	config = (struct ebox_config *)a->a_priv;
+	error = recovery_unlock(config);
+	if (error)
+		return (error);
+	error = ebox_recover(ebox, config);
+	if (error)
+		return (error);
+
+done:
+	key = ebox_key(ebox, &keylen);
+	buf = sshbuf_from(key, keylen);
+	if (buf == NULL)
+		errx(EXIT_ERROR, "failed to allocate memory");
+	printwrap(stdout, sshbuf_dtob64(buf), 64);
+	sshbuf_free(buf);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -1889,8 +2035,14 @@ usage(void)
 	    "  key\n"
 	    "\n"
 	    "    key generate [-l bytes] <tpl>\n"
+	    "      Generates a random key and stores it in an ebox\n"
+	    "      ebox is output to stdout\n"
+	    "\n"
 	    "    key lock <tpl>\n"
 	    "    key unlock\n"
+	    "      Unlocks an ebox given on stdin and outputs the key to\n"
+	    "      stdout.\n"
+	    "\n"
 	    "    key relock <newtpl>\n"
 	    "\n"
 	    "  stream\n"
@@ -1914,6 +2066,17 @@ main(int argc, char *argv[])
 	int c;
 	char tpl[PATH_MAX] = { 0 };
 	errf_t *error = NULL;
+	unsigned long int parsed;
+	char *p;
+
+#if defined(RL_READLINE_VERSION)
+	rl_instream = fopen("/dev/tty", "w+");
+	rl_outstream = rl_instream;
+#endif
+#if defined(__sun)
+	devterm = fopen("/dev/tty", "w+");
+	gl_change_terminal(sungl, devterm, devterm, getenv("TERM"));
+#endif
 
 	if (argc < 2) {
 		warnx("type and operation required");
@@ -1947,6 +2110,22 @@ main(int argc, char *argv[])
 			break;
 		case 'i':
 			ebox_interactive = B_TRUE;
+			break;
+		case 'l':
+			if (strcmp(type, "key") != 0 ||
+			    strcmp(op, "generate") != 0) {
+				warnx("option -l only supported with "
+				    "'key generate' subcommand");
+				usage();
+				return (EXIT_USAGE);
+			}
+			errno = 0;
+			parsed = strtoull(optarg, &p, 0);
+			if (errno != 0 || *p != '\0') {
+				errx(EXIT_USAGE,
+				    "invalid argument for -l: '%s'", optarg);
+			}
+			ebox_keylen = parsed;
 			break;
 		default:
 			usage();

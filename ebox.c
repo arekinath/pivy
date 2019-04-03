@@ -936,6 +936,28 @@ ebox_free(struct ebox *box)
 	free(box);
 }
 
+void *
+ebox_config_private(const struct ebox_config *config)
+{
+	return (config->ec_priv);
+}
+
+void *
+ebox_config_alloc_private(struct ebox_config *config, size_t sz)
+{
+	VERIFY(config->ec_priv == NULL);
+	config->ec_priv = calloc(1, sz);
+	return (config->ec_priv);
+}
+
+void
+ebox_config_free_private(struct ebox_config *config)
+{
+	VERIFY(config->ec_priv != NULL);
+	free(config->ec_priv);
+	config->ec_priv = NULL;
+}
+
 struct ebox_stream *
 ebox_stream_init_decrypt(void)
 {
@@ -1296,7 +1318,7 @@ sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox_part *part)
 	if (tpart->etp_cak != NULL) {
 		sshbuf_reset(kbuf);
 		if ((rc = sshbuf_put_u8(buf, EBOX_PART_CAK)) ||
-		    (rc = sshkey_putb(tpart->etp_cak, buf)) ||
+		    (rc = sshkey_putb(tpart->etp_cak, kbuf)) ||
 		    (rc = sshbuf_put_stringb(buf, kbuf))) {
 			err = ssherrf("sshbuf_put_*", rc);
 			goto out;
@@ -1412,10 +1434,22 @@ ebox_config_next_part(const struct ebox_config *config,
 	return (prev->ep_next);
 }
 
+struct ebox_tpl_config *
+ebox_config_tpl(const struct ebox_config *config)
+{
+	return (config->ec_tpl);
+}
+
 struct piv_ecdh_box *
 ebox_part_box(const struct ebox_part *part)
 {
 	return (part->ep_box);
+}
+
+struct ebox_tpl_part *
+ebox_part_tpl(const struct ebox_part *part)
+{
+	return (part->ep_tpl);
 }
 
 const struct ebox_challenge *
