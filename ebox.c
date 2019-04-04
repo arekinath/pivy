@@ -985,6 +985,28 @@ ebox_config_free_private(struct ebox_config *config)
 	config->ec_priv = NULL;
 }
 
+void *
+ebox_part_private(const struct ebox_part *part)
+{
+	return (part->ep_priv);
+}
+
+void *
+ebox_part_alloc_private(struct ebox_part *part, size_t sz)
+{
+	VERIFY(part->ep_priv == NULL);
+	part->ep_priv = calloc(1, sz);
+	return (part->ep_priv);
+}
+
+void
+ebox_part_free_private(struct ebox_part *part)
+{
+	VERIFY(part->ep_priv != NULL);
+	free(part->ep_priv);
+	part->ep_priv = NULL;
+}
+
 struct ebox_stream *
 ebox_stream_init_decrypt(void)
 {

@@ -123,7 +123,7 @@ pin_type_to_name(enum piv_pin type)
 }
 
 static void
-assert_pin(struct piv_token *pk, boolean_t prompt)
+assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 {
 	errf_t *er;
 	uint retries = ebox_min_retries;
@@ -135,8 +135,8 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 	if (ebox_pin == NULL && prompt) {
 		char prompt[64];
 		char *guid = piv_token_shortid(pk);
-		snprintf(prompt, 64, "Enter %s for token %s: ",
-		    pin_type_to_name(auth), guid);
+		snprintf(prompt, 64, "Enter %s for token %s (%s): ",
+		    pin_type_to_name(auth), guid, partname);
 		do {
 			ebox_pin = getpass(prompt);
 		} while (ebox_pin == NULL && errno == EINTR);
@@ -144,7 +144,7 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		    strlen(ebox_pin) < 1) {
 			piv_txn_end(pk);
 			errx(EXIT_PIN, "a PIN is required to unlock "
-			    "token %s", guid);
+			    "token %s (%s)", guid, partname);
 		} else if (ebox_pin == NULL) {
 			piv_txn_end(pk);
 			err(EXIT_PIN, "failed to read PIN");
@@ -373,11 +373,6 @@ local_unlock(struct ebox_part *part)
 	if (err)
 		goto out;
 
-	if (partname != NULL) {
-		fprintf(stderr, "Using primary configuration '%s'...\n",
-		    partname);
-	}
-
 	if ((err = piv_txn_begin(token)))
 		goto out;
 	if ((err = piv_select(token))) {
@@ -412,7 +407,7 @@ local_unlock(struct ebox_part *part)
 
 	boolean_t prompt = B_FALSE;
 pin:
-	assert_pin(token, prompt);
+	assert_pin(token, partname, prompt);
 	err = piv_box_open(token, slot, box);
 	if (errf_caused_by(err, "PermissionError") && !prompt) {
 		prompt = B_TRUE;
@@ -428,12 +423,6 @@ pin:
 out:
 	piv_release(tokens);
 	return (err);
-}
-
-static errf_t *
-recovery_unlock(struct ebox_config *config)
-{
-	return (errf("NotImplemented", NULL, "not implemented yet"));
 }
 
 static void
@@ -578,6 +567,8 @@ struct answer {
 void
 add_answer(struct question *q, struct answer *a)
 {
+	if (a->a_prev != NULL || a->a_next != NULL || q->q_lastans == a)
+		return;
 	if (q->q_lastans == NULL) {
 		q->q_ans = a;
 	} else {
@@ -602,12 +593,16 @@ remove_answer(struct question *q, struct answer *a)
 	if (a->a_prev != NULL) {
 		a->a_prev->a_next = a->a_next;
 	} else {
+		if (q->q_ans != a && a->a_next == NULL)
+			return;
 		VERIFY(q->q_ans == a);
 		q->q_ans = a->a_next;
 	}
 	if (a->a_next != NULL) {
 		a->a_next->a_prev = a->a_prev;
 	} else {
+		if (q->q_lastans != a && a->a_prev == NULL)
+			return;
 		VERIFY(q->q_lastans == a);
 		q->q_lastans = a->a_prev;
 	}
@@ -1483,6 +1478,277 @@ write:
 	return;
 }
 
+enum part_intent {
+	INTENT_NONE,
+	INTENT_LOCAL,
+	INTENT_CHAL_RESP
+};
+
+struct part_state {
+	struct ebox_part *ps_part;
+	struct answer *ps_ans;
+	enum part_intent ps_intent;
+};
+
+static void
+make_answer_text_for_pstate(struct part_state *state)
+{
+	struct ebox_tpl_part *tpart;
+	struct answer *a;
+	const char *name;
+	char *guidhex = NULL;
+
+	a = state->ps_ans;
+
+	a->a_text[0] = '\0';
+	a->a_used = 0;
+
+	tpart = ebox_part_tpl(state->ps_part);
+
+	guidhex = buf_to_hex(ebox_tpl_part_guid(tpart), 4, B_FALSE);
+	answer_printf(a, "%s", guidhex);
+	free(guidhex);
+
+	name = ebox_tpl_part_name(tpart);
+	if (name != NULL)
+		answer_printf(a, " (%s)", name);
+
+	switch (state->ps_intent) {
+	case INTENT_NONE:
+		break;
+	case INTENT_LOCAL:
+		answer_printf(a, "* [local]");
+		break;
+	case INTENT_CHAL_RESP:
+		answer_printf(a, "* [remote/challenge-response]");
+		break;
+	}
+}
+
+static errf_t *
+interactive_part_state(struct part_state *state)
+{
+	struct ebox_tpl_part *tpart;
+	struct question *q = NULL;
+	struct answer *a;
+	char *guidhex = NULL;
+	struct sshbuf *buf = NULL;
+	int rc;
+
+	tpart = ebox_part_tpl(state->ps_part);
+
+	buf = sshbuf_new();
+	if (buf == NULL)
+		err(EXIT_ERROR, "memory allocation failed");
+
+	q = calloc(1, sizeof (struct question));
+	if (q == NULL)
+		err(EXIT_ERROR, "memory allocation failed");
+	question_printf(q, "-- Select recovery method for part %c --\n",
+	    state->ps_ans->a_key);
+
+	guidhex = buf_to_hex(ebox_tpl_part_guid(tpart), GUID_LEN, B_FALSE);
+	question_printf(q, "GUID: %s\n", guidhex);
+	free(guidhex);
+	guidhex = NULL;
+
+	question_printf(q, "Name: %s\n", ebox_tpl_part_name(tpart));
+
+	if ((rc = sshkey_format_text(ebox_tpl_part_pubkey(tpart), buf))) {
+		errfx(EXIT_ERROR, ssherrf("sshkey_format_text", rc),
+		    "failed to write part public key");
+	}
+	if ((rc = sshbuf_put_u8(buf, '\0'))) {
+		errfx(EXIT_ERROR, ssherrf("sshbuf_put_u8", rc),
+		    "failed to write part public key (null)");
+	}
+	question_printf(q, "Public key (9d): %s", (char *)sshbuf_ptr(buf));
+	sshbuf_reset(buf);
+
+	a = make_answer('x', "Do not use%s",
+	    (state->ps_intent == INTENT_NONE) ? "*" : "");
+	add_answer(q, a);
+	a = make_answer('l',
+	    "Use locally (directly attached to this machine)%s",
+	    (state->ps_intent == INTENT_LOCAL) ? "*" : "");
+	add_answer(q, a);
+	a = make_answer('r', "Use remotely (via challenge-response)%s",
+	    (state->ps_intent == INTENT_CHAL_RESP) ? "*" : "");
+	add_answer(q, a);
+
+	question_prompt(q, &a);
+	switch (a->a_key) {
+	case 'x':
+		state->ps_intent = INTENT_NONE;
+		break;
+	case 'l':
+		state->ps_intent = INTENT_LOCAL;
+		break;
+	case 'r':
+		state->ps_intent = INTENT_CHAL_RESP;
+		break;
+	}
+
+out:
+	free(guidhex);
+	sshbuf_free(buf);
+	question_free(q);
+}
+
+static errf_t *
+interactive_recovery(struct ebox_config *config)
+{
+	struct ebox_part *part;
+	struct ebox_tpl_config *tconfig;
+	struct ebox_tpl_part *tpart;
+	struct part_state *state;
+	struct question *q;
+	struct answer *a, *adone;
+	char k = '0';
+	uint n, ncur;
+	char *line;
+	errf_t *error;
+
+	tconfig = ebox_config_tpl(config);
+	n = ebox_tpl_config_n(tconfig);
+
+	q = calloc(1, sizeof (struct question));
+	a = (struct answer *)ebox_config_private(config);
+	question_printf(q, "-- Recovery config %c --\n", a->a_key);
+	question_printf(q, "Select %u parts to use for recovery", n);
+
+	part = NULL;
+	while ((part = ebox_config_next_part(config, part)) != NULL) {
+		tpart = ebox_part_tpl(part);
+		state = ebox_part_alloc_private(part,
+		    sizeof (struct part_state));
+		VERIFY(state != NULL);
+		state->ps_part = part;
+		state->ps_ans = (a = calloc(1, sizeof (struct answer)));
+		a->a_key = ++k;
+		a->a_priv = state;
+		VERIFY(state->ps_ans != NULL);
+		state->ps_intent = INTENT_NONE;
+		make_answer_text_for_pstate(state);
+		add_answer(q, a);
+	}
+
+	adone = make_answer('r', "begin recovery");
+
+again:
+	question_prompt(q, &a);
+	if (a->a_key == 'r') {
+		goto recover;
+	}
+	state = (struct part_state *)a->a_priv;
+	interactive_part_state(state);
+	make_answer_text_for_pstate(state);
+	ncur = 0;
+	part = NULL;
+	while ((part = ebox_config_next_part(config, part)) != NULL) {
+		state = (struct part_state *)ebox_part_private(part);
+		if (state->ps_intent != INTENT_NONE)
+			++ncur;
+	}
+	if (ncur >= n) {
+		add_answer(q, adone);
+	} else {
+		remove_answer(q, adone);
+	}
+	goto again;
+
+recover:
+	fprintf(stderr,
+	    "-- Beginning recovery --\n"
+	    "Local devices will be attempted in order before remote "
+	    "challenge-responses are processed.\n\n");
+
+	part = NULL;
+	while ((part = ebox_config_next_part(config, part)) != NULL) {
+		state = (struct part_state *)ebox_part_private(part);
+		if (state->ps_intent != INTENT_LOCAL)
+			continue;
+		state->ps_intent = INTENT_NONE;
+		make_answer_text_for_pstate(state);
+		fprintf(stderr, "-- Local device %s --\n",
+		    state->ps_ans->a_text);
+partagain:
+		error = local_unlock(part);
+		if (error && !errf_caused_by(error, "NotFoundError"))
+			return (error);
+		if (error) {
+			warnfx(error, "failed to find device");
+			line = readline("Retry? ");
+			free(line);
+			goto partagain;
+		}
+		fprintf(stderr, "Device box decrypted ok.\n");
+	}
+	return (NULL);
+
+}
+
+static errf_t *
+interactive_unlock_ebox(struct ebox *ebox)
+{
+	struct ebox_config *config;
+	struct ebox_part *part;
+	struct ebox_tpl_config *tconfig;
+	errf_t *error;
+	struct sshbuf *buf;
+	size_t keylen;
+	uint8_t *key;
+	struct question *q;
+	struct answer *a;
+	char k = '0';
+
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
+			part = ebox_config_next_part(config, NULL);
+			error = local_unlock(part);
+			if (error && !errf_caused_by(error, "NotFoundError"))
+				return (error);
+			if (error) {
+				erfree(error);
+				continue;
+			}
+			error = ebox_unlock(ebox, config);
+			if (error)
+				return (error);
+			goto done;
+		}
+	}
+
+	q = calloc(1, sizeof (struct question));
+	question_printf(q, "-- Recovery mode --\n");
+	question_printf(q, "Select a configuration to use for recovery:");
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		if (ebox_tpl_config_type(tconfig) == EBOX_RECOVERY) {
+			a = ebox_config_alloc_private(config,
+			    sizeof (struct answer));
+			a->a_key = ++k;
+			a->a_priv = config;
+			make_answer_text_for_config(tconfig, a);
+			add_answer(q, a);
+		}
+	}
+	question_prompt(q, &a);
+	config = (struct ebox_config *)a->a_priv;
+	error = interactive_recovery(config);
+	if (error)
+		return (error);
+	error = ebox_recover(ebox, config);
+	if (error)
+		return (error);
+
+done:
+	return (ERRF_OK);
+}
+
 static errf_t *
 cmd_tpl_create(const char *tplfile, int argc, char *argv[])
 {
@@ -1834,16 +2100,10 @@ static errf_t *
 cmd_key_unlock(int argc, char *argv[])
 {
 	struct ebox *ebox;
-	struct ebox_config *config;
-	struct ebox_part *part;
-	struct ebox_tpl_config *tconfig;
 	errf_t *error;
 	struct sshbuf *buf;
 	size_t keylen;
 	uint8_t *key;
-	struct question *q;
-	struct answer *a;
-	char k = '0';
 
 	buf = read_stdin_b64(EBOX_MAX_SIZE);
 	error = sshbuf_get_ebox(buf, &ebox);
@@ -1854,50 +2114,10 @@ cmd_key_unlock(int argc, char *argv[])
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	config = NULL;
-	while ((config = ebox_next_config(ebox, config)) != NULL) {
-		tconfig = ebox_config_tpl(config);
-		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
-			part = ebox_config_next_part(config, NULL);
-			error = local_unlock(part);
-			if (error && !errf_caused_by(error, "NotFoundError"))
-				return (error);
-			if (error) {
-				erfree(error);
-				continue;
-			}
-			error = ebox_unlock(ebox, config);
-			if (error)
-				return (error);
-			goto done;
-		}
-	}
-
-	q = calloc(1, sizeof (struct question));
-	question_printf(q, "-- Recovery mode --\n");
-	question_printf(q, "Select a configuration to recover from:");
-	config = NULL;
-	while ((config = ebox_next_config(ebox, config)) != NULL) {
-		tconfig = ebox_config_tpl(config);
-		if (ebox_tpl_config_type(tconfig) == EBOX_RECOVERY) {
-			a = ebox_config_alloc_private(config,
-			    sizeof (struct answer));
-			a->a_key = ++k;
-			a->a_priv = config;
-			make_answer_text_for_config(tconfig, a);
-			add_answer(q, a);
-		}
-	}
-	question_prompt(q, &a);
-	config = (struct ebox_config *)a->a_priv;
-	error = recovery_unlock(config);
-	if (error)
-		return (error);
-	error = ebox_recover(ebox, config);
+	error = interactive_unlock_ebox(ebox);
 	if (error)
 		return (error);
 
-done:
 	key = ebox_key(ebox, &keylen);
 	buf = sshbuf_from(key, keylen);
 	if (buf == NULL)
