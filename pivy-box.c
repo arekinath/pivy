@@ -2176,8 +2176,77 @@ cmd_key_generate(int argc, char *argv[])
 static errf_t *
 cmd_key_lock(int argc, char *argv[])
 {
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
+	const uint8_t *key;
+	size_t keylen;
+	struct ebox *ebox;
+	errf_t *error;
+	struct sshbuf *buf;
+
+	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+
+	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	key = sshbuf_ptr(buf);
+	keylen = sshbuf_len(buf);
+
+	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
+
+	error = ebox_create(ebox_tpl, key, keylen, NULL, 0, &ebox);
+	if (error)
+		return (error);
+
+	buf = sshbuf_new();
+	if (buf == NULL)
+		errx(EXIT_ERROR, "failed to allocate memory");
+
+	error = sshbuf_put_ebox(buf, ebox);
+	if (error)
+		return (error);
+
+	printwrap(stdout, sshbuf_dtob64(buf), 65);
+
+	ebox_free(ebox);
+	return (ERRF_OK);
+}
+
+static errf_t *
+cmd_key_relock(int argc, char *argv[])
+{
+	struct ebox *ebox, *nebox;
+	errf_t *error;
+	struct sshbuf *buf;
+	size_t keylen;
+	const uint8_t *key;
+
+	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	error = sshbuf_get_ebox(buf, &ebox);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to parse input as "
+		    "a base64-encoded ebox");
+	}
+
+	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+
+	error = interactive_unlock_ebox(ebox);
+	if (error)
+		return (error);
+
+	key = ebox_key(ebox, &keylen);
+
+	error = ebox_create(ebox_tpl, key, keylen, NULL, 0, &nebox);
+	if (error)
+		return (error);
+
+	sshbuf_reset(buf);
+
+	error = sshbuf_put_ebox(buf, nebox);
+	if (error)
+		return (error);
+
+	printwrap(stdout, sshbuf_dtob64(buf), 65);
+
+	ebox_free(ebox);
+	ebox_free(nebox);
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -2209,13 +2278,6 @@ cmd_key_unlock(int argc, char *argv[])
 	printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
 	sshbuf_free(buf);
 	return (ERRF_OK);
-}
-
-static errf_t *
-cmd_key_relock(int argc, char *argv[])
-{
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
 }
 
 static errf_t *

@@ -511,7 +511,8 @@ ebox_tpl_clone(struct ebox_tpl *tpl)
 				nconfig->etc_parts = npart;
 			}
 			nconfig->etc_lastpart = npart;
-			npart->etp_name = strdup(part->etp_name);
+			if (part->etp_name != NULL)
+				npart->etp_name = strdup(part->etp_name);
 			bcopy(part->etp_guid, npart->etp_guid,
 			    sizeof (npart->etp_guid));
 			if (part->etp_pubkey != NULL) {
@@ -1776,7 +1777,10 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 				nconfig->ec_parts = npart;
 
 			npart->ep_id = i++;
-			npart->ep_tpl->etp_name = strdup(tpart->etp_name);
+			if (tpart->etp_name != NULL) {
+				npart->ep_tpl->etp_name =
+				    strdup(tpart->etp_name);
+			}
 			bcopy(tpart->etp_guid, npart->ep_tpl->etp_guid,
 			    sizeof (npart->ep_tpl->etp_guid));
 			if (tpart->etp_pubkey != NULL) {
