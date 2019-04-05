@@ -1182,7 +1182,7 @@ interactive_edit_tpl_config(struct ebox_tpl *tpl,
 {
 	struct question *q, *q2;
 	struct answer *a;
-	struct ebox_tpl_part *part, *npart;
+	struct ebox_tpl_part *part;
 	char *line, *p;
 	char k = '0';
 	unsigned long int parsed;
@@ -1343,7 +1343,6 @@ interactive_edit_tpl(struct ebox_tpl *tpl)
 {
 	struct question *q, *q2;
 	struct answer *a;
-	struct ebox_tpl_part *part, *npart;
 	struct ebox_tpl_config *config;
 	char k = '0';
 
@@ -1546,10 +1545,11 @@ interactive_part_state(struct part_state *state)
 		break;
 	}
 
-out:
 	free(guidhex);
 	sshbuf_free(buf);
 	question_free(q);
+
+	return (NULL);
 }
 
 static void
@@ -1781,9 +1781,6 @@ interactive_unlock_ebox(struct ebox *ebox)
 	struct ebox_tpl_part *tpart;
 	struct ebox_tpl_config *tconfig;
 	errf_t *error;
-	struct sshbuf *buf;
-	size_t keylen;
-	uint8_t *key;
 	struct question *q;
 	struct answer *a;
 	char k = '0';
@@ -1849,7 +1846,6 @@ cmd_tpl_create(const char *tplfile, int argc, char *argv[])
 	struct sshbuf *buf;
 	FILE *file;
 	char *dirpath;
-	int rc;
 
 	tpl = ebox_tpl_alloc();
 
@@ -1959,7 +1955,6 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 	struct sshbuf *buf;
 	FILE *file;
 	char *dirpath;
-	int rc;
 
 	for (i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "add-primary") == 0) {
@@ -2192,7 +2187,7 @@ cmd_key_unlock(int argc, char *argv[])
 	errf_t *error;
 	struct sshbuf *buf;
 	size_t keylen;
-	uint8_t *key;
+	const uint8_t *key;
 
 	buf = read_stdin_b64(EBOX_MAX_SIZE);
 	error = sshbuf_get_ebox(buf, &ebox);
