@@ -2500,7 +2500,7 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-	const char *optstring = "blirRP:i:o:f:";
+	const char *optstring = "bl:irRP:i:o:f:";
 	const char *type, *op, *tplname;
 	int c;
 	char tpl[PATH_MAX] = { 0 };
@@ -2559,7 +2559,7 @@ main(int argc, char *argv[])
 				return (EXIT_USAGE);
 			}
 			errno = 0;
-			parsed = strtoull(optarg, &p, 0);
+			parsed = strtoul(optarg, &p, 0);
 			if (errno != 0 || *p != '\0') {
 				errx(EXIT_USAGE,
 				    "invalid argument for -l: '%s'", optarg);
