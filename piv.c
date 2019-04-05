@@ -3786,6 +3786,15 @@ piv_box_clone(const struct piv_ecdh_box *box)
 		nbox->pdb_cipher = box->pdb_cipher;
 		nbox->pdb_kdf = box->pdb_kdf;
 	}
+	if (box->pdb_nonce.b_len > 0) {
+		nbox->pdb_nonce.b_data = malloc(box->pdb_nonce.b_len);
+		if (nbox->pdb_nonce.b_data == NULL)
+			goto err;
+		nbox->pdb_nonce.b_len = (nbox->pdb_nonce.b_size =
+		    box->pdb_nonce.b_len);
+		bcopy(box->pdb_nonce.b_data + box->pdb_nonce.b_offset,
+		    nbox->pdb_nonce.b_data, box->pdb_nonce.b_len);
+	}
 	if (box->pdb_iv.b_len > 0) {
 		nbox->pdb_iv.b_data = malloc(box->pdb_iv.b_len);
 		if (nbox->pdb_iv.b_data == NULL)

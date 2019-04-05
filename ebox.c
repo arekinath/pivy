@@ -31,8 +31,6 @@
 #include "piv.h"
 #include "bunyan.h"
 
-#include "words.h"
-
 #include "piv-internal.h"
 
 struct buf {
@@ -1995,7 +1993,7 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 		err = errfno("gethostname", errno, NULL);
 		goto out;
 	}
-	chal->c_hostname = hostname;
+	chal->c_hostname = strdup(hostname);
 	free(hostname);
 	hostname = NULL;
 	if (chal->c_hostname == NULL) {
@@ -2046,6 +2044,8 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 		goto out;
 	}
 
+	arc4random_buf(chal->c_words, sizeof (chal->c_words));
+
 	part->ep_chal = chal;
 	chal = NULL;
 
@@ -2061,6 +2061,7 @@ sshbuf_put_ebox_challenge_raw(struct sshbuf *buf,
 {
 	int rc = 0;
 	const struct piv_ecdh_box *kb = chal->c_keybox;
+	const struct apdubuf *nonce = &kb->pdb_nonce;
 	const struct apdubuf *iv = &kb->pdb_iv;
 	const struct apdubuf *enc = &kb->pdb_enc;
 
@@ -2071,6 +2072,7 @@ sshbuf_put_ebox_challenge_raw(struct sshbuf *buf,
 	if ((rc = sshbuf_put_eckey8(buf, chal->c_destkey->ecdsa)))
 		return (ssherrf("sshbuf_put_eckey8", rc));
 	if ((rc = sshbuf_put_eckey8(buf, kb->pdb_ephem_pub->ecdsa)) ||
+	    (rc = sshbuf_put_string8(buf, nonce->b_data, nonce->b_len)) ||
 	    (rc = sshbuf_put_string8(buf, iv->b_data, iv->b_len)) ||
 	    (rc = sshbuf_put_string8(buf, enc->b_data, enc->b_len)))
 		return (ssherrf("sshbuf_put_*", rc));
@@ -2228,6 +2230,13 @@ sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
 		err = ssherrf("sshkey_ec_validate_public", rc);
 		goto out;
 	}
+
+	if ((rc = sshbuf_get_string8(buf, &chal->c_keybox->pdb_nonce.b_data,
+	    &chal->c_keybox->pdb_nonce.b_size))) {
+		err = ssherrf("sshbuf_get_string8", rc);
+		goto out;
+	}
+	chal->c_keybox->pdb_nonce.b_len = chal->c_keybox->pdb_nonce.b_size;
 
 	if ((rc = sshbuf_get_string8(buf, &chal->c_keybox->pdb_iv.b_data,
 	    &chal->c_keybox->pdb_iv.b_size))) {

@@ -63,6 +63,8 @@
 #include "piv.h"
 #include "bunyan.h"
 
+#include "words.h"
+
 static int ebox_authfd;
 static SCARDCONTEXT ebox_ctx;
 static boolean_t ebox_ctx_init = B_FALSE;
@@ -88,6 +90,7 @@ static size_t ebox_keylen = 32;
 #define	TPL_DEFAULT_PATH	"%s/.ebox/tpl/%s"
 #define	TPL_MAX_SIZE		4096
 #define	EBOX_MAX_SIZE		16384
+#define	BASE64_LINE_LEN		65
 
 #ifndef LINT
 #define pcscerrf(call, rv)	\
@@ -128,6 +131,9 @@ assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 	errf_t *er;
 	uint retries = ebox_min_retries;
 	enum piv_pin auth = piv_token_default_auth(pk);
+	const char *fmt = "Enter %s for token %s (%s): ";
+	if (partname == NULL)
+		fmt = "Enter %s for token %s: ";
 
 	if (ebox_pin == NULL && !prompt)
 		return;
@@ -135,7 +141,7 @@ assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 	if (ebox_pin == NULL && prompt) {
 		char prompt[64];
 		char *guid = piv_token_shortid(pk);
-		snprintf(prompt, 64, "Enter %s for token %s (%s): ",
+		snprintf(prompt, 64, fmt,
 		    pin_type_to_name(auth), guid, partname);
 		do {
 			ebox_pin = getpass(prompt);
@@ -144,7 +150,7 @@ assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 		    strlen(ebox_pin) < 1) {
 			piv_txn_end(pk);
 			errx(EXIT_PIN, "a PIN is required to unlock "
-			    "token %s (%s)", guid, partname);
+			    "token %s", guid);
 		} else if (ebox_pin == NULL) {
 			piv_txn_end(pk);
 			err(EXIT_PIN, "failed to read PIN");
@@ -323,20 +329,12 @@ out:
 }
 
 static errf_t *
-local_unlock(struct ebox_part *part)
+local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 {
 	errf_t *err, *agerr = NULL;
 	int rc;
 	struct piv_slot *slot, *cakslot;
 	struct piv_token *tokens = NULL, *token;
-	struct ebox_tpl_part *tpart;
-	struct piv_ecdh_box *box;
-	struct sshkey *cak;
-	const char *partname;
-
-	tpart = ebox_part_tpl(part);
-	box = ebox_part_box(part);
-	partname = ebox_tpl_part_name(tpart);
 
 	if (ssh_get_authentication_socket(&ebox_authfd) != -1) {
 		agerr = local_unlock_agent(box);
@@ -380,7 +378,6 @@ local_unlock(struct ebox_part *part)
 		goto out;
 	}
 
-	cak = ebox_tpl_part_cak(tpart);
 	if (cak != NULL) {
 		cakslot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
 		if (cakslot == NULL) {
@@ -407,7 +404,7 @@ local_unlock(struct ebox_part *part)
 
 	boolean_t prompt = B_FALSE;
 pin:
-	assert_pin(token, partname, prompt);
+	assert_pin(token, name, prompt);
 	err = piv_box_open(token, slot, box);
 	if (errf_caused_by(err, "PermissionError") && !prompt) {
 		prompt = B_TRUE;
@@ -441,46 +438,6 @@ printwrap(FILE *stream, const char *data, size_t col)
 		fprintf(stream, "%s\n", buf);
 		offset += rem;
 	}
-}
-
-static void
-read_b64_box(struct piv_ecdh_box **outbox)
-{
-	char *linebuf, *p;
-	size_t len = 1024, pos = 0;
-	struct piv_ecdh_box *box = NULL;
-	struct sshbuf *buf;
-
-	linebuf = malloc(len);
-	buf = sshbuf_new();
-	VERIFY(linebuf != NULL);
-	VERIFY(buf != NULL);
-
-	do {
-		if (len - pos < 128) {
-			len *= 2;
-			p = malloc(len);
-			VERIFY(p != NULL);
-			bcopy(linebuf, p, pos + 1);
-			free(linebuf);
-			linebuf = p;
-		}
-		p = fgets(&linebuf[pos], len - pos, stdin);
-		if (p == NULL)
-			exit(1);
-		if (sshbuf_b64tod(buf, linebuf) == 0) {
-			struct sshbuf *pbuf = sshbuf_fromb(buf);
-			pos = 0;
-			linebuf[0] = 0;
-			if (sshbuf_get_piv_box(pbuf, &box) == 0)
-				sshbuf_free(buf);
-			sshbuf_free(pbuf);
-		} else {
-			pos += strlen(&linebuf[pos]);
-		}
-	} while (box == NULL);
-
-	*outbox = box;
 }
 
 static errf_t *
@@ -1595,6 +1552,58 @@ out:
 	question_free(q);
 }
 
+static void
+read_b64_box(struct piv_ecdh_box **outbox)
+{
+	char *linebuf, *p, *line;
+	size_t len = 1024, pos = 0, llen;
+	struct piv_ecdh_box *box = NULL;
+	struct sshbuf *buf;
+
+	linebuf = malloc(len);
+	buf = sshbuf_new();
+	VERIFY(linebuf != NULL);
+	VERIFY(buf != NULL);
+
+	do {
+		if (len - pos < 128) {
+			len *= 2;
+			p = malloc(len);
+			VERIFY(p != NULL);
+			bcopy(linebuf, p, pos + 1);
+			free(linebuf);
+			linebuf = p;
+		}
+		line = readline("> ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		llen = strlen(line);
+		if (llen >= 2 && line[0] == '-' && line[1] == '-')
+			continue;
+		while (pos + llen > len) {
+			char *nlinebuf;
+			len *= 2;
+			nlinebuf = malloc(len);
+			nlinebuf[0] = 0;
+			strcpy(nlinebuf, linebuf);
+			free(linebuf);
+			linebuf = nlinebuf;
+		}
+		strcpy(&linebuf[pos], line);
+		pos += llen;
+		if (sshbuf_b64tod(buf, linebuf) == 0) {
+			struct sshbuf *pbuf = sshbuf_fromb(buf);
+			pos = 0;
+			linebuf[0] = 0;
+			if (sshbuf_get_piv_box(pbuf, &box) == 0)
+				sshbuf_free(buf);
+			sshbuf_free(pbuf);
+		}
+	} while (box == NULL);
+
+	*outbox = box;
+}
+
 static errf_t *
 interactive_recovery(struct ebox_config *config)
 {
@@ -1604,10 +1613,16 @@ interactive_recovery(struct ebox_config *config)
 	struct part_state *state;
 	struct question *q;
 	struct answer *a, *adone;
+	struct sshbuf *buf;
+	struct piv_ecdh_box *box;
+	const struct ebox_challenge *chal;
 	char k = '0';
 	uint n, ncur;
+	uint i;
 	char *line;
 	errf_t *error;
+	const uint8_t *words;
+	size_t wordlen;
 
 	tconfig = ebox_config_tpl(config);
 	n = ebox_tpl_config_n(tconfig);
@@ -1662,10 +1677,13 @@ recover:
 	    "-- Beginning recovery --\n"
 	    "Local devices will be attempted in order before remote "
 	    "challenge-responses are processed.\n\n");
+	ncur = 0;
 
 	part = NULL;
 	while ((part = ebox_config_next_part(config, part)) != NULL) {
 		state = (struct part_state *)ebox_part_private(part);
+		part = state->ps_part;
+		tpart = ebox_part_tpl(part);
 		if (state->ps_intent != INTENT_LOCAL)
 			continue;
 		state->ps_intent = INTENT_NONE;
@@ -1673,7 +1691,8 @@ recover:
 		fprintf(stderr, "-- Local device %s --\n",
 		    state->ps_ans->a_text);
 partagain:
-		error = local_unlock(part);
+		error = local_unlock(ebox_part_box(part),
+		    ebox_tpl_part_cak(tpart), ebox_tpl_part_name(tpart));
 		if (error && !errf_caused_by(error, "NotFoundError"))
 			return (error);
 		if (error) {
@@ -1683,6 +1702,72 @@ partagain:
 			goto partagain;
 		}
 		fprintf(stderr, "Device box decrypted ok.\n");
+		++ncur;
+	}
+
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+
+	part = NULL;
+	while ((part = ebox_config_next_part(config, part)) != NULL) {
+		state = (struct part_state *)ebox_part_private(part);
+		if (state->ps_intent != INTENT_CHAL_RESP)
+			continue;
+		state->ps_intent = INTENT_NONE;
+		make_answer_text_for_pstate(state);
+		state->ps_intent = INTENT_CHAL_RESP;
+		error = ebox_gen_challenge(config, part,
+		    "Recovering pivy-box data for part %s",
+		    state->ps_ans->a_text);
+		if (error)
+			return (error);
+		chal = ebox_part_challenge(part);
+		sshbuf_reset(buf);
+		error = sshbuf_put_ebox_challenge(buf, chal);
+		if (error)
+			return (error);
+		fprintf(stderr, "-- Begin challenge for remote device %s --\n",
+		    state->ps_ans->a_text);
+		printwrap(stderr, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+		fprintf(stderr, "-- End challenge for remote device %s --\n",
+		    state->ps_ans->a_text);
+
+		words = ebox_challenge_words(chal, &wordlen);
+		fprintf(stderr, "\nVERIFICATION WORDS for %s:",
+		    state->ps_ans->a_text);
+		for (i = 0; i < wordlen; ++i)
+			fprintf(stderr, " %s", wordlist[words[i]]);
+		fprintf(stderr, "\n\n");
+	}
+
+	while (ncur < n) {
+		fprintf(stderr, "\nRemaining responses required:\n");
+		part = NULL;
+		while ((part = ebox_config_next_part(config, part)) != NULL) {
+			state = (struct part_state *)ebox_part_private(part);
+			if (state->ps_intent != INTENT_CHAL_RESP)
+				continue;
+			fprintf(stderr, "  * %s\n", state->ps_ans->a_text);
+		}
+		fprintf(stderr, "\n-- Enter response followed by newline --\n");
+		read_b64_box(&box);
+		fprintf(stderr, "-- End response --\n");
+		error = ebox_challenge_response(config, box, &part);
+		if (error) {
+			warnfx(error, "failed to parse input data as a "
+			    "valid response");
+			continue;
+		}
+		state = (struct part_state *)ebox_part_private(part);
+		if (state->ps_intent != INTENT_CHAL_RESP) {
+			fprintf(stderr, "Response already processed for "
+			    "device %s!\n", state->ps_ans->a_text);
+			continue;
+		}
+		fprintf(stderr, "Device box for %s decrypted ok.\n",
+		    state->ps_ans->a_text);
+		state->ps_intent = INTENT_NONE;
+		++ncur;
 	}
 	return (NULL);
 
@@ -1693,6 +1778,7 @@ interactive_unlock_ebox(struct ebox *ebox)
 {
 	struct ebox_config *config;
 	struct ebox_part *part;
+	struct ebox_tpl_part *tpart;
 	struct ebox_tpl_config *tconfig;
 	errf_t *error;
 	struct sshbuf *buf;
@@ -1707,7 +1793,10 @@ interactive_unlock_ebox(struct ebox *ebox)
 		tconfig = ebox_config_tpl(config);
 		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
 			part = ebox_config_next_part(config, NULL);
-			error = local_unlock(part);
+			tpart = ebox_part_tpl(part);
+			error = local_unlock(ebox_part_box(part),
+			    ebox_tpl_part_cak(tpart),
+			    ebox_tpl_part_name(tpart));
 			if (error && !errf_caused_by(error, "NotFoundError"))
 				return (error);
 			if (error) {
@@ -1826,7 +1915,7 @@ cmd_tpl_create(const char *tplfile, int argc, char *argv[])
 		return (errfno("fopen", errno, "opening template file '%s' "
 		    "for writing", tplfile));
 	}
-	printwrap(file, sshbuf_dtob64(buf), 64);
+	printwrap(file, sshbuf_dtob64(buf), BASE64_LINE_LEN);
 	fclose(file);
 
 out:
@@ -1983,7 +2072,7 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 		return (errfno("fopen", errno, "opening template file '%s' "
 		    "for writing", tplfile));
 	}
-	printwrap(file, sshbuf_dtob64(buf), 64);
+	printwrap(file, sshbuf_dtob64(buf), BASE64_LINE_LEN);
 	fclose(file);
 
 out:
@@ -2083,7 +2172,7 @@ cmd_key_generate(int argc, char *argv[])
 	if (error)
 		return (error);
 
-	printwrap(stdout, sshbuf_dtob64(buf), 64);
+	printwrap(stdout, sshbuf_dtob64(buf), 65);
 
 	ebox_free(ebox);
 	return (ERRF_OK);
@@ -2122,7 +2211,7 @@ cmd_key_unlock(int argc, char *argv[])
 	buf = sshbuf_from(key, keylen);
 	if (buf == NULL)
 		errx(EXIT_ERROR, "failed to allocate memory");
-	printwrap(stdout, sshbuf_dtob64(buf), 64);
+	printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
 	sshbuf_free(buf);
 	return (ERRF_OK);
 }
@@ -2146,6 +2235,137 @@ cmd_stream_decrypt(int argc, char *argv[])
 {
 	return (errf("NotImplemented", NULL,
 	    "Function %s has not yet been implemented", __func__));
+}
+
+static void
+print_challenge(const struct ebox_challenge *chal)
+{
+	const char *purpose;
+	struct tm tmctime;
+	time_t ctime;
+	char tbuf[128];
+	const uint8_t *words;
+	size_t wordlen;
+
+	fprintf(stderr, "-- Challenge --\n");
+	switch (ebox_challenge_type(chal)) {
+	case CHAL_RECOVERY:
+		purpose = "recovery of at-rest encryption keys";
+		break;
+	case CHAL_VERIFY_AUDIT:
+		purpose = "verification of hash-chain audit trail";
+		break;
+	default:
+		exit(1);
+	}
+	fprintf(stderr, "%-20s   %s\n", "Purpose", purpose);
+	fprintf(stderr, "%-20s   %s\n", "Description",
+	    ebox_challenge_desc(chal));
+	fprintf(stderr, "%-20s   %s\n", "Hostname",
+	    ebox_challenge_hostname(chal));
+
+	bzero(&tmctime, sizeof (tmctime));
+	ctime = (time_t)ebox_challenge_ctime(chal);
+	localtime_r(&ctime, &tmctime);
+	strftime(tbuf, sizeof (tbuf), "%Y-%m-%d %H:%M:%S", &tmctime);
+	fprintf(stderr, "%-20s   %s (local time)\n", "Generated at", tbuf);
+
+	words = ebox_challenge_words(chal, &wordlen);
+	VERIFY3U(wordlen, ==, 4);
+	fprintf(stderr, "\n%-20s   %s %s %s %s\n\n", "VERIFICATION WORDS",
+	    wordlist[words[0]], wordlist[words[1]],
+	    wordlist[words[2]], wordlist[words[3]]);
+}
+
+static errf_t *
+cmd_challenge_info(int argc, char *argv[])
+{
+	struct ebox_challenge *chal;
+	struct sshbuf *sbuf;
+	struct piv_ecdh_box *box;
+	errf_t *error;
+
+	sbuf = read_stdin_b64(TPL_MAX_SIZE);
+	error = sshbuf_get_piv_box(sbuf, &box);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to parse input as "
+		    "a base64-encoded ebox challenge");
+	}
+
+	error = local_unlock(box, NULL, NULL);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to unlock challenge");
+	}
+
+	error = sshbuf_get_ebox_challenge(box, &chal);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to parse contents of "
+		    "challenge box");
+	}
+
+	print_challenge(chal);
+
+	return (NULL);
+}
+
+static errf_t *
+cmd_challenge_respond(int argc, char *argv[])
+{
+	struct ebox_challenge *chal;
+	struct sshbuf *sbuf;
+	struct piv_ecdh_box *box;
+	errf_t *error;
+	char *line;
+
+	sbuf = read_stdin_b64(TPL_MAX_SIZE);
+	error = sshbuf_get_piv_box(sbuf, &box);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to parse input as "
+		    "a base64-encoded ebox challenge");
+	}
+
+	error = local_unlock(box, NULL, NULL);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to unlock challenge");
+	}
+
+	error = sshbuf_get_ebox_challenge(box, &chal);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to parse contents of "
+		    "challenge box");
+	}
+
+	print_challenge(chal);
+
+	fprintf(stderr, "Please check that these verification words match the "
+	    "original source via a\nseparate communications channel to the "
+	    "one used to transport the challenge\nitself.\n\n");
+
+	line = readline("If these details are correct and you wish to "
+	    "respond, type 'YES': ");
+	if (line == NULL)
+		exit(EXIT_ERROR);
+	if (strcmp(line, "YES") != 0)
+		exit(EXIT_ERROR);
+	free(line);
+
+	box = ebox_challenge_box(chal);
+	error = local_unlock(box, NULL, NULL);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to unlock challenge");
+	}
+
+	sshbuf_reset(sbuf);
+	error = sshbuf_put_ebox_challenge_response(sbuf, chal);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to generate response");
+	}
+
+	fprintf(stdout, "-- Begin response --\n");
+	printwrap(stdout, sshbuf_dtob64(sbuf), 65);
+	fprintf(stdout, "-- End response --\n");
+
+	return (NULL);
 }
 
 static void
@@ -2273,7 +2493,11 @@ usage(void)
 	    "  challenge\n"
 	    "\n"
 	    "    challenge info\n"
+	    "      Print info about a recovery challenge provided on stdin,\n"
+	    "      without generating a response.\n"
+	    "\n"
 	    "    challenge respond\n"
+	    "      Generate a response to a recovery challenge provided on stdin.\n"
 	    "\n");
 	exit(EXIT_USAGE);
 }
@@ -2374,6 +2598,16 @@ main(int argc, char *argv[])
 			goto out;
 		}
 
+	} else if (strcmp(type, "challenge") == 0) {
+		if (strcmp(op, "info") == 0) {
+			error = cmd_challenge_info(argc, argv);
+			goto out;
+
+		} else if (strcmp(op, "respond") == 0) {
+			error = cmd_challenge_respond(argc, argv);
+			goto out;
+		}
+		goto badop;
 	}
 
 	if (tpl[0] == '\0') {
@@ -2442,7 +2676,9 @@ main(int argc, char *argv[])
 			error = cmd_stream_encrypt(argc, argv);
 			goto out;
 		}
+
 	}
+badop:
 	warnx("unknown operation: '%s %s'", type, op);
 	usage();
 	return (EXIT_USAGE);
