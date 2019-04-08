@@ -1928,19 +1928,31 @@ read_stdin_b64(size_t limit)
 	int rc;
 
 	n = fread(buf, 1, limit, stdin);
+	if (ferror(stdin))
+		err(EXIT_USAGE, "error reading input");
 	if (!feof(stdin))
 		errx(EXIT_USAGE, "input too long (max %lu bytes)", limit);
 	if (n > limit)
 		errx(EXIT_USAGE, "input too long (max %lu bytes)", limit);
-	buf[n] = '\0';
 
 	sbuf = sshbuf_new();
 	if (sbuf == NULL)
 		err(EXIT_ERROR, "failed to allocate buffer");
-	rc = sshbuf_b64tod(sbuf, buf);
-	if (rc) {
-		errf_t *error = ssherrf("sshbuf_b64tod", rc);
-		errfx(EXIT_ERROR, error, "error parsing input as base64");
+
+	if (!ebox_raw_in) {
+		buf[n] = '\0';
+		rc = sshbuf_b64tod(sbuf, buf);
+		if (rc) {
+			errf_t *error = ssherrf("sshbuf_b64tod", rc);
+			errfx(EXIT_ERROR, error, "error parsing input as "
+			    "base64");
+		}
+	} else {
+		rc = sshbuf_put(sbuf, buf, n);
+		if (rc) {
+			errf_t *error = ssherrf("sshbuf_put", rc);
+			errfx(EXIT_ERROR, error, "error reading input");
+		}
 	}
 	return (sbuf);
 }
@@ -2167,7 +2179,11 @@ cmd_key_generate(int argc, char *argv[])
 	if (error)
 		return (error);
 
-	printwrap(stdout, sshbuf_dtob64(buf), 65);
+	if (ebox_raw_out) {
+		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
+	} else {
+		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+	}
 
 	ebox_free(ebox);
 	return (ERRF_OK);
@@ -2202,7 +2218,11 @@ cmd_key_lock(int argc, char *argv[])
 	if (error)
 		return (error);
 
-	printwrap(stdout, sshbuf_dtob64(buf), 65);
+	if (ebox_raw_out) {
+		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
+	} else {
+		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+	}
 
 	ebox_free(ebox);
 	return (ERRF_OK);
@@ -2242,7 +2262,11 @@ cmd_key_relock(int argc, char *argv[])
 	if (error)
 		return (error);
 
-	printwrap(stdout, sshbuf_dtob64(buf), 65);
+	if (ebox_raw_out) {
+		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
+	} else {
+		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+	}
 
 	ebox_free(ebox);
 	ebox_free(nebox);
@@ -2275,7 +2299,11 @@ cmd_key_unlock(int argc, char *argv[])
 	buf = sshbuf_from(key, keylen);
 	if (buf == NULL)
 		errx(EXIT_ERROR, "failed to allocate memory");
-	printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+	if (ebox_raw_out) {
+		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
+	} else {
+		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+	}
 	sshbuf_free(buf);
 	return (ERRF_OK);
 }
@@ -2419,7 +2447,7 @@ cmd_challenge_respond(int argc, char *argv[])
 	}
 
 	fprintf(stdout, "-- Begin response --\n");
-	printwrap(stdout, sshbuf_dtob64(sbuf), 65);
+	printwrap(stdout, sshbuf_dtob64(sbuf), BASE64_LINE_LEN);
 	fprintf(stdout, "-- End response --\n");
 
 	return (NULL);
