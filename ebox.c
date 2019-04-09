@@ -21,6 +21,7 @@
 #include "libssh/digest.h"
 #include "libssh/digest.h"
 #include "libssh/cipher.h"
+#include "libssh/hmac.h"
 #include "libssh/ssherr.h"
 
 #include "sss/hazmat.h"
@@ -32,6 +33,13 @@
 #include "bunyan.h"
 
 #include "piv-internal.h"
+
+#if defined(__sun) || defined(__APPLE__)
+#include <netinet/in.h>
+#define	htobe32(v)	(htonl(v))
+#else
+#include <endian.h>
+#endif
 
 struct buf {
 	size_t b_len;
@@ -66,6 +74,7 @@ struct ebox_tpl_part {
 };
 
 struct ebox {
+	uint8_t e_version;
 	struct ebox_tpl *e_tpl;
 	struct ebox_config *e_configs;
 	enum ebox_type e_type;
@@ -139,19 +148,16 @@ struct ebox_stream {
 	struct ebox *es_ebox;
 	char *es_cipher;
 	char *es_mac;
-	struct sshbuf *es_buf;
-	enum ebox_stream_mode es_mode;
+	size_t es_chunklen;
 };
 
 struct ebox_stream_chunk {
-	uint32_t esc_len;
-	uint8_t *esc_data;
-
-	uint32_t esc_enclen;
-	uint8_t *esc_encdata;
-
-	uint8_t *esc_nextk;
-	uint32_t esc_nextklen;
+	struct ebox_stream *esc_stream;
+	uint32_t esc_seqnr;
+	size_t esc_enclen;
+	uint8_t *esc_enc;
+	size_t esc_plainlen;
+	uint8_t *esc_plain;
 };
 
 enum ebox_part_tag {
@@ -161,6 +167,13 @@ enum ebox_part_tag {
 	EBOX_PART_CAK = 3,
 	EBOX_PART_GUID = 4,
 	EBOX_PART_BOX = 5
+};
+
+#define	EBOX_STREAM_DEFAULT_CHUNK	(128 * 1024)
+
+enum ebox_version {
+	EBOX_V1 = 0x01,
+	EBOX_VNEXT
 };
 
 #define boxderrf(cause) \
@@ -1006,22 +1019,8 @@ ebox_part_free_private(struct ebox_part *part)
 	part->ep_priv = NULL;
 }
 
-struct ebox_stream *
-ebox_stream_init_decrypt(void)
-{
-	struct ebox_stream *es;
-
-	es = calloc(1, sizeof (struct ebox_stream));
-	VERIFY(es != NULL);
-	es->es_mode = EBOX_MODE_DECRYPT;
-	es->es_buf = sshbuf_new();
-	VERIFY(es->es_buf != NULL);
-
-	return (es);
-}
-
-struct ebox_stream *
-ebox_stream_init_encrypt(struct ebox_tpl *tpl)
+errf_t *
+ebox_stream_new(const struct ebox_tpl *tpl, struct ebox_stream **str)
 {
 	struct ebox_stream *es;
 	uint8_t *key;
@@ -1031,9 +1030,7 @@ ebox_stream_init_encrypt(struct ebox_tpl *tpl)
 
 	es = calloc(1, sizeof (struct ebox_stream));
 	VERIFY(es != NULL);
-	es->es_mode = EBOX_MODE_ENCRYPT;
-	es->es_buf = sshbuf_new();
-	VERIFY(es->es_buf != NULL);
+	es->es_chunklen = EBOX_STREAM_DEFAULT_CHUNK;
 
 	es->es_cipher = strdup("aes256-ctr");
 	es->es_mac = strdup("sha256");
@@ -1046,12 +1043,422 @@ ebox_stream_init_encrypt(struct ebox_tpl *tpl)
 	arc4random_buf(key, keylen);
 
 	err = ebox_create(tpl, key, keylen, NULL, 0, &es->es_ebox);
-	VERIFY(es->es_ebox != NULL);
 
-	explicit_bzero(key, keylen);
-	free(key);
+	es->es_ebox->e_key = key;
+	es->es_ebox->e_keylen = keylen;
 
-	return (es);
+	if (err) {
+		ebox_stream_free(es);
+		return (errf("EboxCreateFailed", err, "failed to create ebox "
+		    "for ebox_stream"));
+	}
+
+	es->es_ebox->e_type = EBOX_STREAM;
+
+	*str = es;
+	return (ERRF_OK);
+}
+
+errf_t *
+sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *es)
+{
+	int rc;
+	errf_t *err;
+
+	err = sshbuf_put_ebox(buf, es->es_ebox);
+	if (err)
+		return (err);
+
+	if ((rc = sshbuf_put_u64(buf, es->es_chunklen)))
+		return (ssherrf("sshbuf_put_u64", rc));
+	if ((rc = sshbuf_put_cstring8(buf, es->es_cipher)) ||
+	    (rc = sshbuf_put_cstring8(buf, es->es_mac)))
+		return (ssherrf("sshbuf_put_cstring8", rc));
+
+	return (ERRF_OK);
+}
+
+errf_t *
+sshbuf_put_ebox_stream_chunk(struct sshbuf *buf,
+    struct ebox_stream_chunk *esc)
+{
+	int rc;
+
+	if (esc->esc_enc == NULL) {
+		return (argerrf("chunk", "an encrypted chunk",
+		    "a chunk that hasn't had ebox_stream_encrypt_chunk() "
+		    "called yet"));
+	}
+
+	if ((rc = sshbuf_put_u32(buf, esc->esc_seqnr)))
+		return (ssherrf("sshbuf_put_u32", rc));
+	if ((rc = sshbuf_put_string(buf, esc->esc_enc, esc->esc_enclen)))
+		return (ssherrf("sshbuf_put_string", rc));
+
+	return (ERRF_OK);
+}
+
+errf_t *
+sshbuf_get_ebox_stream_chunk(struct sshbuf *buf, const struct ebox_stream *es,
+    struct ebox_stream_chunk **chunk)
+{
+	struct ebox_stream_chunk *esc = NULL;
+	int rc;
+	errf_t *err;
+
+	esc = calloc(1, sizeof (struct ebox_stream_chunk));
+	if (esc == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	esc->esc_stream = es;
+
+	if ((rc = sshbuf_get_u32(buf, &esc->esc_seqnr))) {
+		err = boxderrf(ssherrf("sshbuf_get_u32", rc));
+		goto out;
+	}
+
+	if ((rc = sshbuf_get_string(buf, &esc->esc_enc, &esc->esc_enclen))) {
+		err = boxderrf(ssherrf("sshbuf_get_string", rc));
+		goto out;
+	}
+
+	*chunk = esc;
+	esc = NULL;
+	err = NULL;
+
+out:
+	ebox_stream_chunk_free(esc);
+	return (err);
+}
+
+void
+ebox_stream_chunk_free(struct ebox_stream_chunk *chunk)
+{
+	if (chunk == NULL)
+		return;
+	free(chunk->esc_enc);
+	if (chunk->esc_plainlen > 0)
+		explicit_bzero(chunk->esc_plain, chunk->esc_plainlen);
+	free(chunk->esc_plain);
+	free(chunk);
+}
+
+errf_t *
+sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **pes)
+{
+	struct ebox_stream *es = NULL;
+	struct ebox *e = NULL;
+	int rc;
+	errf_t *err;
+	const struct sshcipher *cipher;
+	int dgalg;
+
+	err = sshbuf_get_ebox(buf, &e);
+	if (err)
+		return (err);
+
+	if (e->e_type != EBOX_STREAM) {
+		err = boxverrf(errf("EboxTypeError", NULL,
+		    "buffer contains an ebox, but not an ebox stream"));
+		goto out;
+	}
+
+	es = calloc(1, sizeof (struct ebox_stream));
+	if (es == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	es->es_ebox = e;
+	e = NULL;
+
+	if ((rc = sshbuf_get_u64(buf, &es->es_chunklen))) {
+		err = boxderrf(ssherrf("sshbuf_get_u64", rc));
+		goto out;
+	}
+
+	if ((rc = sshbuf_get_cstring8(buf, &es->es_cipher, NULL)) ||
+	    (rc = sshbuf_get_cstring8(buf, &es->es_mac, NULL))) {
+		err = boxderrf(ssherrf("sshbuf_get_cstring8", rc));
+		goto out;
+	}
+
+	cipher = cipher_by_name(es->es_cipher);
+	if (cipher == NULL) {
+		err = boxverrf(errf("BadAlgorithmError", NULL,
+		    "unsupported cipher '%s'", es->es_cipher));
+		goto out;
+	}
+	dgalg = ssh_digest_alg_by_name(es->es_mac);
+	if (dgalg == -1) {
+		err = boxverrf(errf("BadAlgorithmError", NULL,
+		    "unsupported MAC algorithm '%s'", es->es_mac));
+		goto out;
+	}
+
+	*pes = es;
+	es = NULL;
+	err = NULL;
+
+out:
+	ebox_stream_free(es);
+	ebox_free(e);
+	return (err);
+}
+
+errf_t *
+ebox_stream_encrypt_chunk(struct ebox_stream_chunk *esc)
+{
+	struct ebox_stream *es;
+	const struct sshcipher *cipher;
+	int dgalg = -1;
+	size_t blocksz, ivlen, authlen, keylen, plainlen, enclen, maclen;
+	size_t padding, i;
+	uint8_t *key, *plain, *enc, *mac, *iv;
+	struct sshcipher_ctx *cctx = NULL;
+	struct ssh_hmac_ctx *hctx = NULL;
+	int rc;
+
+	es = esc->esc_stream;
+	plainlen = esc->esc_plainlen;
+
+	cipher = cipher_by_name(es->es_cipher);
+	VERIFY(cipher != NULL);
+	ivlen = cipher_ivlen(cipher);
+	authlen = cipher_authlen(cipher);
+	blocksz = cipher_blocksize(cipher);
+	keylen = cipher_keylen(cipher);
+
+	if (ivlen > 0) {
+		iv = calloc(1, ivlen);
+		VERIFY3U(ivlen, >=, sizeof (uint32_t));
+		*(uint32_t *)iv = htobe32(esc->esc_seqnr);
+	} else {
+		iv = NULL;
+	}
+
+	if (authlen == 0) {
+		dgalg = ssh_digest_alg_by_name(es->es_mac);
+		VERIFY(dgalg != -1);
+		maclen = ssh_digest_bytes(dgalg);
+	} else {
+		maclen = 0;
+	}
+
+	VERIFY3U(es->es_ebox->e_keylen, >=, keylen);
+	key = es->es_ebox->e_key;
+	VERIFY(key != NULL);
+
+	/*
+	 * We add PKCS#7 style padding, consisting of up to a block of bytes,
+	 * all set to the number of padding bytes added. This is easy to strip
+	 * off after decryption and avoids the need to include and validate the
+	 * real length of the payload separately.
+	 */
+	padding = blocksz - (plainlen % blocksz);
+	VERIFY3U(padding, <=, blocksz);
+	VERIFY3U(padding, >, 0);
+	plainlen += padding;
+	plain = malloc(plainlen);
+	VERIFY3P(plain, !=, NULL);
+	bcopy(esc->esc_plain, plain, esc->esc_plainlen);
+	for (i = esc->esc_plainlen; i < plainlen; ++i)
+		plain[i] = padding;
+
+	enclen = plainlen + authlen + maclen;
+	esc->esc_enc = (enc = malloc(enclen));
+	VERIFY(enc != NULL);
+	esc->esc_enclen = enclen;
+
+	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 1));
+	VERIFY0(cipher_crypt(cctx, esc->esc_seqnr, enc, plain, plainlen, 0,
+	    authlen));
+	cipher_free(cctx);
+
+	if (dgalg != -1) {
+		hctx = ssh_hmac_start(dgalg);
+		VERIFY(hctx != NULL);
+		VERIFY0(ssh_hmac_init(hctx, key, keylen));
+		VERIFY0(ssh_hmac_update(hctx, enc, enclen - maclen));
+		VERIFY0(ssh_hmac_final(hctx, &enc[enclen - maclen], maclen));
+		ssh_hmac_free(hctx);
+	}
+
+	return (ERRF_OK);
+}
+
+errf_t *
+ebox_stream_decrypt_chunk(struct ebox_stream_chunk *esc)
+{
+	struct ebox_stream *es;
+	const struct sshcipher *cipher;
+	int dgalg = -1;
+	size_t blocksz, ivlen, authlen, keylen, plainlen, enclen, maclen;
+	size_t padding, i, reallen;
+	uint8_t *key, *plain, *enc, *mac, *iv;
+	struct sshcipher_ctx *cctx = NULL;
+	struct ssh_hmac_ctx *hctx = NULL;
+	int rc;
+	errf_t *err;
+
+	es = esc->esc_stream;
+
+	cipher = cipher_by_name(es->es_cipher);
+	VERIFY(cipher != NULL);
+	ivlen = cipher_ivlen(cipher);
+	authlen = cipher_authlen(cipher);
+	blocksz = cipher_blocksize(cipher);
+	keylen = cipher_keylen(cipher);
+
+	if (ivlen > 0) {
+		iv = calloc(1, ivlen);
+		VERIFY3U(ivlen, >=, sizeof (uint32_t));
+		*(uint32_t *)iv = htobe32(esc->esc_seqnr);
+	} else {
+		iv = NULL;
+	}
+
+	if (authlen == 0) {
+		dgalg = ssh_digest_alg_by_name(es->es_mac);
+		VERIFY(dgalg != -1);
+		maclen = ssh_digest_bytes(dgalg);
+	} else {
+		maclen = 0;
+	}
+
+	VERIFY3U(es->es_ebox->e_keylen, >=, keylen);
+	key = es->es_ebox->e_key;
+	VERIFY(key != NULL);
+
+	enc = esc->esc_enc;
+	enclen = esc->esc_enclen;
+	if (enclen < authlen + blocksz) {
+		err = errf("LengthError", NULL, "Ciphertext length (%d) "
+		    "is smaller than minimum length (auth tag + 1 block = %d)",
+		    enclen, authlen + blocksz);
+		return (err);
+	}
+
+	plainlen = enclen - authlen - maclen;
+	plain = malloc(plainlen);
+	VERIFY(plain != NULL);
+
+	if (dgalg != -1) {
+		mac = malloc(maclen);
+		VERIFY(mac != NULL);
+		hctx = ssh_hmac_start(dgalg);
+		VERIFY(hctx != NULL);
+		VERIFY0(ssh_hmac_init(hctx, key, keylen));
+		VERIFY0(ssh_hmac_update(hctx, enc, enclen - maclen));
+		VERIFY0(ssh_hmac_final(hctx, mac, maclen));
+		ssh_hmac_free(hctx);
+		if (timingsafe_bcmp(mac, &enc[enclen - maclen], maclen) != 0) {
+			explicit_bzero(mac, maclen);
+			free(mac);
+			return (errf("MACError", NULL, "Ciphertext MAC failed "
+			    "validation"));
+		}
+		explicit_bzero(mac, maclen);
+		free(mac);
+	}
+
+	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
+	rc = cipher_crypt(cctx, esc->esc_seqnr, plain, enc,
+	    enclen - authlen - maclen, 0, authlen);
+	cipher_free(cctx);
+
+	if (rc != 0) {
+		err = ssherrf("cipher_crypt", rc);
+		explicit_bzero(plain, plainlen);
+		free(plain);
+		return (err);
+	}
+
+	/* Strip off the pkcs#7 padding and verify it. */
+	padding = plain[plainlen - 1];
+	if (padding < 1 || padding > blocksz)
+		goto paderr;
+	reallen = plainlen - padding;
+	for (i = reallen; i < plainlen; ++i) {
+		if (plain[i] != padding) {
+			goto paderr;
+		}
+	}
+
+	esc->esc_plain = plain;
+	esc->esc_plainlen = reallen;
+
+	return (ERRF_OK);
+
+paderr:
+	err = errf("PaddingError", NULL, "Padding failed validation");
+	explicit_bzero(plain, plainlen);
+	free(plain);
+	return (err);
+}
+
+const uint8_t *
+ebox_stream_chunk_data(const struct ebox_stream_chunk *esc, size_t *size)
+{
+	*size = esc->esc_plainlen;
+	return (esc->esc_plain);
+}
+
+errf_t *
+ebox_stream_chunk_new(const struct ebox_stream *es, const void *data,
+    size_t len, size_t seqnr, struct ebox_stream_chunk **chunk)
+{
+	struct ebox_stream_chunk *esc;
+
+	esc = calloc(1, sizeof (struct ebox_stream_chunk));
+	if (esc == NULL)
+		return (ERRF_NOMEM);
+	esc->esc_stream = (struct ebox_stream *)es;
+	esc->esc_seqnr = seqnr;
+	esc->esc_plainlen = len;
+	esc->esc_plain = malloc(len);
+	if (esc->esc_plain == NULL)
+		return (ERRF_NOMEM);
+
+	bcopy(data, esc->esc_plain, len);
+
+	*chunk = esc;
+	return (ERRF_OK);
+}
+
+void
+ebox_stream_free(struct ebox_stream *str)
+{
+	if (str == NULL)
+		return;
+	free(str->es_cipher);
+	free(str->es_mac);
+	ebox_free(str->es_ebox);
+	free(str);
+}
+
+struct ebox *
+ebox_stream_ebox(const struct ebox_stream *es)
+{
+	return (es->es_ebox);
+}
+
+const char *
+ebox_stream_cipher(const struct ebox_stream *es)
+{
+	return (es->es_cipher);
+}
+
+const char *
+ebox_stream_mac(const struct ebox_stream *es)
+{
+	return (es->es_mac);
+}
+
+size_t
+ebox_stream_chunk_size(const struct ebox_stream *es)
+{
+	return (es->es_chunklen);
 }
 
 static errf_t *
@@ -1293,7 +1700,7 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
-	if (ver != 0x01) {
+	if (ver < EBOX_V1 || ver >= EBOX_VNEXT) {
 		err = boxverrf(errf("VersionError", NULL,
 		    "unsupported version number 0x%02x", ver));
 		goto out;
@@ -1303,6 +1710,7 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		    "buffer does not contain an ebox"));
 		goto out;
 	}
+	box->e_version = ver;
 	box->e_type = (enum ebox_type)type;
 
 	if ((rc = sshbuf_get_cstring8(buf, &box->e_rcv_cipher, NULL))) {
@@ -1452,7 +1860,7 @@ sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
 
 	if ((rc = sshbuf_put_u8(buf, 0xEB)) ||
 	    (rc = sshbuf_put_u8(buf, 0x0C)) ||
-	    (rc = sshbuf_put_u8(buf, 0x01)) ||
+	    (rc = sshbuf_put_u8(buf, ebox->e_version)) ||
 	    (rc = sshbuf_put_u8(buf, ebox->e_type))) {
 		return (ssherrf("sshbuf_put_u8", rc));
 	}
@@ -1714,6 +2122,7 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 	box = calloc(1, sizeof (struct ebox));
 	VERIFY(box != NULL);
 
+	box->e_version = EBOX_VNEXT - 1;
 	box->e_type = EBOX_KEY;
 
 	/* Need a cipher with a 32-byte key, AES256-GCM is the easiest. */

@@ -47,11 +47,6 @@ enum ebox_config_type {
 	EBOX_RECOVERY = 0x02
 };
 
-enum ebox_stream_mode {
-	EBOX_MODE_ENCRYPT = 0x01,
-	EBOX_MODE_DECRYPT = 0x02
-};
-
 enum ebox_chaltype {
 	CHAL_RECOVERY = 1,
 	CHAL_VERIFY_AUDIT = 2,
@@ -235,16 +230,26 @@ errf_t *ebox_unlock(struct ebox *ebox, struct ebox_config *config);
  */
 errf_t *ebox_recover(struct ebox *ebox, struct ebox_config *config);
 
-int sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
-int sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
-int sshbuf_get_ebox_stream_chunk(struct sshbuf *buf,
-    struct ebox_stream_chunk **chunk);
-int sshbuf_put_ebox_stream_chunk(struct sshbuf *buf,
+errf_t *sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
+errf_t *sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
+errf_t *sshbuf_get_ebox_stream_chunk(struct sshbuf *buf,
+    const struct ebox_stream *stream, struct ebox_stream_chunk **chunk);
+errf_t *sshbuf_put_ebox_stream_chunk(struct sshbuf *buf,
     struct ebox_stream_chunk *chunk);
 
-struct ebox_stream *ebox_stream_init_decrypt(void);
-struct ebox_stream *ebox_stream_init_encrypt(struct ebox_tpl *tpl);
-int ebox_stream_put(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
-int ebox_stream_get(struct ebox_stream *str, struct iovec *vecs, size_t nvecs);
+struct ebox *ebox_stream_ebox(const struct ebox_stream *str);
+const char *ebox_stream_cipher(const struct ebox_stream *str);
+const char *ebox_stream_mac(const struct ebox_stream *str);
+size_t ebox_stream_chunk_size(const struct ebox_stream *str);
+size_t ebox_stream_seek_offset(const struct ebox_stream *str, size_t offset);
+
+errf_t *ebox_stream_new(const struct ebox_tpl *tpl, struct ebox_stream **str);
+errf_t *ebox_stream_chunk_new(const struct ebox_stream *str, const void *data,
+    size_t size, size_t seqnr, struct ebox_stream_chunk **chunk);
+
+errf_t *ebox_stream_decrypt_chunk(struct ebox_stream_chunk *chunk);
+errf_t *ebox_stream_encrypt_chunk(struct ebox_stream_chunk *chunk);
+const uint8_t *ebox_stream_chunk_data(const struct ebox_stream_chunk *chunk,
+    size_t *size);
 
 #endif

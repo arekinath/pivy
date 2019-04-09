@@ -82,7 +82,8 @@
 const char *ssh_err(int n);
 
 #define ssherrf(func, code, ...)		\
-    errf("LibSSHError", NULL, func " returned %d (%s)", ##__VA_ARGS__, \
+    errf(((code) == SSH_ERR_MESSAGE_INCOMPLETE) ? "IncompleteMessageError" : \
+    "LibSSHError", NULL, func " returned %d (%s)", ##__VA_ARGS__, \
     code, ssh_err(code))
 
 #define make_sslerrf(var, call, action, ...)	\

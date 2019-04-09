@@ -2311,15 +2311,159 @@ cmd_key_unlock(int argc, char *argv[])
 static errf_t *
 cmd_stream_encrypt(int argc, char *argv[])
 {
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
+	struct ebox_stream *es;
+	struct ebox_stream_chunk *esc;
+	errf_t *error;
+	uint8_t *ibuf;
+	struct sshbuf *obuf;
+	size_t chunksz, nread, nwrote;
+	size_t seq = 0;
+
+	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+
+	error = ebox_stream_new(ebox_tpl, &es);
+	if (error)
+		return (error);
+	chunksz = ebox_stream_chunk_size(es);
+	ibuf = malloc(chunksz);
+	if (ibuf == NULL)
+		errx(EXIT_ERROR, "failed to allocate memory");
+	obuf = sshbuf_new();
+	if (obuf == NULL)
+		errx(EXIT_ERROR, "failed to allocate memory");
+
+	error = sshbuf_put_ebox_stream(obuf, es);
+	if (error)
+		return (error);
+	while (sshbuf_len(obuf) > 0) {
+		nwrote = fwrite(sshbuf_ptr(obuf), 1, sshbuf_len(obuf), stdout);
+		sshbuf_consume(obuf, nwrote);
+	}
+	sshbuf_reset(obuf);
+
+	while (!feof(stdin) && !ferror(stdin)) {
+		nread = fread(ibuf, 1, chunksz, stdin);
+		if (nread < 1)
+			continue;
+		error = ebox_stream_chunk_new(es, ibuf, nread, ++seq, &esc);
+		if (error)
+			return (error);
+		error = ebox_stream_encrypt_chunk(esc);
+		if (error)
+			return (error);
+		error = sshbuf_put_ebox_stream_chunk(obuf, esc);
+		if (error)
+			return (error);
+		while (sshbuf_len(obuf) > 0) {
+			nwrote = fwrite(sshbuf_ptr(obuf), 1, sshbuf_len(obuf),
+			    stdout);
+			sshbuf_consume(obuf, nwrote);
+		}
+		sshbuf_reset(obuf);
+		ebox_stream_chunk_free(esc);
+	}
+
+	ebox_stream_free(es);
+	return (ERRF_OK);
 }
 
 static errf_t *
 cmd_stream_decrypt(int argc, char *argv[])
 {
-	return (errf("NotImplemented", NULL,
-	    "Function %s has not yet been implemented", __func__));
+	struct ebox_stream *es = NULL;
+	struct ebox_stream_chunk *esc = NULL;
+	struct ebox *ebox;
+	errf_t *error;
+	uint8_t *buf, *data;
+	struct sshbuf *ibuf, *nbuf;
+	struct sshbuf *obuf;
+	size_t chunksz, nread, nwrote, poff;
+
+	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+
+	buf = malloc(8192);
+	VERIFY(buf != NULL);
+
+	ibuf = sshbuf_new();
+	VERIFY(ibuf != NULL);
+
+	while (es == NULL) {
+		nread = fread(buf, 1, 8192, stdin);
+		if (nread < 1 && ferror(stdin))
+			err(EXIT_ERROR, "failed to read input");
+		VERIFY0(sshbuf_put(ibuf, buf, nread));
+
+		poff = ibuf->off;
+		error = sshbuf_get_ebox_stream(ibuf, &es);
+		if (errf_caused_by(error, "IncompleteMessageError")) {
+			if (feof(stdin))
+				errfx(EXIT_ERROR, error, "input too short");
+			ibuf->off = poff;
+			erfree(error);
+			continue;
+		} else if (error) {
+			return (error);
+		}
+		break;
+	}
+
+	if (es == NULL) {
+		return (errf("IncompleteInputError", NULL,
+		    "input was incomplete"));
+	}
+
+	ebox = ebox_stream_ebox(es);
+
+	error = interactive_unlock_ebox(ebox);
+	if (error)
+		return (error);
+
+	while (1) {
+		nread = fread(buf, 1, 8192, stdin);
+		if (nread < 1 && ferror(stdin))
+			err(EXIT_ERROR, "failed to read input");
+		else if (nread < 1 && feof(stdin) && sshbuf_len(ibuf) == 0)
+			break;
+		VERIFY0(sshbuf_put(ibuf, buf, nread));
+
+		poff = ibuf->off;
+		error = sshbuf_get_ebox_stream_chunk(ibuf, es, &esc);
+		if (errf_caused_by(error, "IncompleteMessageError")) {
+			if (feof(stdin))
+				errfx(EXIT_ERROR, error, "input too short");
+			ibuf->off = poff;
+			erfree(error);
+			continue;
+		} else if (error) {
+			return (error);
+		}
+
+		error = ebox_stream_decrypt_chunk(esc);
+		if (error)
+			return (error);
+
+		data = ebox_stream_chunk_data(esc, &nread);
+
+		nwrote = fwrite(data, 1, nread, stdout);
+		if (nwrote < nread)
+			err(EXIT_ERROR, "failed to write data");
+
+		ebox_stream_chunk_free(esc);
+		esc = NULL;
+
+		if (sshbuf_len(ibuf) > 0) {
+			nbuf = sshbuf_new();
+			VERIFY(nbuf != NULL);
+			VERIFY0(sshbuf_put(nbuf, sshbuf_ptr(ibuf),
+			    sshbuf_len(ibuf)));
+			sshbuf_free(ibuf);
+			ibuf = nbuf;
+		}
+	}
+
+	ebox_stream_free(es);
+	ebox_stream_chunk_free(esc);
+	return (ERRF_OK);
 }
 
 static void

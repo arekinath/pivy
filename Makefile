@@ -94,6 +94,7 @@ _LIBSSH_SOURCES=		\
 	rsa.c			\
 	base64.c		\
 	atomicio.c		\
+	hmac.c			\
 	authfd.c
 LIBSSH_SOURCES=				\
 	$(_LIBSSH_SOURCES:%=libssh/%)	\
