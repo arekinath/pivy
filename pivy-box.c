@@ -2374,10 +2374,10 @@ cmd_stream_decrypt(int argc, char *argv[])
 	struct ebox_stream_chunk *esc = NULL;
 	struct ebox *ebox;
 	errf_t *error;
-	uint8_t *buf, *data;
+	uint8_t *buf;
+	const uint8_t *data;
 	struct sshbuf *ibuf, *nbuf;
-	struct sshbuf *obuf;
-	size_t chunksz, nread, nwrote, poff;
+	size_t nread, nwrote, poff;
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 

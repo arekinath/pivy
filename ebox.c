@@ -1111,7 +1111,7 @@ sshbuf_get_ebox_stream_chunk(struct sshbuf *buf, const struct ebox_stream *es,
 		err = ERRF_NOMEM;
 		goto out;
 	}
-	esc->esc_stream = es;
+	esc->esc_stream = (struct ebox_stream *)es;
 
 	if ((rc = sshbuf_get_u32(buf, &esc->esc_seqnr))) {
 		err = boxderrf(ssherrf("sshbuf_get_u32", rc));
@@ -1214,10 +1214,9 @@ ebox_stream_encrypt_chunk(struct ebox_stream_chunk *esc)
 	int dgalg = -1;
 	size_t blocksz, ivlen, authlen, keylen, plainlen, enclen, maclen;
 	size_t padding, i;
-	uint8_t *key, *plain, *enc, *mac, *iv;
+	uint8_t *key, *plain, *enc, *iv;
 	struct sshcipher_ctx *cctx = NULL;
 	struct ssh_hmac_ctx *hctx = NULL;
-	int rc;
 
 	es = esc->esc_stream;
 	plainlen = esc->esc_plainlen;
@@ -2929,14 +2928,4 @@ ebox_challenge_free(struct ebox_challenge *chal)
 	piv_box_free(chal->c_keybox);
 	explicit_bzero(chal->c_words, sizeof (chal->c_words));
 	free(chal);
-}
-
-int
-ebox_stream_put(struct ebox_stream *es, struct iovec *vecs, size_t nvecs)
-{
-}
-
-int
-ebox_stream_get(struct ebox_stream *es, struct iovec *vecs, size_t nvecs)
-{
 }
