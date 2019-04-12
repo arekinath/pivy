@@ -2653,10 +2653,16 @@ read_tpl_file(const char *tpl)
 }
 
 static void
-usage(void)
+usage_types(void)
 {
 	fprintf(stderr,
 	    "usage: pivy-box <type> <operation> [options] [tpl]\n"
+	    "\n");
+	fprintf(stderr,
+	    "Creates and manages eboxes, which encrypt data so that it can be\n"
+	    "decrypted and authenticated using PIV tokens (or N/M sets of PIV\n"
+	    "tokens) supported by pivy.\n"
+	    "\n"
 	    "Options:\n"
 	    "  -b         batch mode, don't talk to terminal\n"
 	    "  -r         raw input, don't base64-decode stdin\n"
@@ -2668,56 +2674,237 @@ usage(void)
 	    "If not using -f, templates are stored in " TPL_DEFAULT_PATH "\n\n",
 	    "$HOME", "*");
 	fprintf(stderr,
-	    "Available types and operations:\n"
-	    "\n"
-	    "- pivy-box tpl|template <op>\n"
-	    "\n"
-	    "  - pivy-box tpl create [-i] <tpl> [builder...]\n"
-	    "      Create a new template from scratch\n"
-	    "      Builder keywords:\n"
-	    "        primary < ... >        specifies a primary config\n"
-	    "          local-guid <guid>    generates based on a local Yubikey\n"
-	    "          name <string>\n"
-	    "          guid <guid>\n"
-	    "          slot <hex>\n"
-	    "          key <'ecdsa-sha2-nistp256 AA...'>       sets 9d key\n"
-	    "          cak <'ecdsa-sha2-nistp256 AA...'>       sets 9e key\n"
-	    "        recovery < ... >       specifies a recovery config\n"
-	    "          require <int>        set # of parts required\n"
-	    "          part < ... >         specifies a part for the config\n"
-	    "            name/guid/slot/key     as above for primary\n"
-	    "\n"
-	    "  - pivy-box tpl edit [-i] <tpl> [builder...]\n"
-	    "      Edit an existing template.\n"
-	    "      Builder keywords:\n"
-	    "        add-primary < ... >    appends a new primary config\n"
-	    "          (same as 'tpl create' primary)\n"
-	    "        add-recovery < ... >   appends a new recovery config\n"
-	    "          (same as 'tpl create' recovery)\n"
-	    "        remove-primary all     removes all primary configs\n"
-	    "        remove-recovery all    removes all recovery configs\n"
-	    "\n"
-	    "  - pivy-box tpl show [tpl]\n"
-	    "      Pretty-prints a template, from a file using [tpl] or -f,\n"
-	    "      or from stdin if neither is given.\n"
-	    "\n"
-	    "- pivy-box key <op>\n"
-	    "\n"
-	    "  - pivy-box key generate [-l bytes] <tpl>\n"
-	    "      Generates a random key and stores it in an ebox\n"
-	    "      ebox is output to stdout\n"
-	    "\n"
-	    "  - pivy-box key lock <tpl>\n"
-	    "      Takes a key as input on stdin and locks it an ebox,\n"
-	    "      outputting that ebox to stdout\n"
-	    "\n"
-	    "  - pivy-box key unlock\n"
-	    "      Unlocks an ebox given on stdin and outputs the key to\n"
-	    "      stdout.\n"
-	    "\n"
-	    "  - pivy-box key relock <newtpl>\n"
-	    "      Unlocks an ebox and then locks its contents into a new\n"
-	    "      ebox with the given template\n"
+	    "pivy-box <type>:\n"
+	    "  tpl|template          Manage templates which track a set of\n"
+	    "                        devices and N/M config\n"
+	    "  key                   Encrypt small amounts of data (up to 10s\n"
+	    "                        of bytes)\n"
+	    "  stream                Encrypt larger amounts of data which can\n"
+	    "                        be streamed (doesn't have to fit in RAM)\n"
+	    "  challenge             Respond to recovery challenges issued by\n"
+	    "                        other commands\n");
+}
+
+static void
+usage_tpl(const char *op)
+{
+	if (op == NULL) {
+		goto noop;
+	} else if (strcmp(op, "create") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box tpl create [-i] <tpl> [builder...]\n"
+		    "\n"
+		    "Creates a new template which can then be used with the\n"
+		    "pivy-box key or stream commands. Can be invoked either\n"
+		    "with a set of 'builder' arguments to specify the template\n"
+		    "or with -i to interactively create it through a menu\n"
+		    "interface.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -i         interactive mode\n"
+		    "\n"
+		    "<builder>:\n"
+		    "  primary < ... >        Specifies a primary config\n"
+		    "    local-guid <guid>    Generates based on a local device\n"
+		    "    name <string>\n"
+		    "    guid <guid>\n"
+		    "    slot <hex>\n"
+		    "    key <'ecdsa-sha2-nistp256 AA...'>       Sets 9d key\n"
+		    "    cak <'ecdsa-sha2-nistp256 AA...'>       Sets 9e key\n"
+		    "  recovery < ... >       Specifies a recovery config\n"
+		    "    require <int>        Set # of parts required\n"
+		    "    part < ... >         Specifies a part for the config\n"
+		    "      name/guid/slot/key\n");
+	} else if (strcmp(op, "edit") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box tpl edit [-i] <tpl> [builder...]\n"
+		    "\n"
+		    "Makes changes to an existing template.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -i         interactive mode\n"
+		    "\n"
+		    "<builder>:\n"
+		    "  remove-primary all     Remove all primary configs\n"
+		    "  remove-recovery all    Remove all recovery configs\n"
+		    "  add-primary < ... >    Add a new primary config\n"
+		    "    local-guid <guid>    Generates based on a local device\n"
+		    "    name <string>\n"
+		    "    guid <guid>\n"
+		    "    slot <hex>\n"
+		    "    key <'ecdsa-sha2-nistp256 AA...'>       Sets 9d key\n"
+		    "    cak <'ecdsa-sha2-nistp256 AA...'>       Sets 9e key\n"
+		    "  add-recovery < ...>    Add a new recovery config\n"
+		    "    require <int>        Set # of parts required\n"
+		    "    part < ... >         Specifies a part for the config\n"
+		    "      name/guid/slot/key\n");
+	} else if (strcmp(op, "show") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box tpl show [-r] [tpl]\n"
+		    "\n"
+		    "Pretty-prints a template to stdout showing details of\n"
+		    "devices and configuration.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -r         raw input, don't base64-decode stdin\n"
+		    "\n"
+		    "If no [tpl] or -f given, expects template input on stdin.\n");
+	} else {
+noop:
+		fprintf(stderr,
+		    "pivy-box tpl <op>:\n"
+		    "  create                Create a new template\n"
+		    "  edit                  Edit an existing template\n"
+		    "  show                  Pretty-print a template to stdout\n");
+	}
+}
+
+static void
+usage_key(const char *op)
+{
+	if (op == NULL) {
+		goto noop;
+	} else if (strcmp(op, "generate") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box key generate [-R] [-l len] <tpl>\n"
+		    "\n"
+		    "Generates random key material of a specified length\n"
+		    "(default 16 bytes), encrypts it with an ebox and outputs\n"
+		    "just the ebox.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -R         raw output, don't base64-encode stdout\n"
+		    "  -l len     set length of key in bytes\n"
+		    "\n");
+	} else if (strcmp(op, "lock") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box key lock [-rR] <tpl>\n"
+		    "\n"
+		    "Takes pre-generated key material and encrypts it with\n"
+		    "a 'key' ebox. This is not suitable for large amounts\n"
+		    "of data.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -r         raw input, don't base64-decode stdin\n"
+		    "  -R         raw output, don't base64-encode stdout\n"
+		    "\n");
+	} else if (strcmp(op, "unlock") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box key unlock [-brR]\n"
+		    "\n"
+		    "Decrypts a 'key' ebox and outputs the contents.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -b         batch mode, don't talk to terminal\n"
+		    "  -r         raw input, don't base64-decode stdin\n"
+		    "  -R         raw output, don't base64-encode stdout\n"
+		    "\n");
+	} else if (strcmp(op, "relock") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box key relock [-brR] <newtpl>\n"
+		    "\n"
+		    "Decrypts a 'key' ebox and then re-encrypts it with a new\n"
+		    "template. Can be used to update an ebox after editing\n"
+		    "the template to add/remove devices.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -b         batch mode, don't talk to terminal\n"
+		    "  -r         raw input, don't base64-decode stdin\n"
+		    "  -R         raw output, don't base64-encode stdout\n"
+		    "\n");
+	} else {
+noop:
+		fprintf(stderr,
+		    "pivy-box key <op>:\n"
+		    "  generate              Generate a random key and ebox it\n"
+		    "  lock                  Ebox a pre-generated key\n"
+		    "  unlock                Unlock a key ebox\n"
+		    "  relock                Unlock + lock to new template\n");
+	}
+}
+
+static void
+usage_stream(const char *op)
+{
+	if (op == NULL) {
+		goto noop;
+	} else if (strcmp(op, "encrypt") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box stream encrypt <tpl>\n"
+		    "\n"
+		    "Accepts streaming data on stdin and encrypts it to the\n"
+		    "given template in chunks. Output is binary.\n");
+	} else if (strcmp(op, "decrypt") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box stream decrypt [-b]\n"
+		    "\n"
+		    "Accepts output from 'stream encrypt' on stdin, decrypts\n"
+		    "it and outputs the plaintext. Data is only output after\n"
+		    "it has been authenticated/validated.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -b         batch mode, don't talk to terminal\n"
+		    "\n");
+	} else {
+noop:
+		fprintf(stderr,
+		    "pivy-box stream <op>:\n"
+		    "  encrypt               Encrypt streaming data\n"
+		    "  decrypt               Decrypt streaming data\n");
+	}
+}
+
+static void
+usage_challenge(const char *op)
+{
+	if (op == NULL) {
+		goto noop;
+	} else if (strcmp(op, "info") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box challenge info\n"
+		    "\n"
+		    "Takes a recovery challenge (such as that output by\n"
+		    "the 'key unlock' or 'stream decrypt' commands), decrypts\n"
+		    "it, and prints the contained information to stdout.\n");
+	} else if (strcmp(op, "respond") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box challenge respond\n"
+		    "\n"
+		    "Takes a recovery challenge (such as that output by\n"
+		    "the 'key unlock' or 'stream decrypt' commands), decrypts\n"
+		    "it, prints the contained information to stdout, then\n"
+		    "waits for user confirmation before generating a response.\n"
+		    "\n"
+		    "The response must then be transported back to the program\n"
+		    "which generated the challenge to complete the process.\n");
+	} else {
+noop:
+		fprintf(stderr,
+		    "pivy-box challenge <op>:\n"
+		    "  info                  Show information about a recovery\n"
+		    "                        challenge without responding\n"
+		    "  respond               Respond to a recovery challenge\n");
+	}
+}
+
+static void
+usage(const char *type, const char *op)
+{
+	if (type == NULL) {
+		usage_types();
+	} else if (strcmp(type, "tpl") == 0 || strcmp(type, "template") == 0) {
+		usage_tpl(op);
+	} else if (strcmp(type, "key") == 0) {
+		usage_key(op);
+	} else if (strcmp(type, "stream") == 0) {
+		usage_stream(op);
+	} else if (strcmp(type, "challenge") == 0) {
+		usage_challenge(op);
+	} else {
+		usage_types();
+	}
+	return;
+	fprintf(stderr,
 	    "\n"
 	    "- pivy-box stream <op>\n"
 	    "\n"
@@ -2745,7 +2932,7 @@ int
 main(int argc, char *argv[])
 {
 	const char *optstring = "bl:irRP:i:o:f:";
-	const char *type, *op, *tplname;
+	const char *type = NULL, *op = NULL, *tplname;
 	int c;
 	char tpl[PATH_MAX] = { 0 };
 	errf_t *error = NULL;
@@ -2763,13 +2950,13 @@ main(int argc, char *argv[])
 
 	if (argc < 2) {
 		warnx("type and operation required");
-		usage();
+		usage(type, op);
 		return (EXIT_USAGE);
 	}
 	type = argv[1];
 	if (argc < 3) {
 		warnx("operation required");
-		usage();
+		usage(type, op);
 		return (EXIT_USAGE);
 	}
 	op = argv[2];
@@ -2799,7 +2986,7 @@ main(int argc, char *argv[])
 			    strcmp(op, "generate") != 0) {
 				warnx("option -l only supported with "
 				    "'key generate' subcommand");
-				usage();
+				usage(type, op);
 				return (EXIT_USAGE);
 			}
 			errno = 0;
@@ -2811,7 +2998,7 @@ main(int argc, char *argv[])
 			ebox_keylen = parsed;
 			break;
 		default:
-			usage();
+			usage(type, op);
 			return (EXIT_USAGE);
 		}
 	}
@@ -2853,7 +3040,8 @@ main(int argc, char *argv[])
 		const char *home;
 		if (argc < 1) {
 			warnx("template name or path required");
-			usage();
+			usage(type, op);
+			return (EXIT_USAGE);
 		}
 		tplname = argv[0];
 		home = getenv("HOME");
@@ -2919,7 +3107,7 @@ main(int argc, char *argv[])
 	}
 badop:
 	warnx("unknown operation: '%s %s'", type, op);
-	usage();
+	usage(type, op);
 	return (EXIT_USAGE);
 
 out:
