@@ -2965,6 +2965,10 @@ sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
 		goto out;
 	}
 
+	chal->c_keybox->pdb_guidslot_valid = box->pdb_guidslot_valid;
+	chal->c_keybox->pdb_slot = box->pdb_slot;
+	bcopy(box->pdb_guid, chal->c_keybox->pdb_guid, sizeof (box->pdb_guid));
+
 	chal->c_keybox->pdb_cipher = strdup(box->pdb_cipher);
 	chal->c_keybox->pdb_kdf = strdup(box->pdb_kdf);
 	chal->c_keybox->pdb_free_str = B_TRUE;
