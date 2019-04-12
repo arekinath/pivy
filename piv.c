@@ -4225,10 +4225,14 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 		    "type %s", sshkey_type(pubk)));
 	}
 
-	rv = sshkey_generate(KEY_ECDSA, sshkey_size(pubk), &pkey);
-	if (rv != 0) {
-		err = boxaerrf(ssherrf("sshkey_generate", rv));
-		return (err);
+	if (box->pdb_ephem == NULL) {
+		rv = sshkey_generate(KEY_ECDSA, sshkey_size(pubk), &pkey);
+		if (rv != 0) {
+			err = boxaerrf(ssherrf("sshkey_generate", rv));
+			return (err);
+		}
+	} else {
+		pkey = box->pdb_ephem;
 	}
 	VERIFY0(sshkey_demote(pkey, &box->pdb_ephem_pub));
 
@@ -4289,7 +4293,8 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 		return (err);
 	}
 
-	sshkey_free(pkey);
+	if (box->pdb_ephem == NULL)
+		sshkey_free(pkey);
 
 	dgctx = ssh_digest_start(dgalg);
 	VERIFY3P(dgctx, !=, NULL);
@@ -4493,7 +4498,7 @@ sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 	if (ver >= PIV_BOX_V2) {
 		if ((rc = sshbuf_put_string8(buf, box->pdb_nonce.b_data,
 		    box->pdb_nonce.b_len)))
-		return (ssherrf("sshbuf_put_string8", rc));
+			return (ssherrf("sshbuf_put_string8", rc));
 	} else {
 		VERIFY3U(box->pdb_nonce.b_len, ==, 0);
 		VERIFY3P(box->pdb_nonce.b_data, ==, NULL);

@@ -31,6 +31,7 @@ struct piv_ecdh_box {
 	uint8_t pdb_guid[16];
 	enum piv_slotid pdb_slot;
 
+	struct sshkey *pdb_ephem;
 	struct sshkey *pdb_ephem_pub;
 	struct sshkey *pdb_pub;
 

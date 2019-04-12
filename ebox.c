@@ -79,6 +79,8 @@ struct ebox {
 	struct ebox_config *e_configs;
 	enum ebox_type e_type;
 
+	struct ebox_ephem_key *e_ephemkeys;
+
 	/* main key */
 	size_t e_keylen;
 	uint8_t *e_key;
@@ -95,6 +97,12 @@ struct ebox {
 	uint8_t *e_token;
 
 	void *e_priv;
+};
+
+struct ebox_ephem_key {
+	struct ebox_ephem_key *eek_next;
+	int eek_nid;
+	struct sshkey *eek_ephem;
 };
 
 struct ebox_config {
@@ -173,6 +181,7 @@ enum ebox_part_tag {
 
 enum ebox_version {
 	EBOX_V1 = 0x01,
+	EBOX_V2 = 0x02,
 	EBOX_VNEXT
 };
 
@@ -191,6 +200,40 @@ enum ebox_version {
 #define	chalverrf(cause) \
     errf("NotSupportedError", cause, \
     "ebox challenge is not supported")
+
+static struct sshkey *
+ebox_get_ephem_for_nid(const struct ebox *ebox, int nid)
+{
+	const struct ebox_ephem_key *eek;
+	eek = ebox->e_ephemkeys;
+	for (; eek != NULL; eek = eek->eek_next) {
+		if (eek->eek_nid == nid) {
+			return (eek->eek_ephem);
+		}
+	}
+	return (NULL);
+}
+
+static struct sshkey *
+ebox_make_ephem_for_nid(struct ebox *ebox, int nid)
+{
+	struct ebox_ephem_key *eek;
+	uint bits;
+	eek = ebox->e_ephemkeys;
+	for (; eek != NULL; eek = eek->eek_next) {
+		if (eek->eek_nid == nid) {
+			return (eek->eek_ephem);
+		}
+	}
+	bits = sshkey_curve_nid_to_bits(nid);
+	eek = calloc(1, sizeof (struct ebox_ephem_key));
+	VERIFY(eek != NULL);
+	eek->eek_next = ebox->e_ephemkeys;
+	ebox->e_ephemkeys = eek;
+	eek->eek_nid = nid;
+	VERIFY0(sshkey_generate(KEY_ECDSA, bits, &eek->eek_ephem));
+	return (eek->eek_ephem);
+}
 
 struct ebox_tpl *
 ebox_tpl_alloc(void)
@@ -943,6 +986,7 @@ void
 ebox_free(struct ebox *box)
 {
 	struct ebox_config *config, *nconfig;
+	struct ebox_ephem_key *eek, *neek;
 	if (box == NULL)
 		return;
 	free(box->e_priv);
@@ -970,6 +1014,11 @@ ebox_free(struct ebox *box)
 	for (config = box->e_configs; config != NULL; config = nconfig) {
 		nconfig = config->ec_next;
 		ebox_config_free(config);
+	}
+	for (eek = box->e_ephemkeys; eek != NULL; eek = neek) {
+		neek = eek->eek_next;
+		sshkey_free(eek->eek_ephem);
+		free(eek);
 	}
 	ebox_tpl_free(box->e_tpl);
 	free(box);
@@ -1461,7 +1510,8 @@ ebox_stream_chunk_size(const struct ebox_stream *es)
 }
 
 static errf_t *
-sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
+sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
+    struct ebox_part **ppart)
 {
 	struct ebox_part *part;
 	struct ebox_tpl_part *tpart;
@@ -1471,7 +1521,9 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 	uint8_t tag, *guid;
 	errf_t *err = NULL;
 	char *tname;
-	struct sshkey *k;
+	struct sshkey *k = NULL, *ephk;
+	struct piv_ecdh_box *box = NULL;
+	boolean_t gotguid = B_FALSE;
 
 	part = calloc(1, sizeof (struct ebox_part));
 	VERIFY(part != NULL);
@@ -1494,8 +1546,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 				err = ssherrf("sshbuf_get_cstring8", rc);
 				goto out;
 			}
-			tpart->etp_pubkey = (k = sshkey_new(KEY_ECDSA));
-			if (tpart->etp_pubkey == NULL) {
+			k = sshkey_new(KEY_ECDSA);
+			if (k == NULL) {
 				err = ERRF_NOMEM;
 				goto out;
 			}
@@ -1519,6 +1571,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 				err = ssherrf("sshkey_ec_validate_public", rc);
 				goto out;
 			}
+			tpart->etp_pubkey = k;
+			k = NULL;
 			break;
 		case EBOX_PART_CAK:
 			sshbuf_reset(kbuf);
@@ -1554,11 +1608,96 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 			bcopy(guid, tpart->etp_guid, len);
 			free(guid);
 			guid = NULL;
+			gotguid = B_TRUE;
 			break;
 		case EBOX_PART_BOX:
-			err = sshbuf_get_piv_box(buf, &part->ep_box);
-			if (err)
+			if (ebox->e_version < EBOX_V2) {
+				err = sshbuf_get_piv_box(buf, &part->ep_box);
+				if (err)
+					goto out;
+				break;
+			}
+			box = piv_box_new();
+			if (box == NULL) {
+				err = ERRF_NOMEM;
 				goto out;
+			}
+			box->pdb_guidslot_valid = B_TRUE;
+			box->pdb_slot = PIV_SLOT_KEY_MGMT;
+			box->pdb_free_str = B_TRUE;
+			rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_cipher,
+			    NULL);
+			if (rc) {
+				err = ssherrf("sshbuf_get_cstring8", rc);
+				goto out;
+			}
+			rc = sshbuf_get_cstring8(buf, (char **)&box->pdb_kdf,
+			    NULL);
+			if (rc) {
+				err = ssherrf("sshbuf_get_cstring8", rc);
+				goto out;
+			}
+			rc = sshbuf_get_string8(buf, &box->pdb_nonce.b_data,
+			    &box->pdb_nonce.b_size);
+			if (rc) {
+				err = ssherrf("sshbuf_get_string8", rc);
+				goto out;
+			}
+			box->pdb_nonce.b_len = box->pdb_nonce.b_size;
+			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
+				err = ssherrf("sshbuf_get_cstring8", rc);
+				goto out;
+			}
+			k = sshkey_new(KEY_ECDSA);
+			k->ecdsa_nid = sshkey_curve_name_to_nid(tname);
+			if (k->ecdsa_nid == -1) {
+				err = errf("CurveError", NULL, "EC curve '%s' "
+				    "not supported", tname);
+				goto out;
+			}
+
+			k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+			VERIFY(k->ecdsa != NULL);
+
+			if ((rc = sshbuf_get_eckey8(buf, k->ecdsa))) {
+				err = ssherrf("sshbuf_get_eckey8", rc);
+				goto out;
+			}
+			rc = sshkey_ec_validate_public(
+			    EC_KEY_get0_group(k->ecdsa),
+			    EC_KEY_get0_public_key(k->ecdsa));
+			if (rc) {
+				err = ssherrf("sshkey_ec_validate_public", rc);
+				goto out;
+			}
+			box->pdb_pub = k;
+			k = NULL;
+
+			ephk = ebox_get_ephem_for_nid(ebox,
+			    box->pdb_pub->ecdsa_nid);
+			if (ephk == NULL) {
+				err = errf("CurveError", NULL, "No ephemeral "
+				    "key found for EC curve '%s'", tname);
+				goto out;
+			}
+			VERIFY0(sshkey_demote(ephk, &box->pdb_ephem_pub));
+
+			if ((rc = sshbuf_get_string8(buf, &box->pdb_iv.b_data,
+			    &box->pdb_iv.b_size))) {
+				err = ssherrf("sshbuf_put_string8", rc);
+				goto out;
+			}
+			box->pdb_iv.b_len = box->pdb_iv.b_size;
+
+			if ((rc = sshbuf_get_string(buf, &box->pdb_enc.b_data,
+			    &box->pdb_enc.b_size))) {
+				err = ssherrf("sshbuf_put_string", rc);
+				goto out;
+			}
+			box->pdb_enc.b_len = box->pdb_enc.b_size;
+
+			part->ep_box = box;
+			box = NULL;
 			break;
 		default:
 			err = errf("TagError", NULL,
@@ -1577,6 +1716,15 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 		    "ebox part did not contain 'box' tag");
 		goto out;
 	}
+
+	if (!gotguid) {
+		err = errf("MissingTagError", NULL,
+		    "ebox part did not contain 'guid' tag");
+		goto out;
+	}
+
+	bcopy(tpart->etp_guid, part->ep_box->pdb_guid,
+	    sizeof (part->ep_box->pdb_guid));
 
 	if (tpart->etp_pubkey == NULL) {
 		rc = sshkey_demote(part->ep_box->pdb_pub, &tpart->etp_pubkey);
@@ -1597,11 +1745,14 @@ sshbuf_get_ebox_part(struct sshbuf *buf, struct ebox_part **ppart)
 out:
 	sshbuf_free(kbuf);
 	ebox_part_free(part);
+	piv_box_free(box);
+	sshkey_free(k);
 	return (err);
 }
 
 static errf_t *
-sshbuf_get_ebox_config(struct sshbuf *buf, struct ebox_config **pconfig)
+sshbuf_get_ebox_config(struct sshbuf *buf, const struct ebox *ebox,
+    struct ebox_config **pconfig)
 {
 	struct ebox_config *config;
 	struct ebox_tpl_config *tconfig;
@@ -1641,7 +1792,7 @@ sshbuf_get_ebox_config(struct sshbuf *buf, struct ebox_config **pconfig)
 	}
 	id = 1;
 
-	if ((err = sshbuf_get_ebox_part(buf, &part)))
+	if ((err = sshbuf_get_ebox_part(buf, ebox, &part)))
 		goto out;
 	part->ep_id = id++;
 	config->ec_parts = part;
@@ -1649,7 +1800,7 @@ sshbuf_get_ebox_config(struct sshbuf *buf, struct ebox_config **pconfig)
 	config->ec_tpl->etc_parts = tpart;
 
 	for (i = 1; i < tconfig->etc_m; ++i) {
-		if ((err = sshbuf_get_ebox_part(buf, &part->ep_next)))
+		if ((err = sshbuf_get_ebox_part(buf, ebox, &part->ep_next)))
 			goto out;
 		part = part->ep_next;
 		part->ep_id = id++;
@@ -1663,6 +1814,61 @@ sshbuf_get_ebox_config(struct sshbuf *buf, struct ebox_config **pconfig)
 
 out:
 	ebox_config_free(config);
+	return (err);
+}
+
+static errf_t *
+sshbuf_get_ebox_ephem_key(struct sshbuf *buf, struct ebox_ephem_key **peek)
+{
+	struct ebox_ephem_key *eek = NULL;
+	char *tname = NULL;
+	struct sshkey *k = NULL;
+	errf_t *err = NULL;
+	int rc;
+
+	eek = calloc(1, sizeof (struct ebox_ephem_key));
+	if (eek == NULL)
+		return (ERRF_NOMEM);
+
+	if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
+		err = ssherrf("sshbuf_get_cstring8", rc);
+		goto out;
+	}
+	eek->eek_ephem = (k = sshkey_new(KEY_ECDSA));
+	if (k == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	k->ecdsa_nid = (eek->eek_nid = sshkey_curve_name_to_nid(tname));
+	if (k->ecdsa_nid == -1) {
+		err = errf("CurveError", NULL, "EC curve '%s' "
+		    "not supported", tname);
+		goto out;
+	}
+	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(k->ecdsa != NULL);
+	rc = sshbuf_get_eckey8(buf, k->ecdsa);
+	if (rc) {
+		err = ssherrf("sshbuf_get_eckey8", rc);
+		goto out;
+	}
+	rc = sshkey_ec_validate_public(
+	    EC_KEY_get0_group(k->ecdsa),
+	    EC_KEY_get0_public_key(k->ecdsa));
+	if (rc) {
+		err = ssherrf("sshkey_ec_validate_public", rc);
+		goto out;
+	}
+
+	*peek = eek;
+	eek = NULL;
+	k = NULL;
+	err = ERRF_OK;
+
+out:
+	sshkey_free(k);
+	free(eek);
+	free(tname);
 	return (err);
 }
 
@@ -1716,7 +1922,7 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
-	rc = sshbuf_get_string8(buf, &box->e_rcv_iv.b_data, 
+	rc = sshbuf_get_string8(buf, &box->e_rcv_iv.b_data,
 	    &box->e_rcv_iv.b_len);
 	if (rc) {
 		err = boxderrf(ssherrf("sshbuf_get_string8", rc));
@@ -1730,12 +1936,31 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		goto out;
 	}
 
+	if (box->e_version >= EBOX_V2) {
+		struct ebox_ephem_key *eek = NULL;
+		uint8_t neeks;
+
+		if ((rc = sshbuf_get_u8(buf, &neeks))) {
+			err = boxderrf(ssherrf("sshbuf_get_u8", rc));
+			goto out;
+		}
+
+		for (i = 0; i < neeks; ++i) {
+			if ((err = sshbuf_get_ebox_ephem_key(buf, &eek))) {
+				err = boxderrf(err);
+				goto out;
+			}
+			eek->eek_next = box->e_ephemkeys;
+			box->e_ephemkeys = eek;
+		}
+	}
+
 	if ((rc = sshbuf_get_u8(buf, &nconfigs))) {
 		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
 
-	if ((err = sshbuf_get_ebox_config(buf, &config))) {
+	if ((err = sshbuf_get_ebox_config(buf, box, &config))) {
 		err = boxderrf(err);
 		goto out;
 	}
@@ -1744,7 +1969,8 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 	box->e_tpl->et_configs = tconfig;
 
 	for (i = 1; i < nconfigs; ++i) {
-		if ((err = sshbuf_get_ebox_config(buf, &config->ec_next))) {
+		if ((err = sshbuf_get_ebox_config(buf, box,
+		    &config->ec_next))) {
 			err = boxderrf(err);
 			goto out;
 		}
@@ -1763,7 +1989,8 @@ out:
 }
 
 static errf_t *
-sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox_part *part)
+sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox *ebox,
+    struct ebox_part *part)
 {
 	struct ebox_tpl_part *tpart;
 	struct sshbuf *kbuf;
@@ -1804,8 +2031,50 @@ sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox_part *part)
 		err = ssherrf("sshbuf_put_u8", rc);
 		goto out;
 	}
-	if ((err = sshbuf_put_piv_box(buf, part->ep_box)))
-		goto out;
+	if (ebox->e_version >= EBOX_V2) {
+		struct piv_ecdh_box *box = part->ep_box;
+		const char *tname;
+		struct sshkey *ephk;
+
+		if ((rc = sshbuf_put_cstring8(buf, box->pdb_cipher)) ||
+		    (rc = sshbuf_put_cstring8(buf, box->pdb_kdf))) {
+			err = ssherrf("sshbuf_put_cstring8", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_string8(buf, box->pdb_nonce.b_data,
+		    box->pdb_nonce.b_len))) {
+			err = ssherrf("sshbuf_put_string8", rc);
+			goto out;
+		}
+
+		ephk = ebox_get_ephem_for_nid(ebox, box->pdb_pub->ecdsa_nid);
+		VERIFY(sshkey_equal_public(ephk, box->pdb_ephem_pub));
+		VERIFY3U(box->pdb_version, >=, PIV_BOX_V2);
+		tname = sshkey_curve_nid_to_name(box->pdb_pub->ecdsa_nid);
+		VERIFY(tname != NULL);
+		if ((rc = sshbuf_put_cstring8(buf, tname))) {
+			err = ssherrf("sshbuf_put_cstring8", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_eckey8(buf, box->pdb_pub->ecdsa))) {
+			err = ssherrf("sshbuf_put_eckey8", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_string8(buf, box->pdb_iv.b_data,
+		    box->pdb_iv.b_len))) {
+			err = ssherrf("sshbuf_put_string8", rc);
+			goto out;
+		}
+
+		if ((rc = sshbuf_put_string(buf, box->pdb_enc.b_data,
+		    box->pdb_enc.b_len))) {
+			err = ssherrf("sshbuf_put_string", rc);
+			goto out;
+		}
+	} else {
+		if ((err = sshbuf_put_piv_box(buf, part->ep_box)))
+			goto out;
+	}
 
 	if ((rc = sshbuf_put_u8(buf, EBOX_PART_END))) {
 		err = ssherrf("sshbuf_put_u8", rc);
@@ -1820,7 +2089,8 @@ out:
 }
 
 static errf_t *
-sshbuf_put_ebox_config(struct sshbuf *buf, struct ebox_config *config)
+sshbuf_put_ebox_config(struct sshbuf *buf, struct ebox *ebox,
+    struct ebox_config *config)
 {
 	struct ebox_tpl_config *tconfig;
 	struct ebox_part *part;
@@ -1837,24 +2107,45 @@ sshbuf_put_ebox_config(struct sshbuf *buf, struct ebox_config *config)
 
 	part = config->ec_parts;
 	for (; part != NULL; part = part->ep_next) {
-		if ((err = sshbuf_put_ebox_part(buf, part)))
+		if ((err = sshbuf_put_ebox_part(buf, ebox, part)))
 			return (err);
 	}
 
 	return (NULL);
 }
 
+static errf_t *
+sshbuf_put_ebox_ephem_key(struct sshbuf *buf, struct ebox_ephem_key *eek)
+{
+	struct sshkey *k = eek->eek_ephem;
+	const char *tname;
+	int rc;
+
+	tname = sshkey_curve_nid_to_name(eek->eek_nid);
+
+	if ((rc = sshbuf_put_cstring8(buf, tname)) ||
+	    (rc = sshbuf_put_eckey8(buf, k->ecdsa))) {
+		return (ssherrf("sshbuf_put_*", rc));
+	}
+
+	return (ERRF_OK);
+}
+
 errf_t *
 sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
 {
-	uint8_t nconfigs = 0;
+	uint8_t nconfigs = 0, neeks = 0;
 	int rc = 0;
 	struct ebox_config *config;
+	struct ebox_ephem_key *eek;
 	errf_t *err;
 
 	config = ebox->e_configs;
 	for (; config != NULL; config = config->ec_next) {
 		++nconfigs;
+	}
+	for (eek = ebox->e_ephemkeys; eek != NULL; eek = eek->eek_next) {
+		++neeks;
 	}
 
 	if ((rc = sshbuf_put_u8(buf, 0xEB)) ||
@@ -1879,13 +2170,25 @@ sshbuf_put_ebox(struct sshbuf *buf, struct ebox *ebox)
 		return (ssherrf("sshbuf_put_string8", rc));
 	}
 
+	if (ebox->e_version >= EBOX_V2) {
+		if ((rc = sshbuf_put_u8(buf, neeks))) {
+			return (ssherrf("sshbuf_put_u8", rc));
+		}
+
+		eek = ebox->e_ephemkeys;
+		for (; eek != NULL; eek = eek->eek_next) {
+			if ((err = sshbuf_put_ebox_ephem_key(buf, eek)))
+				return (err);
+		}
+	}
+
 	if ((rc = sshbuf_put_u8(buf, nconfigs))) {
 		return (ssherrf("sshbuf_put_u8", rc));
 	}
 
 	config = ebox->e_configs;
 	for (; config != NULL; config = config->ec_next) {
-		if ((err = sshbuf_put_ebox_config(buf, config)))
+		if ((err = sshbuf_put_ebox_config(buf, ebox, config)))
 			return (err);
 	}
 
@@ -2214,6 +2517,8 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 			} else {
 				VERIFY0(piv_box_set_data(pbox, key, keylen));
 			}
+			pbox->pdb_ephem = ebox_make_ephem_for_nid(box,
+			    tpart->etp_pubkey->ecdsa_nid);
 			VERIFY0(piv_box_seal_offline(tpart->etp_pubkey, pbox));
 
 			ppart = npart;
