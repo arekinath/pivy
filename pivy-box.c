@@ -84,7 +84,7 @@ static boolean_t ebox_batch = B_FALSE;
 static boolean_t ebox_raw_in = B_FALSE;
 static boolean_t ebox_raw_out = B_FALSE;
 static boolean_t ebox_interactive = B_FALSE;
-static struct ebox_tpl *ebox_tpl;
+static struct ebox_tpl *ebox_stpl;
 static size_t ebox_keylen = 32;
 
 #define	TPL_DEFAULT_PATH	"%s/.ebox/tpl/%s"
@@ -1976,7 +1976,7 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 				goto out;
 			}
 			config = ebox_tpl_config_alloc(EBOX_PRIMARY);
-			ebox_tpl_add_config(ebox_tpl, config);
+			ebox_tpl_add_config(ebox_stpl, config);
 			error = parse_keywords_primary(config, argc, argv, &i);
 			if (error)
 				return (error);
@@ -1988,7 +1988,7 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 				goto out;
 			}
 			config = ebox_tpl_config_alloc(EBOX_RECOVERY);
-			ebox_tpl_add_config(ebox_tpl, config);
+			ebox_tpl_add_config(ebox_stpl, config);
 			error = parse_keywords_recovery(config, argc, argv, &i);
 			if (error)
 				return (error);
@@ -2000,14 +2000,14 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 				goto out;
 			}
 			if (strcmp(argv[i], "all") == 0) {
-				nconfig = ebox_tpl_next_config(ebox_tpl, NULL);
+				nconfig = ebox_tpl_next_config(ebox_stpl, NULL);
 				while ((config = nconfig) != NULL) {
-					nconfig = ebox_tpl_next_config(ebox_tpl,
-					    config);
+					nconfig = ebox_tpl_next_config(
+					    ebox_stpl, config);
 					if (ebox_tpl_config_type(config) ==
 					    EBOX_PRIMARY) {
-						ebox_tpl_remove_config(ebox_tpl,
-						    config);
+						ebox_tpl_remove_config(
+						    ebox_stpl, config);
 						ebox_tpl_config_free(config);
 					}
 				}
@@ -2024,14 +2024,14 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 				goto out;
 			}
 			if (strcmp(argv[i], "all") == 0) {
-				nconfig = ebox_tpl_next_config(ebox_tpl, NULL);
+				nconfig = ebox_tpl_next_config(ebox_stpl, NULL);
 				while ((config = nconfig) != NULL) {
-					nconfig = ebox_tpl_next_config(ebox_tpl,
-					    config);
+					nconfig = ebox_tpl_next_config(
+					    ebox_stpl, config);
 					if (ebox_tpl_config_type(config) ==
 					    EBOX_RECOVERY) {
-						ebox_tpl_remove_config(ebox_tpl,
-						    config);
+						ebox_tpl_remove_config(
+						    ebox_stpl, config);
 						ebox_tpl_config_free(config);
 					}
 				}
@@ -2047,11 +2047,11 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 	}
 
 	if (ebox_interactive) {
-		interactive_edit_tpl(ebox_tpl);
+		interactive_edit_tpl(ebox_stpl);
 	}
 
 	buf = sshbuf_new();
-	error = sshbuf_put_ebox_tpl(buf, ebox_tpl);
+	error = sshbuf_put_ebox_tpl(buf, ebox_stpl);
 	if (error)
 		return (error);
 
@@ -2086,66 +2086,76 @@ out:
 	return (error);
 }
 
-static errf_t *
-cmd_tpl_show(int argc, char *argv[])
+static void
+print_tpl(FILE *stream, const struct ebox_tpl *tpl)
 {
-	errf_t *error;
 	struct ebox_tpl_config *config = NULL;
 	int rc;
 
-	if (ebox_tpl == NULL) {
-		struct sshbuf *sbuf = read_stdin_b64(TPL_MAX_SIZE);
-		error = sshbuf_get_ebox_tpl(sbuf, &ebox_tpl);
-		if (error) {
-			errfx(EXIT_ERROR, error, "failed to parse input as "
-			    "a base64-encoded ebox template");
-		}
-	}
+	fprintf(stream, "-- template --\n");
+	fprintf(stream, "version: %u\n", ebox_tpl_version(tpl));
 
-	while ((config = ebox_tpl_next_config(ebox_tpl, config))) {
-		fprintf(stderr, "configuration:\n");
+	while ((config = ebox_tpl_next_config(tpl, config))) {
+		fprintf(stream, "configuration:\n");
 		switch (ebox_tpl_config_type(config)) {
 		case EBOX_PRIMARY:
-			fprintf(stderr, "  type: primary\n");
+			fprintf(stream, "  type: primary\n");
 			break;
 		case EBOX_RECOVERY:
-			fprintf(stderr, "  type: recovery\n");
-			fprintf(stderr, "  required: %u parts\n",
+			fprintf(stream, "  type: recovery\n");
+			fprintf(stream, "  required: %u parts\n",
 			    ebox_tpl_config_n(config));
 			break;
 		}
 		struct ebox_tpl_part *part = NULL;
 		while ((part = ebox_tpl_config_next_part(config, part))) {
 			char *guidhex;
-			fprintf(stderr, "  part:\n");
+			fprintf(stream, "  part:\n");
 			guidhex = buf_to_hex(ebox_tpl_part_guid(part),
 			    GUID_LEN, B_FALSE);
-			fprintf(stderr, "    guid: %s\n", guidhex);
+			fprintf(stream, "    guid: %s\n", guidhex);
 			free(guidhex);
 			if (ebox_tpl_part_name(part) != NULL) {
-				fprintf(stderr, "    name: %s\n",
+				fprintf(stream, "    name: %s\n",
 				    ebox_tpl_part_name(part));
 			}
-			fprintf(stderr, "    key: ");
-			rc = sshkey_write(ebox_tpl_part_pubkey(part), stderr);
+			fprintf(stream, "    key: ");
+			rc = sshkey_write(ebox_tpl_part_pubkey(part), stream);
 			if (rc != 0) {
 				errfx(EXIT_ERROR, ssherrf("sshkey_write", rc),
 				    "failed to print pubkey of ebox part");
 			}
-			fprintf(stderr, "\n");
+			fprintf(stream, "\n");
 			if (ebox_tpl_part_cak(part) != NULL) {
-				fprintf(stderr, "    cak: ");
+				fprintf(stream, "    cak: ");
 				rc = sshkey_write(ebox_tpl_part_cak(part),
-				    stderr);
+				    stream);
 				if (rc != 0) {
 					errfx(EXIT_ERROR,
 					    ssherrf("sshkey_write", rc),
 					    "failed to print cak of ebox part");
 				}
-				fprintf(stderr, "\n");
+				fprintf(stream, "\n");
 			}
 		}
 	}
+}
+
+static errf_t *
+cmd_tpl_show(int argc, char *argv[])
+{
+	errf_t *error;
+
+	if (ebox_stpl == NULL) {
+		struct sshbuf *sbuf = read_stdin_b64(TPL_MAX_SIZE);
+		error = sshbuf_get_ebox_tpl(sbuf, &ebox_stpl);
+		if (error) {
+			errfx(EXIT_ERROR, error, "failed to parse input as "
+			    "a base64-encoded ebox template");
+		}
+	}
+
+	print_tpl(stderr, ebox_stpl);
 
 	return (NULL);
 }
@@ -2167,7 +2177,7 @@ cmd_key_generate(int argc, char *argv[])
 
 	arc4random_buf(key, ebox_keylen);
 
-	error = ebox_create(ebox_tpl, key, ebox_keylen, NULL, 0, &ebox);
+	error = ebox_create(ebox_stpl, key, ebox_keylen, NULL, 0, &ebox);
 	if (error)
 		return (error);
 
@@ -2206,7 +2216,7 @@ cmd_key_lock(int argc, char *argv[])
 
 	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
 
-	error = ebox_create(ebox_tpl, key, keylen, NULL, 0, &ebox);
+	error = ebox_create(ebox_stpl, key, keylen, NULL, 0, &ebox);
 	if (error)
 		return (error);
 
@@ -2252,7 +2262,7 @@ cmd_key_relock(int argc, char *argv[])
 
 	key = ebox_key(ebox, &keylen);
 
-	error = ebox_create(ebox_tpl, key, keylen, NULL, 0, &nebox);
+	error = ebox_create(ebox_stpl, key, keylen, NULL, 0, &nebox);
 	if (error)
 		return (error);
 
@@ -2270,6 +2280,40 @@ cmd_key_relock(int argc, char *argv[])
 
 	ebox_free(ebox);
 	ebox_free(nebox);
+	return (ERRF_OK);
+}
+
+static errf_t *
+cmd_key_info(int argc, char *argv[])
+{
+	struct sshbuf *buf;
+	struct ebox *ebox;
+	struct ebox_tpl *tpl;
+	errf_t *error;
+
+	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	error = sshbuf_get_ebox(buf, &ebox);
+	if (error) {
+		errfx(EXIT_ERROR, error, "failed to parse input as "
+		    "a base64-encoded ebox");
+	}
+
+	fprintf(stderr, "-- ebox --\n");
+	fprintf(stderr, "version: %u\n", ebox_version(ebox));
+	switch (ebox_type(ebox)) {
+	case EBOX_KEY:
+		fprintf(stderr, "type: key\n");
+		break;
+	case EBOX_STREAM:
+		fprintf(stderr, "type: stream\n");
+		break;
+	}
+	fprintf(stderr, "ephemeral keys: %u\n", ebox_ephem_count(ebox));
+	fprintf(stderr, "recovery cipher: %s\n", ebox_cipher(ebox));
+
+	tpl = ebox_tpl(ebox);
+	print_tpl(stderr, tpl);
+
 	return (ERRF_OK);
 }
 
@@ -2321,7 +2365,7 @@ cmd_stream_encrypt(int argc, char *argv[])
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	error = ebox_stream_new(ebox_tpl, &es);
+	error = ebox_stream_new(ebox_stpl, &es);
 	if (error)
 		return (error);
 	chunksz = ebox_stream_chunk_size(es);
@@ -2644,7 +2688,7 @@ read_tpl_file(const char *tpl)
 		errfx(EXIT_ERROR, error, "failed to parse contents of '%s' as "
 		    "base64-encoded data", tpl);
 	}
-	if ((error = sshbuf_get_ebox_tpl(sbuf, &ebox_tpl))) {
+	if ((error = sshbuf_get_ebox_tpl(sbuf, &ebox_stpl))) {
 		errfx(EXIT_ERROR, error, "failed to parse contents of '%s' as "
 		    "a base64-encoded ebox template", tpl);
 	}
@@ -2776,6 +2820,15 @@ usage_key(const char *op)
 		    "  -R         raw output, don't base64-encode stdout\n"
 		    "  -l len     set length of key in bytes\n"
 		    "\n");
+	} else if (strcmp(op, "info") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box key info [-r]\n"
+		    "\n"
+		    "Pretty-prints information about a 'key' ebox.\n"
+		    "\n"
+		    "Options:\n"
+		    "  -r         raw input, don't base64-decode stdin\n"
+		    "\n");
 	} else if (strcmp(op, "lock") == 0) {
 		fprintf(stderr,
 		    "usage: pivy-box key lock [-rR] <tpl>\n"
@@ -2818,6 +2871,7 @@ noop:
 		    "pivy-box key <op>:\n"
 		    "  generate              Generate a random key and ebox it\n"
 		    "  lock                  Ebox a pre-generated key\n"
+		    "  info                  Prints information about a key ebox\n"
 		    "  unlock                Unlock a key ebox\n"
 		    "  relock                Unlock + lock to new template\n");
 	}
@@ -3015,6 +3069,9 @@ main(int argc, char *argv[])
 	} else if (strcmp(type, "key") == 0) {
 		if (strcmp(op, "unlock") == 0) {
 			error = cmd_key_unlock(argc, argv);
+			goto out;
+		} else if (strcmp(op, "info") == 0) {
+			error = cmd_key_info(argc, argv);
 			goto out;
 		}
 

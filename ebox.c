@@ -47,6 +47,7 @@ struct buf {
 };
 
 struct ebox_tpl {
+	uint8_t et_version;
 	struct ebox_tpl_config *et_configs;
 	struct ebox_tpl_config *et_lastconfig;
 	void *et_priv;
@@ -182,7 +183,14 @@ enum ebox_part_tag {
 enum ebox_version {
 	EBOX_V1 = 0x01,
 	EBOX_V2 = 0x02,
-	EBOX_VNEXT
+	EBOX_VNEXT,
+	EBOX_VMIN = EBOX_V1
+};
+
+enum ebox_tpl_version {
+	EBOX_TPL_V1 = 0x01,
+	EBOX_TPL_VNEXT,
+	EBOX_TPL_VMIN = EBOX_TPL_V1
 };
 
 #define boxderrf(cause) \
@@ -240,6 +248,7 @@ ebox_tpl_alloc(void)
 {
 	struct ebox_tpl *tpl;
 	tpl = calloc(1, sizeof (struct ebox_tpl));
+	tpl->et_version = EBOX_TPL_VNEXT - 1;
 	if (tpl == NULL)
 		return (NULL);
 	return (tpl);
@@ -860,7 +869,7 @@ sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl)
 
 	if ((rc = sshbuf_put_u8(buf, 0xEB)) ||
 	    (rc = sshbuf_put_u8(buf, 0x0C)) ||
-	    (rc = sshbuf_put_u8(buf, 0x01)) ||
+	    (rc = sshbuf_put_u8(buf, tpl->et_version)) ||
 	    (rc = sshbuf_put_u8(buf, EBOX_TEMPLATE))) {
 		return (ssherrf("sshbuf_put_u8", rc));
 	}
@@ -879,6 +888,47 @@ sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl)
 	}
 
 	return (ERRF_OK);
+}
+
+uint
+ebox_tpl_version(const struct ebox_tpl *tpl)
+{
+	return (tpl->et_version);
+}
+
+uint
+ebox_version(const struct ebox *ebox)
+{
+	return (ebox->e_version);
+}
+
+enum ebox_type
+ebox_type(const struct ebox *ebox)
+{
+	return (ebox->e_type);
+}
+
+struct ebox_tpl *
+ebox_tpl(const struct ebox *ebox)
+{
+	return (ebox->e_tpl);
+}
+
+const char *
+ebox_cipher(const struct ebox *ebox)
+{
+	return (ebox->e_rcv_cipher);
+}
+
+uint
+ebox_ephem_count(const struct ebox *ebox)
+{
+	uint n = 0;
+	const struct ebox_ephem_key *eek;
+	eek = ebox->e_ephemkeys;
+	for (; eek != NULL; eek = eek->eek_next)
+		++n;
+	return (n);
 }
 
 errf_t *
@@ -910,11 +960,12 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
-	if (ver != 0x01) {
+	if (ver < EBOX_TPL_VMIN || ver >= EBOX_TPL_VNEXT) {
 		err = boxverrf(errf("VersionError", NULL,
 		    "unsupported version number 0x%02x", ver));
 		goto out;
 	}
+	tpl->et_version = ver;
 	if (type != EBOX_TEMPLATE) {
 		err = boxderrf(errf("EboxTypeError", NULL,
 		    "buffer does not contain an ebox template"));
@@ -1889,6 +1940,8 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 	box->e_tpl = calloc(1, sizeof (struct ebox_tpl));
 	VERIFY(box->e_tpl != NULL);
 
+	box->e_tpl->et_version = EBOX_TPL_VNEXT - 1;
+
 	if ((rc = sshbuf_get_u8(buf, &magic[0])) ||
 	    (rc = sshbuf_get_u8(buf, &magic[1]))) {
 		err = boxderrf(errf("MagicError",
@@ -1905,7 +1958,7 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
-	if (ver < EBOX_V1 || ver >= EBOX_VNEXT) {
+	if (ver < EBOX_VMIN || ver >= EBOX_VNEXT) {
 		err = boxverrf(errf("VersionError", NULL,
 		    "unsupported version number 0x%02x", ver));
 		goto out;

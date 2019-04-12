@@ -64,6 +64,7 @@ struct ebox_stream_chunk;
 
 struct ebox_tpl *ebox_tpl_alloc(void);
 void ebox_tpl_free(struct ebox_tpl *tpl);
+uint ebox_tpl_version(const struct ebox_tpl *tpl);
 void *ebox_tpl_private(const struct ebox_tpl *tpl);
 void *ebox_tpl_alloc_private(struct ebox_tpl *tpl, size_t sz);
 struct ebox_tpl *ebox_tpl_clone(struct ebox_tpl *tpl);
@@ -104,7 +105,12 @@ const uint8_t *ebox_tpl_part_guid(const struct ebox_tpl_part *part);
 errf_t *sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
 errf_t *sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
 
+uint ebox_version(const struct ebox *ebox);
+enum ebox_type ebox_type(const struct ebox *ebox);
+uint ebox_ephem_count(const struct ebox *ebox);
 void ebox_free(struct ebox *box);
+
+struct ebox_tpl *ebox_tpl(const struct ebox *ebox);
 
 struct ebox_config *ebox_next_config(const struct ebox *box,
     const struct ebox_config *prev);
