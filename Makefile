@@ -302,7 +302,7 @@ $(LIBRESSL_INC):
 $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	cd libressl && \
 	    ./configure --enable-static && \
-	    $(MAKE)
+	    cd crypto && $(MAKE)
 
 .PHONY: install install_common setup
 
