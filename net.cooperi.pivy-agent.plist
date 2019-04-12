@@ -6,7 +6,7 @@
     <string>net.cooperi.pivy-agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/pivy-agent/bin/pivy-agent</string>
+        <string>/opt/pivy/bin/pivy-agent</string>
         <string>-g</string>
         <string>@@GUID@@</string>
         <string>-K</string>
@@ -16,5 +16,9 @@
     <string>@@HOME@@/.ssh/agent.env</string>
     <key>StandardErrorPath</key>
     <string>@@HOME@@/.ssh/agent.out</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
 </dict>
 </plist>
