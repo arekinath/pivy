@@ -2173,7 +2173,9 @@ cmd_key_generate(int argc, char *argv[])
 		errx(EXIT_ERROR, "failed to allocate memory");
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+#if defined(MADV_DONTDUMP)
 	(void) madvise(key, ebox_keylen, MADV_DONTDUMP);
+#endif
 
 	arc4random_buf(key, ebox_keylen);
 
@@ -2214,7 +2216,9 @@ cmd_key_lock(int argc, char *argv[])
 	key = sshbuf_ptr(buf);
 	keylen = sshbuf_len(buf);
 
+#if defined(MADV_DONTDUMP)
 	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
+#endif
 
 	error = ebox_create(ebox_stpl, key, keylen, NULL, 0, &ebox);
 	if (error)
@@ -2306,6 +2310,8 @@ cmd_key_info(int argc, char *argv[])
 		break;
 	case EBOX_STREAM:
 		fprintf(stderr, "type: stream\n");
+		break;
+	default:
 		break;
 	}
 	fprintf(stderr, "ephemeral keys: %u\n", ebox_ephem_count(ebox));
