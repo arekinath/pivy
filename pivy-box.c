@@ -68,7 +68,7 @@
 static int ebox_authfd;
 static SCARDCONTEXT ebox_ctx;
 static boolean_t ebox_ctx_init = B_FALSE;
-static const char *ebox_pin;
+static char *ebox_pin;
 static uint ebox_min_retries = 1;
 
 enum ebox_exit_status {
@@ -129,7 +129,7 @@ static void
 assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 {
 	errf_t *er;
-	uint retries = ebox_min_retries;
+	uint retries;
 	enum piv_pin auth = piv_token_default_auth(pk);
 	const char *fmt = "Enter %s for token %s (%s): ";
 	if (partname == NULL)
@@ -138,6 +138,7 @@ assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 	if (ebox_pin == NULL && !prompt)
 		return;
 
+again:
 	if (ebox_pin == NULL && prompt) {
 		char prompt[64];
 		char *guid = piv_token_shortid(pk);
@@ -158,20 +159,28 @@ assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 			const char *charType = "digits";
 			if (piv_token_is_ykpiv(pk))
 				charType = "characters";
-			errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+			warnx("a valid PIN must be 6-8 %s in length",
 			    charType);
+			free(ebox_pin);
+			free(guid);
+			ebox_pin = NULL;
+			goto again;
 		}
 		ebox_pin = strdup(ebox_pin);
 		free(guid);
 	}
+	retries = ebox_min_retries;
 	er = piv_verify_pin(pk, auth, ebox_pin, &retries, B_FALSE);
 	if (errf_caused_by(er, "PermissionError")) {
-		piv_txn_end(pk);
 		if (retries == 0) {
+			piv_txn_end(pk);
 			errx(EXIT_PIN_LOCKED, "token is locked due to too "
 			    "many invalid PIN attempts");
 		}
-		errx(EXIT_PIN, "invalid PIN (%d attempts remaining)", retries);
+		warnx("invalid PIN (%d attempts remaining)", retries);
+		free(ebox_pin);
+		ebox_pin = NULL;
+		goto again;
 	} else if (errf_caused_by(er, "MinRetriesError")) {
 		piv_txn_end(pk);
 		if (retries == 0) {
@@ -1812,6 +1821,12 @@ partagain:
 		}
 		fprintf(stderr, "Device box decrypted ok.\n");
 		++ncur;
+		/*
+		 * Forget any PIN the user entered, we'll be talking to a
+		 * different device next.
+		 */
+		free(ebox_pin);
+		ebox_pin = NULL;
 	}
 
 	buf = sshbuf_new();
