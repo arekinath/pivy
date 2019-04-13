@@ -26,7 +26,7 @@
 static const char *bunyan_name = NULL;
 static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
-static enum bunyan_log_level bunyan_min_level = INFO;
+static enum bunyan_log_level bunyan_min_level = WARN;
 
 struct bunyan_var {
 	struct bunyan_var *bv_next;

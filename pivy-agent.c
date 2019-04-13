@@ -152,6 +152,7 @@ static uint64_t last_update;
 static uint64_t last_op;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
+static boolean_t sign_9d = B_FALSE;
 
 static char *pinmem = NULL;
 static char *pin = NULL;
@@ -590,6 +591,23 @@ process_request_identities(SocketEntry *e)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 	while ((slot = piv_slot_next(selk, slot)) != NULL) {
+		if (piv_slot_id(slot) == PIV_SLOT_KEY_MGMT)
+			continue;
+		comment[0] = 0;
+		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
+		    piv_slot_id(slot), piv_slot_subject(slot));
+		if ((r = sshkey_puts(piv_slot_pubkey(slot), msg)) != 0 ||
+		    (r = sshbuf_put_cstring(msg, comment)) != 0) {
+			fatal("%s: put key/comment: %s", __func__,
+			    ssh_err(r));
+		}
+	}
+	/*
+	 * Always put key mgmt last so that SSH clients not aware of the fact
+	 * that this slot is not used for signing by default will be unlikely
+	 * to try using it.
+	 */
+	if ((slot = piv_get_slot(selk, PIV_SLOT_KEY_MGMT)) != NULL) {
 		comment[0] = 0;
 		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
 		    piv_slot_id(slot), piv_slot_subject(slot));
@@ -651,6 +669,12 @@ process_sign_request2(SocketEntry *e)
 	}
 	bunyan_add_vars(msg_log_frame,
 	    "slotid", BNY_UINT, (uint)piv_slot_id(slot), NULL);
+
+	if (piv_slot_id(slot) == PIV_SLOT_KEY_MGMT && !sign_9d) {
+		err = errf("PermissionError", NULL, "key management key (9d) "
+		    "is not allowed to sign data without the -m option");
+		goto out;
+	}
 
 	if (piv_slot_id(slot) == PIV_SLOT_SIGNATURE)
 		canskip = B_FALSE;
@@ -1661,9 +1685,25 @@ static void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: pivy-agent [-c | -s] [-Ddi] [-a bind_address] [-E fingerprint_hash]\n"
-	    "                 [-t life] [-g guid] [-K cak] [command [arg ...]]\n"
-	    "       pivy-agent [-c | -s] -k\n");
+	    "usage: pivy-agent [-c | -s] [-Ddim] [-a bind_address] [-E fingerprint_hash]\n"
+	    "                  [-K cak] -g guid [command [arg ...]]\n"
+	    "       pivy-agent [-c | -s] -k\n"
+	    "\n"
+	    "An ssh-agent work-alike which always contains the keys stored on\n"
+	    "a PIV token and supports other PIV-related extensions.\n"
+	    "\n"
+	    "Options:\n"
+	    "  -a bind_address       Bind to a specific UNIX domain socket\n"
+	    "  -c                    Generate csh style commands on stdout\n"
+	    "  -s                    Generate Bourne shell style commands\n"
+	    "  -D                    Foreground mode; do not fork\n"
+	    "  -d                    Debug mode\n"
+	    "  -i                    Foreground + command logging\n"
+	    "  -m                    Allow signing with 9D (KEY_MGMT) key\n"
+	    "  -E fp_hash            Set hash algo for fingerprints\n"
+	    "  -g guid               GUID or GUID prefix of PIV token to use\n"
+	    "  -K cak                9E (card auth) key to authenticate PIV token\n"
+	    "  -k                    Kill an already-running agent\n");
 	exit(1);
 }
 
@@ -1853,7 +1893,7 @@ main(int ac, char **av)
 
 	__progname = "pivy-agent";
 
-	while ((ch = getopt(ac, av, "cDdkisE:a:P:g:K:")) != -1) {
+	while ((ch = getopt(ac, av, "cDdkisE:a:P:g:K:m")) != -1) {
 		switch (ch) {
 		case 'g':
 			guid = parse_hex(optarg, &len);
@@ -1887,6 +1927,9 @@ main(int ac, char **av)
 			break;
 		case 'P':
 			fatal("pkcs11 options not supported");
+			break;
+		case 'm':
+			sign_9d = B_TRUE;
 			break;
 		case 's':
 			if (c_flag)
@@ -2053,8 +2096,8 @@ main(int ac, char **av)
 		exit(1);
 	}
 	/* child */
-	ssh_dbglevel = INFO;
-	bunyan_set_level(INFO);
+	ssh_dbglevel = WARN;
+	bunyan_set_level(WARN);
 
 	if (setsid() == -1) {
 		error("setsid: %s", strerror(errno));
