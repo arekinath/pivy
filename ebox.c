@@ -452,7 +452,7 @@ ebox_tpl_config_free(struct ebox_tpl_config *config)
 }
 
 struct ebox_tpl_part *
-ebox_tpl_part_alloc(uint8_t *guid, size_t guidlen, struct sshkey *pubkey)
+ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen, struct sshkey *pubkey)
 {
 	struct ebox_tpl_part *part;
 	part = calloc(1, sizeof (struct ebox_tpl_part));

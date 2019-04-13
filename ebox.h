@@ -89,7 +89,7 @@ void ebox_tpl_config_remove_part(struct ebox_tpl_config *config,
 struct ebox_tpl_part *ebox_tpl_config_next_part(
     const struct ebox_tpl_config *config, const struct ebox_tpl_part *prev);
 
-struct ebox_tpl_part *ebox_tpl_part_alloc(uint8_t *guid, size_t guidlen,
+struct ebox_tpl_part *ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen,
     struct sshkey *pubkey);
 void ebox_tpl_part_free(struct ebox_tpl_part *part);
 void ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name);

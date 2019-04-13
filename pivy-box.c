@@ -1177,6 +1177,97 @@ out:
 }
 
 static void
+interactive_select_local_token(struct ebox_tpl_part **ppart)
+{
+	int rc;
+	errf_t *error;
+	struct piv_token *tokens = NULL, *token;
+	struct piv_slot *slot;
+	struct ebox_tpl_part *part;
+	struct question *q;
+	struct answer *a;
+	char *shortid;
+	char k = '0';
+
+	if (!ebox_ctx_init) {
+		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
+		    &ebox_ctx);
+		if (rc != SCARD_S_SUCCESS) {
+			errfx(EXIT_ERROR, pcscerrf("SCardEstablishContext", rc),
+			    "failed to initialise libpcsc");
+		}
+	}
+
+	error = piv_enumerate(ebox_ctx, &tokens);
+	if (error) {
+		warnfx(error, "failed to enumerate PIV tokens on the system");
+		*ppart = NULL;
+		erfree(error);
+		return;
+	}
+
+	q = calloc(1, sizeof (struct question));
+	question_printf(q, "-- Selecting local PIV token --\n");
+	question_printf(q, "Select a token to use:");
+
+	for (token = tokens; token != NULL; token = piv_token_next(token)) {
+		shortid = piv_token_shortid(token);
+		if (piv_token_is_ykpiv(token) &&
+		    ykpiv_token_has_serial(token)) {
+			a = make_answer(++k, "%s (in %s) [serial# %u]",
+			    shortid, piv_token_rdrname(token),
+			    ykpiv_token_serial(token));
+		} else {
+			a = make_answer(++k, "%s (in %s)",
+			    shortid, piv_token_rdrname(token));
+		}
+		free(shortid);
+		a->a_priv = token;
+		add_answer(q, a);
+	}
+
+	a = make_answer('x', "cancel");
+	add_command(q, a);
+
+again:
+	question_prompt(q, &a);
+	if (a->a_key == 'x') {
+		*ppart = NULL;
+		question_free(q);
+		piv_release(tokens);
+		return;
+	}
+	token = (struct piv_token *)a->a_priv;
+
+	if ((error = piv_txn_begin(token)))
+		errfx(EXIT_ERROR, error, "failed to open token");
+	if ((error = piv_select(token)))
+		errfx(EXIT_ERROR, error, "failed to select PIV applet");
+	if ((error = piv_read_cert(token, PIV_SLOT_KEY_MGMT))) {
+		warnfx(error, "failed to read key management (9d) slot");
+		erfree(error);
+		piv_txn_end(token);
+		goto again;
+	}
+	slot = piv_get_slot(token, PIV_SLOT_KEY_MGMT);
+	VERIFY(slot != NULL);
+	part = ebox_tpl_part_alloc(piv_token_guid(token), GUID_LEN,
+	    piv_slot_pubkey(slot));
+	VERIFY(part != NULL);
+	error = piv_read_cert(token, PIV_SLOT_CARD_AUTH);
+	if (error == NULL) {
+		slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
+		ebox_tpl_part_set_cak(part, piv_slot_pubkey(slot));
+	} else {
+		erfree(error);
+	}
+	piv_txn_end(token);
+
+	*ppart = part;
+	piv_release(tokens);
+}
+
+static void
 interactive_edit_tpl_config(struct ebox_tpl *tpl,
     struct ebox_tpl_config *config)
 {
@@ -1221,6 +1312,8 @@ interactive_edit_tpl_config(struct ebox_tpl *tpl,
 
 	a = make_answer('+', "add new part/device");
 	add_command(q, a);
+	a = make_answer('&', "add new part based on local device");
+	add_command(q, a);
 	a = make_answer('-', "remove a part");
 	add_command(q, a);
 	a = make_answer('x', "finish and return");
@@ -1229,6 +1322,22 @@ interactive_edit_tpl_config(struct ebox_tpl *tpl,
 again:
 	question_prompt(q, &a);
 	switch (a->a_key) {
+	case '&':
+		interactive_select_local_token(&part);
+		if (part == NULL)
+			goto again;
+		ebox_tpl_config_add_part(config, part);
+
+		a = ebox_tpl_part_alloc_private(part, sizeof (struct answer));
+		a->a_key = ++k;
+		a->a_priv = part;
+
+		interactive_edit_tpl_part(tpl, config, part);
+
+		make_answer_text_for_part(part, a);
+		add_answer(q, a);
+
+		goto again;
 	case '+':
 		line = readline("GUID (in hex)? ");
 		if (line == NULL)
