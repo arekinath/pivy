@@ -2794,7 +2794,7 @@ read_tpl_file(const char *tpl)
 		err(EXIT_ERROR, "'%s' is not a regular file", tpl);
 	if (st.st_size > TPL_MAX_SIZE)
 		err(EXIT_ERROR, "'%s' is too large for an ebox template", tpl);
-	buf = malloc(st.st_size);
+	buf = malloc(st.st_size + 1);
 	if (buf == NULL) {
 		err(EXIT_ERROR, "out of memory while allocating template "
 		    "read buffer");
@@ -2804,6 +2804,7 @@ read_tpl_file(const char *tpl)
 		errx(EXIT_ERROR, "short read while processing template '%s'",
 		    tpl);
 	}
+	buf[len] = '\0';
 	if (ferror(tplf))
 		err(EXIT_ERROR, "error reading from template file '%s'", tpl);
 	if (fclose(tplf))
