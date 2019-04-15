@@ -282,7 +282,7 @@ pivy-agent :		HEADERS=	$(AGENT_HEADERS)
 pivy-agent: $(AGENT_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(AGENT_OBJS) $(LIBS)
 
-%.o: %.c $(HEADERS) $(LIBRESSL_INC)
+%.o: %.c $(HEADERS) $(LIBRESSL_INC) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
