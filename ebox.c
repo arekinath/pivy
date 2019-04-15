@@ -70,6 +70,7 @@ struct ebox_tpl_part {
 	char *etp_name;
 	struct sshkey *etp_pubkey;
 	struct sshkey *etp_cak;
+	enum piv_slotid etp_slot;
 	uint8_t etp_guid[16];
 	void *etp_priv;
 };
@@ -175,7 +176,8 @@ enum ebox_part_tag {
 	EBOX_PART_NAME = 2,
 	EBOX_PART_CAK = 3,
 	EBOX_PART_GUID = 4,
-	EBOX_PART_BOX = 5
+	EBOX_PART_BOX = 5,
+	EBOX_PART_SLOT = 6
 };
 
 #define	EBOX_STREAM_DEFAULT_CHUNK	(128 * 1024)
@@ -464,6 +466,7 @@ ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen, struct sshkey *pubkey)
 		free(part);
 		return (NULL);
 	}
+	part->etp_slot = PIV_SLOT_KEY_MGMT;
 	return (part);
 }
 
@@ -532,6 +535,18 @@ ebox_tpl_part_cak(const struct ebox_tpl_part *part)
 	return (part->etp_cak);
 }
 
+void
+ebox_tpl_part_set_slot(struct ebox_tpl_part *part, enum piv_slotid slot)
+{
+	part->etp_slot = slot;
+}
+
+enum piv_slotid
+ebox_tpl_part_slot(const struct ebox_tpl_part *part)
+{
+	return (part->etp_slot);
+}
+
 const uint8_t *
 ebox_tpl_part_guid(const struct ebox_tpl_part *part)
 {
@@ -580,6 +595,7 @@ ebox_tpl_clone(struct ebox_tpl *tpl)
 				npart->etp_name = strdup(part->etp_name);
 			bcopy(part->etp_guid, npart->etp_guid,
 			    sizeof (npart->etp_guid));
+			npart->etp_slot = part->etp_slot;
 			if (part->etp_pubkey != NULL) {
 				VERIFY0(sshkey_demote(part->etp_pubkey,
 				    &npart->etp_pubkey));
@@ -648,6 +664,14 @@ sshbuf_put_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part *part)
 		}
 	}
 
+	if (part->etp_slot != PIV_SLOT_KEY_MGMT) {
+		if ((rc = sshbuf_put_u8(buf, EBOX_PART_SLOT)) ||
+		    (rc = sshbuf_put_u8(buf, part->etp_slot))) {
+			err = ssherrf("sshbuf_put_u8", rc);
+			goto out;
+		}
+	}
+
 	if ((rc = sshbuf_put_u8(buf, EBOX_PART_END))) {
 		err = ssherrf("sshbuf_put_u8", rc);
 		goto out;
@@ -671,6 +695,7 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	uint8_t tag, *guid;
 	char *tname;
 	struct sshkey *k;
+	uint8_t slotid = PIV_SLOT_KEY_MGMT;
 
 	part = calloc(1, sizeof (struct ebox_tpl_part));
 	VERIFY(part != NULL);
@@ -751,6 +776,13 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 			free(guid);
 			guid = NULL;
 			break;
+		case EBOX_PART_SLOT:
+			rc = sshbuf_get_u8(buf, &slotid);
+			if (rc) {
+				err = ssherrf("sshbuf_get_u8", rc);
+				goto out;
+			}
+			break;
 		default:
 			err = errf("UnknownTagError", NULL, "unknown tag %d "
 			    "at +%lx", tag, buf->off);
@@ -761,6 +793,8 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 			goto out;
 		}
 	}
+
+	part->etp_slot = slotid;
 
 	*ppart = part;
 	part = NULL;
@@ -1575,6 +1609,7 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 	struct sshkey *k = NULL, *ephk;
 	struct piv_ecdh_box *box = NULL;
 	boolean_t gotguid = B_FALSE;
+	uint8_t slot = PIV_SLOT_KEY_MGMT;
 
 	part = calloc(1, sizeof (struct ebox_part));
 	VERIFY(part != NULL);
@@ -1642,6 +1677,13 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 			rc = sshbuf_get_cstring8(buf, &tpart->etp_name, &len);
 			if (rc) {
 				err = ssherrf("sshbuf_get_cstring8", rc);
+				goto out;
+			}
+			break;
+		case EBOX_PART_SLOT:
+			rc = sshbuf_get_u8(buf, &slot);
+			if (rc) {
+				err = ssherrf("sshbuf_get_u8", rc);
 				goto out;
 			}
 			break;
@@ -1774,6 +1816,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 		goto out;
 	}
 
+	part->ep_box->pdb_slot = slot;
+	tpart->etp_slot = slot;
 	bcopy(tpart->etp_guid, part->ep_box->pdb_guid,
 	    sizeof (part->ep_box->pdb_guid));
 
@@ -2076,6 +2120,14 @@ sshbuf_put_ebox_part(struct sshbuf *buf, struct ebox *ebox,
 		    (rc = sshkey_putb(tpart->etp_cak, kbuf)) ||
 		    (rc = sshbuf_put_stringb(buf, kbuf))) {
 			err = ssherrf("sshbuf_put_*", rc);
+			goto out;
+		}
+	}
+
+	if (tpart->etp_slot != PIV_SLOT_KEY_MGMT) {
+		if ((rc = sshbuf_put_u8(buf, EBOX_PART_SLOT)) ||
+		    (rc = sshbuf_put_u8(buf, tpart->etp_slot))) {
+			err = ssherrf("sshbuf_put_u8", rc);
 			goto out;
 		}
 	}
@@ -2545,6 +2597,7 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 				npart->ep_tpl->etp_name =
 				    strdup(tpart->etp_name);
 			}
+			npart->ep_tpl->etp_slot = tpart->etp_slot;
 			bcopy(tpart->etp_guid, npart->ep_tpl->etp_guid,
 			    sizeof (npart->ep_tpl->etp_guid));
 			if (tpart->etp_pubkey != NULL) {
@@ -2560,7 +2613,7 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 			VERIFY(pbox != NULL);
 			bcopy(tpart->etp_guid, pbox->pdb_guid,
 			    sizeof (pbox->pdb_guid));
-			pbox->pdb_slot = PIV_SLOT_KEY_MGMT;
+			pbox->pdb_slot = tpart->etp_slot;
 			pbox->pdb_guidslot_valid = B_TRUE;
 			if (shares != NULL) {
 				share = &shares[npart->ep_id - 1];

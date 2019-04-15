@@ -94,6 +94,7 @@ struct ebox_tpl_part *ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen,
 void ebox_tpl_part_free(struct ebox_tpl_part *part);
 void ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name);
 void ebox_tpl_part_set_cak(struct ebox_tpl_part *part, struct sshkey *cak);
+void ebox_tpl_part_set_slot(struct ebox_tpl_part *part, enum piv_slotid slot);
 void *ebox_tpl_part_private(const struct ebox_tpl_part *part);
 void *ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz);
 void ebox_tpl_part_free_private(struct ebox_tpl_part *part);
@@ -101,6 +102,7 @@ const char *ebox_tpl_part_name(const struct ebox_tpl_part *part);
 struct sshkey *ebox_tpl_part_pubkey(const struct ebox_tpl_part *part);
 struct sshkey *ebox_tpl_part_cak(const struct ebox_tpl_part *part);
 const uint8_t *ebox_tpl_part_guid(const struct ebox_tpl_part *part);
+enum piv_slotid ebox_tpl_part_slot(const struct ebox_tpl_part *part);
 
 errf_t *sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
 errf_t *sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);

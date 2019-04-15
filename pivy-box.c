@@ -717,8 +717,10 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 	errf_t *error = NULL;
 	int rc;
 	char *p;
+	enum piv_slotid slotid = PIV_SLOT_KEY_MGMT;
 	struct piv_token *token;
 	struct piv_slot *slot;
+	unsigned int parsed;
 
 	for (; i < argc; ++i) {
 		if (strcmp(argv[i], "part") == 0 ||
@@ -758,6 +760,28 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 				goto out;
 			}
 			name = argv[i];
+		} else if (strcmp(argv[i], "slot") == 0) {
+			if (++i > argc) {
+				error = errf("SyntaxError", NULL,
+				    "'slot' keyword requires argument");
+				goto out;
+			}
+			errno = 0;
+			parsed = strtoul(argv[i], &p, 16);
+			if (errno != 0 || *p != '\0') {
+				error = errf("SyntaxError",
+				    errfno("strtoul", errno, NULL),
+				    "error parsing argument to 'slot' "
+				    "keyword: '%s'", argv[i]);
+				goto out;
+			}
+			if (parsed > 0xFF) {
+				error = errf("SyntaxError", NULL,
+				    "'slot' keyword argument must be a valid "
+				    "PIV slot ID");
+				goto out;
+			}
+			slotid = parsed;
 		} else if (strcmp(argv[i], "key") == 0) {
 			if (++i > argc) {
 				error = errf("SyntaxError", NULL,
@@ -863,9 +887,9 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 				}
 			}
 			erfree(error);
-			if ((error = piv_read_cert(token, PIV_SLOT_KEY_MGMT)))
+			if ((error = piv_read_cert(token, slotid)))
 				goto out;
-			slot = piv_get_slot(token, PIV_SLOT_KEY_MGMT);
+			slot = piv_get_slot(token, slotid);
 			rc = sshkey_demote(piv_slot_pubkey(slot), &pubkey);
 			if (rc) {
 				error = ssherrf("sshkey_demote", rc);
@@ -901,6 +925,7 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 		ebox_tpl_part_set_name(part, name);
 	if (cak != NULL)
 		ebox_tpl_part_set_cak(part, cak);
+	ebox_tpl_part_set_slot(part, slotid);
 
 out:
 	*idxp = i;
@@ -1092,6 +1117,7 @@ interactive_edit_tpl_part(struct ebox_tpl *tpl,
 	struct sshkey *key;
 	char *line, *p;
 	errf_t *error;
+	unsigned long parsed;
 
 	buf = sshbuf_new();
 	if (buf == NULL)
@@ -1142,6 +1168,9 @@ interactive_edit_tpl_part(struct ebox_tpl *tpl,
 	}
 	add_answer(q, a);
 
+	a = make_answer('s', "Slot: %02X", ebox_tpl_part_slot(part));
+	add_answer(q, a);
+
 	a = make_answer('x', "finish and return");
 	add_command(q, a);
 
@@ -1155,6 +1184,31 @@ again:
 		ebox_tpl_part_set_name(part, line);
 		a->a_used = 0;
 		answer_printf(a, "Name: %s", line);
+		free(line);
+		goto again;
+	case 's':
+		line = readline("Slot ID (hex)? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		errno = 0;
+		parsed = strtoul(line, &p, 16);
+		if (errno != 0 || *p != '\0') {
+			error = errfno("strtoul", errno, NULL);
+			warnfx(error, "error parsing '%s' as hex number",
+			    line);
+			erfree(error);
+			free(line);
+			goto again;
+		}
+		if (parsed > 0xFF) {
+			warnx("slot '%02X' is not a valid PIV slot id",
+			    (uint)parsed);
+			free(line);
+			goto again;
+		}
+		ebox_tpl_part_set_slot(part, parsed);
+		a->a_used = 0;
+		answer_printf(a, "Slot: %02X", (uint)parsed);
 		free(line);
 		goto again;
 	case 'c':
@@ -1175,6 +1229,17 @@ again:
 		}
 		free(line);
 		ebox_tpl_part_set_cak(part, key);
+		a->a_used = 0;
+		if ((rc = sshkey_format_text(key, buf))) {
+			errfx(EXIT_ERROR, ssherrf("sshkey_format_text", rc),
+			    "failed to write part public key");
+		}
+		if ((rc = sshbuf_put_u8(buf, '\0'))) {
+			errfx(EXIT_ERROR, ssherrf("sshbuf_put_u8", rc),
+			    "failed to write part public key (null)");
+		}
+		answer_printf(a, "Card Auth Key: %s", (char *)sshbuf_ptr(buf));
+		sshbuf_reset(buf);
 		sshkey_free(key);
 		goto again;
 	case 'x':
@@ -1196,7 +1261,10 @@ interactive_select_local_token(struct ebox_tpl_part **ppart)
 	struct question *q;
 	struct answer *a;
 	char *shortid;
+	enum piv_slotid slotid = PIV_SLOT_KEY_MGMT;
 	char k = '0';
+	char *line, *p;
+	unsigned long parsed;
 
 	if (!ebox_ctx_init) {
 		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
@@ -1235,6 +1303,9 @@ interactive_select_local_token(struct ebox_tpl_part **ppart)
 		add_answer(q, a);
 	}
 
+	a = make_answer('s', "change key slot (%02X)", slotid);
+	add_command(q, a);
+
 	a = make_answer('x', "cancel");
 	add_command(q, a);
 
@@ -1245,6 +1316,31 @@ again:
 		question_free(q);
 		piv_release(tokens);
 		return;
+	} else if (a->a_key == 's') {
+		line = readline("Slot ID (hex)? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		errno = 0;
+		parsed = strtoul(line, &p, 16);
+		if (errno != 0 || *p != '\0') {
+			error = errfno("strtoul", errno, NULL);
+			warnfx(error, "error parsing '%s' as hex number",
+			    line);
+			erfree(error);
+			free(line);
+			goto again;
+		}
+		if (parsed > 0xFF) {
+			warnx("slot '%02X' is not a valid PIV slot id",
+			    (uint)parsed);
+			free(line);
+			goto again;
+		}
+		slotid = parsed;
+		a->a_used = 0;
+		answer_printf(a, "change key slot (%02X)", slotid);
+		free(line);
+		goto again;
 	}
 	token = (struct piv_token *)a->a_priv;
 
@@ -1252,17 +1348,18 @@ again:
 		errfx(EXIT_ERROR, error, "failed to open token");
 	if ((error = piv_select(token)))
 		errfx(EXIT_ERROR, error, "failed to select PIV applet");
-	if ((error = piv_read_cert(token, PIV_SLOT_KEY_MGMT))) {
+	if ((error = piv_read_cert(token, slotid))) {
 		warnfx(error, "failed to read key management (9d) slot");
 		erfree(error);
 		piv_txn_end(token);
 		goto again;
 	}
-	slot = piv_get_slot(token, PIV_SLOT_KEY_MGMT);
+	slot = piv_get_slot(token, slotid);
 	VERIFY(slot != NULL);
 	part = ebox_tpl_part_alloc(piv_token_guid(token), GUID_LEN,
 	    piv_slot_pubkey(slot));
 	VERIFY(part != NULL);
+	ebox_tpl_part_set_slot(part, piv_slot_id(slot));
 	error = piv_read_cert(token, PIV_SLOT_CARD_AUTH);
 	if (error == NULL) {
 		slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
@@ -2243,6 +2340,8 @@ print_tpl(FILE *stream, const struct ebox_tpl *tpl)
 				fprintf(stream, "    name: %s\n",
 				    ebox_tpl_part_name(part));
 			}
+			fprintf(stream, "    slot: %02X\n",
+			    ebox_tpl_part_slot(part));
 			fprintf(stream, "    key: ");
 			rc = sshkey_write(ebox_tpl_part_pubkey(part), stream);
 			if (rc != 0) {
