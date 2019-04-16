@@ -352,8 +352,10 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 	}
 
 	if (!piv_box_has_guidslot(box)) {
-		if (agerr)
-			return (agerr);
+		if (agerr) {
+			return (errf("AgentError", agerr, "ssh-agent unlock "
+			    "failed, and box does not have GUID/slot info"));
+		}
 		return (errf("NoGUIDSlot", NULL, "box does not have GUID "
 		    "and slot information, can't unlock with local hardware"));
 	}
@@ -370,15 +372,22 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 	err = piv_find(ebox_ctx, piv_box_guid(box), GUID_LEN, &tokens);
 	if (errf_caused_by(err, "NotFoundError")) {
 		err = piv_enumerate(ebox_ctx, &tokens);
-		if (err && agerr)
-			err = agerr;
+		if (err && agerr) {
+			err = errf("AgentError", agerr, "ssh-agent unlock "
+			    "failed, and no PIV tokens were detected on "
+			    "the local system");
+		}
 	}
 	if (err)
 		goto out;
 
 	err = piv_box_find_token(tokens, box, &token, &slot);
-	if (err)
+	if (err) {
+		err = errf("LocalUnlockError", err, "failed to find token "
+		    "with GUID %s and key for box",
+		    piv_box_guid_hex(box));
 		goto out;
+	}
 
 	if ((err = piv_txn_begin(token)))
 		goto out;
@@ -420,6 +429,7 @@ pin:
 		goto pin;
 	} else if (err) {
 		piv_txn_end(token);
+		err = errf("LocalUnlockError", err, "failed to unlock box");
 		goto out;
 	}
 
@@ -2026,24 +2036,46 @@ interactive_unlock_ebox(struct ebox *ebox)
 
 	q = calloc(1, sizeof (struct question));
 	question_printf(q, "-- Recovery mode --\n");
-	question_printf(q, "Select a configuration to use for recovery:");
+	question_printf(q, "No primary configuration could proceed using a "
+	    "token currently available\non the system. You may either select "
+	    "a primary config to retry, or select\na recovery config to "
+	    "begin the recovery process.\n\n");
+	question_printf(q, "Select a configuration to use:");
 	config = NULL;
 	while ((config = ebox_next_config(ebox, config)) != NULL) {
 		tconfig = ebox_config_tpl(config);
-		if (ebox_tpl_config_type(tconfig) == EBOX_RECOVERY) {
-			a = ebox_config_alloc_private(config,
-			    sizeof (struct answer));
-			a->a_key = ++k;
-			a->a_priv = config;
-			make_answer_text_for_config(tconfig, a);
-			add_answer(q, a);
-		}
+		a = ebox_config_alloc_private(config, sizeof (struct answer));
+		a->a_key = ++k;
+		a->a_priv = config;
+		make_answer_text_for_config(tconfig, a);
+		add_answer(q, a);
 	}
+again:
 	question_prompt(q, &a);
 	config = (struct ebox_config *)a->a_priv;
+	tconfig = ebox_config_tpl(config);
+	if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
+		part = ebox_config_next_part(config, NULL);
+		tpart = ebox_part_tpl(part);
+		error = local_unlock(ebox_part_box(part),
+		    ebox_tpl_part_cak(tpart),
+		    ebox_tpl_part_name(tpart));
+		if (error) {
+			warnfx(error, "failed to activate config %c", a->a_key);
+			erfree(error);
+			goto again;
+		}
+		error = ebox_unlock(ebox, config);
+		if (error)
+			return (error);
+		goto done;
+	}
 	error = interactive_recovery(config);
-	if (error)
-		return (error);
+	if (error) {
+		warnfx(error, "failed to activate config %c", a->a_key);
+		erfree(error);
+		goto again;
+	}
 	error = ebox_recover(ebox, config);
 	if (error)
 		return (error);

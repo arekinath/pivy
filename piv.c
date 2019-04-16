@@ -3842,6 +3842,7 @@ piv_box_free(struct piv_ecdh_box *box)
 	free(box->pdb_iv.b_data);
 	free(box->pdb_enc.b_data);
 	free(box->pdb_nonce.b_data);
+	free(box->pdb_guidhex);
 	if (box->pdb_plain.b_data != NULL) {
 		explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 		free(box->pdb_plain.b_data);
@@ -4702,6 +4703,18 @@ piv_box_guid(const struct piv_ecdh_box *box)
 {
 	VERIFY(box->pdb_guidslot_valid);
 	return (box->pdb_guid);
+}
+
+const char *
+piv_box_guid_hex(const struct piv_ecdh_box *box)
+{
+	VERIFY(box->pdb_guidslot_valid);
+	if (box->pdb_guidhex == NULL) {
+		struct piv_ecdh_box *boxwr = (struct piv_ecdh_box *)box;
+		boxwr->pdb_guidhex = buf_to_hex(box->pdb_guid,
+		    sizeof (box->pdb_guid), B_FALSE);
+	}
+	return (box->pdb_guidhex);
 }
 
 boolean_t

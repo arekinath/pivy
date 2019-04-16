@@ -781,6 +781,7 @@ errf_t *piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *le
 
 boolean_t piv_box_has_guidslot(const struct piv_ecdh_box *box);
 const uint8_t *piv_box_guid(const struct piv_ecdh_box *box);
+const char *piv_box_guid_hex(const struct piv_ecdh_box *box);
 enum piv_slotid piv_box_slot(const struct piv_ecdh_box *box);
 struct sshkey *piv_box_pubkey(const struct piv_ecdh_box *box);
 struct sshkey *piv_box_ephem_pubkey(const struct piv_ecdh_box *box);
