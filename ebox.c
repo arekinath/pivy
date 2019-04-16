@@ -454,7 +454,8 @@ ebox_tpl_config_free(struct ebox_tpl_config *config)
 }
 
 struct ebox_tpl_part *
-ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen, struct sshkey *pubkey)
+ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen,
+    enum piv_slotid slotid, struct sshkey *pubkey)
 {
 	struct ebox_tpl_part *part;
 	part = calloc(1, sizeof (struct ebox_tpl_part));
@@ -466,7 +467,7 @@ ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen, struct sshkey *pubkey)
 		free(part);
 		return (NULL);
 	}
-	part->etp_slot = PIV_SLOT_KEY_MGMT;
+	part->etp_slot = slotid;
 	return (part);
 }
 
@@ -533,12 +534,6 @@ struct sshkey *
 ebox_tpl_part_cak(const struct ebox_tpl_part *part)
 {
 	return (part->etp_cak);
-}
-
-void
-ebox_tpl_part_set_slot(struct ebox_tpl_part *part, enum piv_slotid slot)
-{
-	part->etp_slot = slot;
 }
 
 enum piv_slotid

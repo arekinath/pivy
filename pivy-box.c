@@ -916,7 +916,7 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 		goto out;
 	}
 
-	part = ebox_tpl_part_alloc(guid, guidlen, pubkey);
+	part = ebox_tpl_part_alloc(guid, guidlen, slotid, pubkey);
 	if (part == NULL)
 		return (ERRF_NOMEM);
 	ebox_tpl_config_add_part(config, part);
@@ -925,7 +925,6 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 		ebox_tpl_part_set_name(part, name);
 	if (cak != NULL)
 		ebox_tpl_part_set_cak(part, cak);
-	ebox_tpl_part_set_slot(part, slotid);
 
 out:
 	*idxp = i;
@@ -1117,7 +1116,6 @@ interactive_edit_tpl_part(struct ebox_tpl *tpl,
 	struct sshkey *key;
 	char *line, *p;
 	errf_t *error;
-	unsigned long parsed;
 
 	buf = sshbuf_new();
 	if (buf == NULL)
@@ -1135,6 +1133,7 @@ interactive_edit_tpl_part(struct ebox_tpl *tpl,
 	guidhex = buf_to_hex(ebox_tpl_part_guid(part), GUID_LEN, B_FALSE);
 	question_printf(q, "  GUID: %s\n", guidhex);
 	free(guidhex);
+	question_printf(q, "  Slot: %02X\n", ebox_tpl_part_slot(part));
 	if ((rc = sshkey_format_text(ebox_tpl_part_pubkey(part), buf))) {
 		errfx(EXIT_ERROR, ssherrf("sshkey_format_text", rc),
 		    "failed to write part public key");
@@ -1168,9 +1167,6 @@ interactive_edit_tpl_part(struct ebox_tpl *tpl,
 	}
 	add_answer(q, a);
 
-	a = make_answer('s', "Slot: %02X", ebox_tpl_part_slot(part));
-	add_answer(q, a);
-
 	a = make_answer('x', "finish and return");
 	add_command(q, a);
 
@@ -1184,31 +1180,6 @@ again:
 		ebox_tpl_part_set_name(part, line);
 		a->a_used = 0;
 		answer_printf(a, "Name: %s", line);
-		free(line);
-		goto again;
-	case 's':
-		line = readline("Slot ID (hex)? ");
-		if (line == NULL)
-			exit(EXIT_ERROR);
-		errno = 0;
-		parsed = strtoul(line, &p, 16);
-		if (errno != 0 || *p != '\0') {
-			error = errfno("strtoul", errno, NULL);
-			warnfx(error, "error parsing '%s' as hex number",
-			    line);
-			erfree(error);
-			free(line);
-			goto again;
-		}
-		if (parsed > 0xFF) {
-			warnx("slot '%02X' is not a valid PIV slot id",
-			    (uint)parsed);
-			free(line);
-			goto again;
-		}
-		ebox_tpl_part_set_slot(part, parsed);
-		a->a_used = 0;
-		answer_printf(a, "Slot: %02X", (uint)parsed);
 		free(line);
 		goto again;
 	case 'c':
@@ -1357,9 +1328,8 @@ again:
 	slot = piv_get_slot(token, slotid);
 	VERIFY(slot != NULL);
 	part = ebox_tpl_part_alloc(piv_token_guid(token), GUID_LEN,
-	    piv_slot_pubkey(slot));
+	    piv_slot_id(slot), piv_slot_pubkey(slot));
 	VERIFY(part != NULL);
-	ebox_tpl_part_set_slot(part, piv_slot_id(slot));
 	error = piv_read_cert(token, PIV_SLOT_CARD_AUTH);
 	if (error == NULL) {
 		slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
@@ -1383,6 +1353,7 @@ interactive_edit_tpl_config(struct ebox_tpl *tpl,
 	char *line, *p;
 	char k = '0';
 	unsigned long int parsed;
+	enum piv_slotid slotid;
 	errf_t *error;
 	uint8_t *guid;
 	size_t guidlen;
@@ -1460,6 +1431,31 @@ again:
 			free(line);
 			goto again;
 		}
+		line = readline("Slot ID (hex)? [9D] ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		if (line[0] == '\0') {
+			parsed = 0x9D;
+		} else {
+			errno = 0;
+			parsed = strtoul(line, &p, 16);
+			if (errno != 0 || *p != '\0') {
+				error = errfno("strtoul", errno, NULL);
+				warnfx(error, "error parsing '%s' as hex "
+				    "number", line);
+				erfree(error);
+				free(line);
+				goto again;
+			}
+			if (parsed > 0xFF) {
+				warnx("slot '%02X' is not a valid PIV slot id",
+				    (uint)parsed);
+				free(line);
+				goto again;
+			}
+		}
+		slotid = parsed;
+		free(line);
 		line = readline("Key? ");
 		if (line == NULL)
 			exit(EXIT_ERROR);
@@ -1477,7 +1473,7 @@ again:
 		}
 		free(line);
 
-		part = ebox_tpl_part_alloc(guid, guidlen, key);
+		part = ebox_tpl_part_alloc(guid, guidlen, slotid, key);
 		if (part == NULL)
 			err(EXIT_ERROR, "failed to allocate memory");
 		sshkey_free(key);

@@ -90,11 +90,10 @@ struct ebox_tpl_part *ebox_tpl_config_next_part(
     const struct ebox_tpl_config *config, const struct ebox_tpl_part *prev);
 
 struct ebox_tpl_part *ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen,
-    struct sshkey *pubkey);
+    enum piv_slotid slot, struct sshkey *pubkey);
 void ebox_tpl_part_free(struct ebox_tpl_part *part);
 void ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name);
 void ebox_tpl_part_set_cak(struct ebox_tpl_part *part, struct sshkey *cak);
-void ebox_tpl_part_set_slot(struct ebox_tpl_part *part, enum piv_slotid slot);
 void *ebox_tpl_part_private(const struct ebox_tpl_part *part);
 void *ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz);
 void ebox_tpl_part_free_private(struct ebox_tpl_part *part);
