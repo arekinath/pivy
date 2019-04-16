@@ -29,130 +29,80 @@
 #include "errf.h"
 #include "libssh/digest.h"
 
-extern boolean_t piv_full_apdu_debug;
+/*
+ * This is the "public" interface of our PIV client implementation, backed by
+ * libpcsc.
+ *
+ * PIV is a standard for organising cryptographic smartcards and tokens designed
+ * by the United States NIST for authenticating staff at government agencies
+ * and branches of the military. It is also supported by a number of
+ * off-the-shelf devices and open-source Javacard applets, and has become a
+ * useful standard outside the US government.
+ *
+ * PIV is specified in NIST SP 800-73-4, but it can be hard to read this spec
+ * standalone -- it depends on a lot of assumed knowledge from the ISO7816
+ * smartcard specifications, particularly ISO7816-3 and ISO7816-4.
+ *
+ * The libpcsc API comes from Microsoft Windows and can be found documented on
+ * MSDN, and also by the open-source reimplementation pcsclite. It has become
+ * the cross-platform de facto standard for communication with smartcards.
+ *
+ * We support both some operations at the level of the entire PIV applet (e.g.
+ * read data from files like CHUID and so on) and also operations acting on
+ * particular PIV key slots.
+ *
+ * Basic flow for using this interface:
+ *
+ *   SCardEstablishContext
+ *        +
+ *        |
+ *        v
+ *   +----+-------+
+ *   |SCARDCONTEXT|
+ *   +--+---------+
+ *      |
+ *      |
+ *      |
+ *      +->  piv_enumerate  ----+
+ *      |                       |      +----------------+
+ *      |                       |      |struct piv_token|
+ *      |                       +----> |                |  ---> read token info
+ *      |                       |      +----------------+
+ *      +->  piv_find   --------+             |
+ *                                            |
+ *                                            |
+ *                                            |
+ *      +---+    piv_txn_begin   <------------+
+ *      |
+ *      |
+ *      +---------->   piv_select   ----+--->   read/write files
+ *                                      |
+ *                          |           +--->   admin operations
+ *                          |           |
+ *                          |           +--->   verify or change PIN etc
+ *   +---- piv_read_cert <--+
+ *   |
+ *   |
+ *   +-->  piv_get_slot -----+    +---------------+
+ *   |                       +--> |struct piv_slot|
+ *   |                       |    |               |
+ *   +-->  piv_slot_next ----+    +---------------+
+ *                                      |
+ *                                      |
+ *                                      |
+ *                                      +--->   read cert/key info
+ *                                      |
+ *                                      +--->   key operations (sign, ecdh etc)
+ *
+ * YubicoPIV-specific commands and options are generally prefixed with "YK"
+ * (e.g. ykpiv_generate for the version of the piv_generate function with
+ * YubicoPIV extensions).
+ */
 
-enum iso_class {
-	CLA_ISO = 0x00,
-	CLA_CHAIN = 0x10
-};
-
-enum iso_sel_p1 {
-	SEL_APP_AID = 0x04
-};
-
-enum iso_ins {
-	/* Standard commands from ISO7816-4 */
-	INS_SELECT = 0xA4,
-	INS_GET_DATA = 0xCB,
-	INS_VERIFY = 0x20,
-	INS_CHANGE_PIN = 0x24,
-	INS_RESET_PIN = 0x2C,
-	INS_GEN_AUTH = 0x87,
-	INS_PUT_DATA = 0xDB,
-	INS_GEN_ASYM = 0x47,
-	INS_CONTINUE = 0xC0,
-
-	/* YubicoPIV specific */
-	INS_SET_MGMT = 0xFF,
-	INS_IMPORT_ASYM = 0xFE,
-	INS_GET_VER = 0xFD,
-	INS_SET_PIN_RETRIES = 0xFA,
-	INS_RESET = 0xFB,
-	INS_GET_SERIAL = 0xF8,
-	INS_ATTEST = 0xF9,
-};
-
-enum iso_sw {
-	SW_NO_ERROR = 0x9000,
-	SW_FUNC_NOT_SUPPORTED = 0x6A81,
-	SW_CONDITIONS_NOT_SATISFIED = 0x6985,
-	SW_SECURITY_STATUS_NOT_SATISFIED = 0x6982,
-	SW_BYTES_REMAINING_00 = 0x6100,
-	SW_CORRECT_LE_00 = 0x6C00,
-	SW_WARNING_NO_CHANGE_00 = 0x6200,
-	SW_WARNING_EOF = 0x6282,
-	SW_WARNING_00 = 0x6300,
-	SW_FILE_NOT_FOUND = 0x6A82,
-	SW_INCORRECT_PIN = 0x63C0,
-	SW_INCORRECT_P1P2 = 0x6A86,
-	SW_WRONG_DATA = 0x6A80,
-	SW_OUT_OF_MEMORY = 0x6A84,
-	SW_WRONG_LENGTH = 0x6700,
-	SW_INS_NOT_SUP = 0x6D00,
-};
-
-enum piv_sel_tag {
-	PIV_TAG_APT = 0x61,
-	PIV_TAG_AID = 0x4F,
-	PIV_TAG_AUTHORITY = 0x79,
-	PIV_TAG_APP_LABEL = 0x50,
-	PIV_TAG_URI = 0x5F50,
-	PIV_TAG_ALGS = 0xAC,
-};
-
-enum piv_tags {
-	PIV_TAG_CARDCAP = 0x5FC107,
-	PIV_TAG_CHUID = 0x5FC102,
-	PIV_TAG_SECOBJ = 0x5FC106,
-	PIV_TAG_KEYHIST = 0x5FC10C,
-	PIV_TAG_DISCOV = 0x7E,
-	PIV_TAG_CERT_9A = 0x5FC105,
-	PIV_TAG_CERT_9C = 0x5FC10A,
-	PIV_TAG_CERT_9D = 0x5FC10B,
-	PIV_TAG_CERT_9E = 0x5FC101,
-
-	PIV_TAG_CERT_82 = 0x5FC10D,	/* First retired slot */
-	PIV_TAG_CERT_95 = 0x5FC120,	/* Last retired slot */
-
-	PIV_TAG_CERT_YK_ATTESTATION = 0x5FFF01,
-};
-
-enum gen_auth_tag {
-	GA_TAG_WITNESS = 0x80,
-	GA_TAG_CHALLENGE = 0x81,
-	GA_TAG_RESPONSE = 0x82,
-	GA_TAG_EXP = 0x85,
-};
-
-enum piv_alg {
-	PIV_ALG_3DES = 0x03,
-	PIV_ALG_RSA1024 = 0x06,
-	PIV_ALG_RSA2048 = 0x07,
-	PIV_ALG_AES128 = 0x08,
-	PIV_ALG_AES192 = 0x0A,
-	PIV_ALG_AES256 = 0x0C,
-	PIV_ALG_ECCP256 = 0x11,
-	PIV_ALG_ECCP384 = 0x14,
-
-	/*
-	 * Proprietary hack for Javacards running PivApplet -- they don't
-	 * support bare ECDSA so instead we have to give them the full input
-	 * data and they hash it on the card.
-	 */
-	PIV_ALG_ECCP256_SHA1 = 0xf0,
-	PIV_ALG_ECCP256_SHA256 = 0xf1,
-};
-
-enum piv_cert_comp {
-	PIV_COMP_GZIP = 1,
-	PIV_COMP_NONE = 0,
-};
-
-enum piv_certinfo_flags {
-	PIV_CI_X509 = (1 << 2),
-	PIV_CI_COMPTYPE = 0x03,
-};
-
-enum piv_pin {
-	PIV_PIN = 0x80,
-	PIV_GLOBAL_PIN = 0x00,
-	PIV_PUK = 0x81,
-	/* We don't really support these yet. */
-	PIV_OCC = 0x96,
-	PIV_OCC2 = 0x97,
-	PIV_PAIRING = 0x98
-};
-
+/*
+ * PIV key slots have an 8-bit numeric ID. This is the list of all the slot
+ * IDs that we support.
+ */
 enum piv_slotid {
 	PIV_SLOT_9A = 0x9A,
 	PIV_SLOT_9B = 0x9B,
@@ -177,6 +127,73 @@ enum piv_slotid {
 	PIV_SLOT_YK_ATTESTATION = PIV_SLOT_F9,
 };
 
+/*
+ * Tags for various PIV "files" or "objects" that can be retrieved.
+ *
+ * Most of these are used internally, but you can also pass them to e.g.
+ * piv_read_file() if you want to.
+ */
+enum piv_tags {
+	PIV_TAG_CARDCAP = 0x5FC107,
+	PIV_TAG_CHUID = 0x5FC102,
+	PIV_TAG_SECOBJ = 0x5FC106,
+	PIV_TAG_KEYHIST = 0x5FC10C,
+	PIV_TAG_DISCOV = 0x7E,
+	PIV_TAG_CERT_9A = 0x5FC105,
+	PIV_TAG_CERT_9C = 0x5FC10A,
+	PIV_TAG_CERT_9D = 0x5FC10B,
+	PIV_TAG_CERT_9E = 0x5FC101,
+
+	PIV_TAG_CERT_82 = 0x5FC10D,	/* First retired slot */
+	PIV_TAG_CERT_95 = 0x5FC120,	/* Last retired slot */
+
+	PIV_TAG_CERT_YK_ATTESTATION = 0x5FFF01,
+};
+
+/*
+ * Supported cryptographic algorithms and their PIV ID numbers. You can find
+ * the table of these in NIST SP 800-78-4.
+ */
+enum piv_alg {
+	PIV_ALG_3DES = 0x03,
+	PIV_ALG_AES128 = 0x08,
+	PIV_ALG_AES192 = 0x0A,
+	PIV_ALG_AES256 = 0x0C,
+
+	PIV_ALG_RSA1024 = 0x06,
+	PIV_ALG_RSA2048 = 0x07,
+	PIV_ALG_ECCP256 = 0x11,
+	PIV_ALG_ECCP384 = 0x14,
+
+	/*
+	 * Proprietary hack for Javacards running PivApplet -- they don't
+	 * support bare ECDSA so instead we have to give them the full input
+	 * data and they hash it on the card.
+	 */
+	PIV_ALG_ECCP256_SHA1 = 0xf0,
+	PIV_ALG_ECCP256_SHA256 = 0xf1,
+};
+
+/* Types of PIV cardholder authentication methods. */
+enum piv_pin {
+	/* PIV application PIN, local to the PIV applet. */
+	PIV_PIN = 0x80,
+	/* A global PIN used by all applets on the card. */
+	PIV_GLOBAL_PIN = 0x00,
+	/* PIN Unlock code, used if the PIN is lost/forgotten. */
+	PIV_PUK = 0x81,
+
+	/*
+	 * We don't really support these yet, but OCC is "on-chip comparison"
+	 * of biometric data.
+	 */
+	PIV_OCC = 0x96,
+	PIV_OCC2 = 0x97,
+
+	/* Only useful with securechannel/VCI (not supported) */
+	PIV_PAIRING = 0x98
+};
+
 enum ykpiv_pin_policy {
 	YKPIV_PIN_DEFAULT = 0x00,
 	YKPIV_PIN_NEVER = 0x01,
@@ -188,7 +205,7 @@ enum ykpiv_touch_policy {
 	YKPIV_TOUCH_DEFAULT = 0x00,
 	YKPIV_TOUCH_NEVER = 0x01,
 	YKPIV_TOUCH_ALWAYS = 0x02,
-	YKPIV_TOUCH_CACHED = 0x03,
+	YKPIV_TOUCH_CACHED = 0x03,		/* Cached for 15sec */
 };
 
 #define	GUID_LEN	16
@@ -813,6 +830,56 @@ errf_t *sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 /* Low-level APDU access */
 struct apdu;
 
+enum iso_class {
+	CLA_ISO = 0x00,
+	CLA_CHAIN = 0x10
+};
+
+enum iso_sel_p1 {
+	SEL_APP_AID = 0x04
+};
+
+enum iso_ins {
+	/* Standard commands from ISO7816-4 */
+	INS_SELECT = 0xA4,
+	INS_GET_DATA = 0xCB,
+	INS_VERIFY = 0x20,
+	INS_CHANGE_PIN = 0x24,
+	INS_RESET_PIN = 0x2C,
+	INS_GEN_AUTH = 0x87,
+	INS_PUT_DATA = 0xDB,
+	INS_GEN_ASYM = 0x47,
+	INS_CONTINUE = 0xC0,
+
+	/* YubicoPIV specific */
+	INS_SET_MGMT = 0xFF,
+	INS_IMPORT_ASYM = 0xFE,
+	INS_GET_VER = 0xFD,
+	INS_SET_PIN_RETRIES = 0xFA,
+	INS_RESET = 0xFB,
+	INS_GET_SERIAL = 0xF8,
+	INS_ATTEST = 0xF9,
+};
+
+enum iso_sw {
+	SW_NO_ERROR = 0x9000,
+	SW_FUNC_NOT_SUPPORTED = 0x6A81,
+	SW_CONDITIONS_NOT_SATISFIED = 0x6985,
+	SW_SECURITY_STATUS_NOT_SATISFIED = 0x6982,
+	SW_BYTES_REMAINING_00 = 0x6100,
+	SW_CORRECT_LE_00 = 0x6C00,
+	SW_WARNING_NO_CHANGE_00 = 0x6200,
+	SW_WARNING_EOF = 0x6282,
+	SW_WARNING_00 = 0x6300,
+	SW_FILE_NOT_FOUND = 0x6A82,
+	SW_INCORRECT_PIN = 0x63C0,
+	SW_INCORRECT_P1P2 = 0x6A86,
+	SW_WRONG_DATA = 0x6A80,
+	SW_OUT_OF_MEMORY = 0x6A84,
+	SW_WRONG_LENGTH = 0x6700,
+	SW_INS_NOT_SUP = 0x6D00,
+};
+
 /*
  * Creates an APDU with the given class, instruction, p1 and p2 values.
  */
@@ -855,5 +922,11 @@ errf_t *piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
  * one single large APDU had been transceived.
  */
 errf_t *piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
+
+/*
+ * If you set this to B_TRUE, we will bunyan_log the full contents of all APDUs,
+ * including sensitive information! Be careful!
+ */
+extern boolean_t piv_full_apdu_debug;
 
 #endif

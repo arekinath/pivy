@@ -50,6 +50,7 @@
 #include "piv.h"
 #include "bunyan.h"
 
+/* Contains structs apdubuf, piv_ecdh_box, and enum piv_box_version */
 #include "piv-internal.h"
 
 #define	PIV_MAX_CERT_LEN		16384
@@ -129,8 +130,31 @@ struct apdu {
 	struct apdubuf a_reply;
 };
 
+/* Tags used in the GENERAL AUTHENTICATE command. */
+enum gen_auth_tag {
+	GA_TAG_WITNESS = 0x80,
+	GA_TAG_CHALLENGE = 0x81,
+	GA_TAG_RESPONSE = 0x82,
+	GA_TAG_EXP = 0x85,
+};
+
+/* Tags used in the response to select on the PIV applet. */
+enum piv_sel_tag {
+	PIV_TAG_APT = 0x61,
+	PIV_TAG_AID = 0x4F,
+	PIV_TAG_AUTHORITY = 0x79,
+	PIV_TAG_APP_LABEL = 0x50,
+	PIV_TAG_URI = 0x5F50,
+	PIV_TAG_ALGS = 0xAC,
+};
+
 struct piv_slot {
+	/*
+	 * Links to the next member of the slot list hanging off a token at
+	 * ->pt_slots. There's only one slots list per token.
+	 */
 	struct piv_slot *ps_next;
+
 	enum piv_slotid ps_slot;
 	enum piv_alg ps_alg;
 	X509 *ps_x509;
@@ -139,40 +163,67 @@ struct piv_slot {
 };
 
 struct piv_token {
+	/*
+	 * Next in the enumeration. If this token was returned by piv_find()
+	 * then this will always be NULL. piv_enumerate() can return a linked
+	 * list of piv_tokens though.
+	 */
 	struct piv_token *pt_next;
+
+	/* PCSC parameters */
 	const char *pt_rdrname;
 	SCARDHANDLE pt_cardhdl;
 	DWORD pt_proto;
 	SCARD_IO_REQUEST pt_sendpci;
+
+	/* Are we in a transaction right now? */
 	boolean_t pt_intxn;
+	/*
+	 * Do we need to reset at the end of this txn? (e.g. because we sent
+	 * a PIN VERIFY command and it succeeded)
+	 */
 	boolean_t pt_reset;
 
-	uint8_t pt_fascn[26];
-	size_t pt_fascn_len;
-
+	/*
+	 * Our GUID. This can either be the GUID from our CHUID file, or if
+	 * we don't have one, we can synthesise this from other data.
+	 */
 	uint8_t pt_guid[GUID_LEN];
+	/* We use this to cache a cstring hex version of pt_guid */
 	char *pt_guidhex;
 
+	/* Do we have a CHUID file? */
+	boolean_t pt_nochuid;
+	/* Is it signed? */
+	boolean_t pt_signedchuid;
+
+	/* Fields from the CHUID file. */
+	uint8_t pt_fascn[26];
+	size_t pt_fascn_len;
+	uint8_t pt_expiry[8];			/* YYYYMMDD */
 	boolean_t pt_haschuuid;
-	uint8_t pt_chuuid[GUID_LEN];
-	uint8_t pt_expiry[8];
+	uint8_t pt_chuuid[GUID_LEN];		/* Card Holder UUID */
+
+	/*
+	 * Array of supported algorithms, if we got any in the answer to
+	 * SELECT. Lots of PIV cards don't supply these.
+	 */
 	enum piv_alg pt_algs[32];
 	size_t pt_alg_count;
-	uint pt_pinretries;
-	boolean_t pt_ykpiv;
-	boolean_t pt_nochuid;
-	boolean_t pt_signedchuid;
-	uint8_t pt_ykver[3];
 
-	boolean_t pt_ykserial_valid;
-	uint32_t pt_ykserial;
-
+	/*
+	 * If we are using any of the retired key history slots (82-95), then
+	 * these should be set (they're from the Key History Object). The
+	 * number of slots in use is oncard + offcard.
+	 */
 	uint8_t pt_hist_oncard;
 	uint8_t pt_hist_offcard;
 	char *pt_hist_url;
 
+	/* Our preferred authentication method */
 	enum piv_pin pt_auth;
 
+	/* Supported authentication methods */
 	boolean_t pt_pin_global;
 	boolean_t pt_pin_app;
 	boolean_t pt_occ;
@@ -180,8 +231,16 @@ struct piv_token {
 
 	struct piv_slot *pt_slots;
 	struct piv_slot *pt_last_slot;
+
+	/* YubicoPIV specific stuff */
+	boolean_t pt_ykpiv;			/* Supports YubicoPIV? */
+	uint8_t pt_ykver[3];			/* YK FW version number */
+
+	boolean_t pt_ykserial_valid;	/* YubiKey serial # only on YK5 */
+	uint32_t pt_ykserial;
 };
 
+/* Helper to dump out APDU data */
 static inline void
 debug_dump(errf_t *err, struct apdu *apdu)
 {
@@ -438,6 +497,10 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 
 	VERIFY(tk->pt_intxn);
 
+	/*
+	 * First check that the key on the slot is at least claiming to be
+	 * the same
+	 */
 	if (sshkey_equal_public(pubkey, slot->ps_pubkey) == 0) {
 		err = errf("KeysNotEqualError", NULL,
 		    "Given public key and slot's public key do not match");
@@ -446,6 +509,11 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 		    tk->pt_rdrname));
 	}
 
+	/*
+	 * Now we generate a random challenge value and have the card sign it.
+	 * 64 bytes is probably overkill, but more doesn't hurt (we normally
+	 * are just sending a hash anyway).
+	 */
 	challen = 64;
 	chal = calloc(1, challen);
 	VERIFY3P(chal, !=, NULL);
@@ -459,6 +527,7 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 	b = sshbuf_new();
 	VERIFY3P(b, !=, NULL);
 
+	/* Convert it to SSH signature format so we can use sshkey_verify */
 	rv = sshkey_sig_from_asn1(pubkey, hashalg, sig, siglen, b);
 	if (rv != 0) {
 		err = errf("NotSupportedError",
@@ -1454,6 +1523,10 @@ ins_to_name(enum iso_ins ins)
 	}
 }
 
+/*
+ * The basic APDU transceiver function. Doesn't handle any chaining or length
+ * correction logic at all.
+ */
 errf_t *
 piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 {
@@ -1495,8 +1568,8 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 
 	if (piv_full_apdu_debug) {
 		bunyan_log(TRACE, "received APDU",
-		    "apdu", BNY_BIN_HEX, r->b_data + r->b_offset, (size_t)recvLength,
-		    NULL);
+		    "apdu", BNY_BIN_HEX, r->b_data + r->b_offset,
+		    (size_t)recvLength, NULL);
 	}
 
 	if (rv != SCARD_S_SUCCESS) {
@@ -1531,6 +1604,10 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	return (ERRF_OK);
 }
 
+/*
+ * This function sends and receives chains of commands so that the data length
+ * can be arbitrarily long on either side.
+ */
 errf_t *
 piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 {
@@ -1584,6 +1661,14 @@ again:
 	 */
 	offset = apdu->a_reply.b_offset;
 
+	/*
+	 * Now we send CONTINUE commands until we've received all the data that
+	 * the other side has to send to us.
+	 *
+	 * Note the case where we got SW_NO_ERROR but max length data -- we try
+	 * a CONTINUE just in case -- there are a few cards which are buggy
+	 * and don't always give us SW_BYTES_REMAINING.
+	 */
 	while ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00 ||
 	    (apdu->a_sw == SW_NO_ERROR && apdu->a_reply.b_len >= 0xFF)) {
 		apdu->a_cls = CLA_ISO;
@@ -1777,6 +1862,10 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 		    "%u bytes long", cipher_keylen(cipher), keylen));
 	}
 
+	/*
+	 * We only do single-step challenge-response auth at the moment, not
+	 * the two-step mutual auth using a witness value.
+	 */
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x7C);
 	tlv_push(tlv, GA_TAG_CHALLENGE);
@@ -3403,6 +3492,15 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		break;
 	case PIV_ALG_ECCP256:
 		inplen = 32;
+		/*
+		 * JC22x cards running PivApplet have proprietary algorithm IDs
+		 * for hash-on-card ECDSA since they can't sign a precomputed
+		 * hash value from the host like they're supposed to.
+		 *
+		 * If it's one of these cards, it advertises
+		 * PIV_ALG_ECCP256_SHA* in the pt_algs list. If we have this,
+		 * try to use it (since regular ECCP256 won't work).
+		 */
 		for (i = 0; i < tk->pt_alg_count; ++i) {
 			if (tk->pt_algs[i] == PIV_ALG_ECCP256_SHA256) {
 				cardhash = B_TRUE;
@@ -3414,6 +3512,11 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		if (*hashalgo == SSH_DIGEST_SHA1) {
 			dglen = 20;
 			if (cardhash) {
+				/*
+				 * In sign_prehash we just send ps_alg as the
+				 * alg ID to the card. So stash the old one here
+				 * and replace it with the _SHA* variant.
+				 */
 				oldalg = slot->ps_alg;
 				slot->ps_alg = PIV_ALG_ECCP256_SHA1;
 			}
@@ -3965,6 +4068,8 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
+	/* TODO: support non-authenticated ciphers by adding an HMAC */
+	VERIFY3U(authlen, >, 0);
 
 	dgalg = ssh_digest_alg_by_name(box->pdb_kdf);
 	if (dgalg == -1) {
@@ -3998,6 +4103,17 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	VERIFY3P(dgctx, !=, NULL);
 	VERIFY0(ssh_digest_update(dgctx, sec, seclen));
 	if (box->pdb_nonce.b_len > 0) {
+		/*
+		 * In the original libnacl/libsodium box primitive, the nonce
+		 * is combined with the ECDH output in a more complex way than
+		 * this. Based on reading the RFCs for systems like OpenSSH,
+		 * though, this method (simply concat'ing them and hashing)
+		 * seems to be acceptable.
+		 *
+		 * We never publish this hash value (it's the symmetric key!)
+		 * so we don't need to worry about length extension attacks and
+		 * similar.
+		 */
 		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
 		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
 	}
@@ -4131,6 +4247,7 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	VERIFY3P(dgctx, !=, NULL);
 	VERIFY0(ssh_digest_update(dgctx, sec, seclen));
 	if (box->pdb_nonce.b_len > 0) {
+		/* See comment in piv_box_open_offline */
 		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
 		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
 	}
@@ -4252,6 +4369,8 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
+	/* TODO: support non-authenticated ciphers by adding an HMAC */
+	VERIFY3U(authlen, >, 0);
 
 	if (box->pdb_version >= PIV_BOX_V2 && (
 	    box->pdb_nonce.b_data == NULL || box->pdb_nonce.b_len == 0)) {
@@ -4301,6 +4420,7 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	VERIFY3P(dgctx, !=, NULL);
 	VERIFY0(ssh_digest_update(dgctx, sec, seclen));
 	if (box->pdb_nonce.b_len > 0) {
+		/* See comment in piv_box_open_offline */
 		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
 		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
 	}

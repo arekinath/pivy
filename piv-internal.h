@@ -25,31 +25,64 @@ struct apdubuf {
 	size_t b_len;
 };
 
+enum piv_box_version {
+	PIV_BOX_V1 = 0x01,
+	/* Version 2 added the nonce field. */
+	PIV_BOX_V2 = 0x02,
+	PIV_BOX_VNEXT
+};
+
 struct piv_ecdh_box {
+	/* Actually one of the piv_box_version values */
 	uint8_t pdb_version;
+
+	/* If true, the pdb_guid/pdb_slot fields are populated. */
 	boolean_t pdb_guidslot_valid;
 	uint8_t pdb_guid[16];
-	char *pdb_guidhex;
 	enum piv_slotid pdb_slot;
 
-	struct sshkey *pdb_ephem;
+	/* Cached cstring hex version of pdb_guid */
+	char *pdb_guidhex;
+
+	/* The ephemeral public key that does DH with pdb_pub */
 	struct sshkey *pdb_ephem_pub;
+	/* The public key we intend to be able to unlock the box */
 	struct sshkey *pdb_pub;
 
+	/*
+	 * If true, pdb_cipher/kdf were malloc'd by us and should be freed
+	 * in piv_box_free()
+	 */
 	boolean_t pdb_free_str;
-	const char *pdb_cipher;
-	const char *pdb_kdf;
+	const char *pdb_cipher;		/* OpenSSH cipher.c alg name */
+	const char *pdb_kdf;		/* OpenSSH digest.c alg name */
 
 	struct apdubuf pdb_nonce;
 	struct apdubuf pdb_iv;
 	struct apdubuf pdb_enc;
+
+	/*
+	 * Never written out as part of the box structure: the in-memory
+	 * cached plaintext after we unseal a box goes here.
+	 */
 	struct apdubuf pdb_plain;
+
+	/*
+	 * This is for ebox to use to supply an alternative ephemeral _private_
+	 * key for sealing (nobody else should use this!)
+	 */
+	struct sshkey *pdb_ephem;
 };
 
-enum piv_box_version {
-	PIV_BOX_V1 = 0x01,
-	PIV_BOX_V2 = 0x02,
-	PIV_BOX_VNEXT
+/* Certinfo flags with certificates. Is it compressed? How? */
+enum piv_cert_comp {
+	PIV_COMP_GZIP = 1,
+	PIV_COMP_NONE = 0,
+};
+
+enum piv_certinfo_flags {
+	PIV_CI_X509 = (1 << 2),
+	PIV_CI_COMPTYPE = 0x03,
 };
 
 #endif

@@ -54,6 +54,9 @@ int PEM_write_X509(FILE *fp, X509 *x);
 #include "piv.h"
 #include "bunyan.h"
 
+/* We need the piv_cert_comp enum */
+#include "piv-internal.h"
+
 #if defined(__sun) || defined(__APPLE__)
 #include <netinet/in.h>
 #define	be16toh(v)	(ntohs(v))
