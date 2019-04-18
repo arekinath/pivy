@@ -8,7 +8,7 @@ prefix="/opt/pivy"
 bindir="$prefix/bin"
 
 while true; do
-  /usr/bin/osascript -e 'display dialog "Please insert your YubiKey and press OK"'
+  /usr/bin/osascript -e 'display dialog "Please insert your YubiKey and press OK"' || exit 0
 
   # XXX: we just take the first one we see?
   while IFS=: read rdrname guid chuid ykpiv _; do
