@@ -516,7 +516,7 @@ packages if your distro does those). Some `musl` based distros will also require
 installing `libedit`.
 
 If you're using ArchLinux, we have a
-[`pivy` package in the AUR](https://aur.archlinux.org/packages/pivy/)
+https://aur.archlinux.org/packages/pivy[`pivy` package in the AUR]
 which will compile and install the binaries for you.
 
 If you're compiling yourself, clone this repository and use `make` to build
@@ -561,7 +561,7 @@ which both install the binaries and set up a user launchd service to run the
 `pivy-agent` for you.
 
 You can find the latest binary installer on the
-[releases page](https://github.com/arekinath/pivy/releases).
+https://github.com/arekinath/pivy/releases[releases page].
 
 After installing the program itself, the installer will prompt you to insert a
 YubiKey or other PIV token using a dialog box. Then it will generate a user
