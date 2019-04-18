@@ -515,7 +515,12 @@ installed, as well as the libraries `pcsclite` and `libbsd` (and their `-dev`
 packages if your distro does those). Some `musl` based distros will also require
 installing `libedit`.
 
-Then, clone this repository and use `make` to build the binaries:
+If you're using ArchLinux, we have a
+[`pivy` package in the AUR](https://aur.archlinux.org/packages/pivy/)
+which will compile and install the binaries for you.
+
+If you're compiling yourself, clone this repository and use `make` to build
+the binaries:
 
 -----
 $ git clone https://github.com/arekinath/pivy-agent
@@ -523,12 +528,15 @@ $ cd pivy-agent
 $ make
 -----
 
-You can run `make install` (as root or with sudo) to install the agent into
-`/opt/pivy`.  The `make setup` invocation can be used to set up a user
-systemd service to start it automatically at login.  It will also print out
-lines to add to your `.profile` or `.bashrc` to make sure the agent is
-automatically available in all your shells (while still preferring a forwarded
-SSH agent if you SSH into your machine later).
+You can then run `make install` (as root or with sudo) to install the agent into
+`/opt/pivy`. The Makefile also supports `prefix=/...` to use a different prefix
+rather than `/opt/pivy`, and `DESTDIR=` to stage the installation.
+
+The `make setup` invocation can be used to set up a user systemd service to
+start it automatically at login.  It will also print out lines to add to your
+`.profile` or `.bashrc` to make sure the agent is automatically available in
+all your shells (while still preferring a forwarded SSH agent if you SSH into
+your machine later).
 
 -----
 $ make setup
@@ -542,17 +550,41 @@ systemctl --user start pivy-agent@default.service
 Add the following lines to your .profile or .bashrc:
   export PATH=/opt/pivy/bin:$PATH
   if [[ ! -e "$SSH_AUTH_SOCK" || "$SSH_AUTH_SOCK" == *"/keyring/"* ]]; then
-    export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
+    export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/pivy-ssh-default.socket"
   fi
-
 -----
 
-## Installing on OSX
+## Installing on Mac OSX
 
-Compiling on OSX is even easier. Rather than depend on homebrew or MacPorts or
-another similar system, we simply build `libressl-portable` in a subdirectory
-and statically link the binaries against it. The Makefile in this repository
-will handle it all for you.
+Installing on OSX is even easier, as we have pre-built binary package installers
+which both install the binaries and set up a user launchd service to run the
+`pivy-agent` for you.
+
+You can find the latest binary installer on the
+[releases page](https://github.com/arekinath/pivy/releases).
+
+After installing the program itself, the installer will prompt you to insert a
+YubiKey or other PIV token using a dialog box. Then it will generate a user
+launchd service to run the agent for you, and add lines to `/etc/profile` to
+default to using it in place of the Keychain agent.
+
+The `pivy-` programs will also be added to your `PATH`, so they should be
+accessible from any terminal. You'll find them in `/opt/pivy` if you need
+them for any other reason.
+
+### Differences to Linux
+
+There is one known issue on OSX currently: the PCSC framework does not work
+after calling `fork()`, which forces the `pivy-agent` code to not be able to run
+in the background (this means using `pivy-agent bash` to start a shell doesn't
+work, for example). The best way to use `pivy-agent` on OSX is set up as a
+launchd service.
+
+### Compiling on Mac OSX
+
+Rather than depend on homebrew or MacPorts or another similar system, we build
+`libressl-portable` in a subdirectory and statically link the binaries against
+it. The Makefile in this repository will handle it all for you.
 
 Note there is no need to install PCSClite or OpenSC or any of the related
 tools or libraries on OSX -- the PCSC framework built into the operating system
@@ -568,33 +600,7 @@ $ cd pivy-agent
 ## Build libressl and then pivy-agent
 $ make -j4
 
-## Install in /opt/pivy-agent
-$ sudo make install
-install -o root -g wheel -m 0755 -d /opt/pivy/bin
-install -o root -g wheel -m 0755 pivy-agent /opt/pivy/bin
-install -o root -g wheel -m 0755 pivy-tool /opt/pivy/bin
-## Configure and add a launchd service for the agent
-$ make setup
-Enter a GUID to use for pivy-agent: 995E171383029CDA0D9CDBDBAD580813
-
-install .dist/net.cooperi.pivy-agent.plist /Users/alex/Library/LaunchAgents
-launchctl load /Users/alex/Library/LaunchAgents/net.cooperi.pivy-agent.plist
-launchctl start net.cooperi.pivy-agent
-
-Add the following lines to your .profile or .bashrc:
-  export PATH=/opt/pivy/bin:$PATH
-  if [[ ! -e "$SSH_AUTH_SOCK" || "$SSH_AUTH_SOCK" == *"launchd"* ]]; then
-    source $HOME/.ssh/agent.env >/dev/null
-  fi
-
+## Generate a .pkg (will be output in macosx/pivy-version.pkg)
+$ sudo make package
+...
 -----
-
-There is one known issue on OSX currently: the PCSC framework does not work
-after calling `fork()`, which forces the `pivy-agent` code to not be able to run
-in the background (this means using `pivy-agent bash` to start a shell doesn't
-work, for example). The best way to use it on OSX is set up as a launchd
-service.
-
-Like on Linux, there is a `make install` target that will set up a `launchd`
-service for the `pivy-agent` for you and advise you on what to add to `.profile`
-to make it available in all new shells.
