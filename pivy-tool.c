@@ -1950,13 +1950,16 @@ cmd_setup(SCARDCONTEXT ctx)
 		usetouch = B_TRUE;
 	}
 
-	fprintf(stderr, "Initializing CCC and CHUID files...\n");
-	if ((err = cmd_init()))
-		return (funcerrf(err, "initializing CCC and CHUID files"));
-
-	piv_release(ks);
-	selk = NULL;
-	check_select_key();
+	if (!piv_token_has_chuid(selk)) {
+		fprintf(stderr, "Initializing CCC and CHUID files...\n");
+		if ((err = cmd_init())) {
+			return (funcerrf(err,
+			    "initializing CCC and CHUID files"));
+		}
+		piv_release(ks);
+		selk = NULL;
+		check_select_key();
+	}
 
 	touchpolicy = YKPIV_TOUCH_DEFAULT;
 	pinpolicy = YKPIV_PIN_DEFAULT;
@@ -1964,9 +1967,20 @@ cmd_setup(SCARDCONTEXT ctx)
 
 	fprintf(stderr, "Generating standard keys...\n");
 
-	override = piv_force_slot(selk, 0x9E, PIV_ALG_ECCP256);
-	if ((err = cmd_generate(piv_slot_id(override), piv_slot_alg(override))))
+	if ((err = piv_txn_begin(selk)))
 		return (err);
+	assert_select(selk);
+	err = piv_read_cert(selk, 0x9E);
+	piv_txn_end(selk);
+
+	if (err) {
+		erfree(err);
+		override = piv_force_slot(selk, 0x9E, PIV_ALG_ECCP256);
+		err = cmd_generate(piv_slot_id(override),
+		    piv_slot_alg(override));
+		if (err)
+			return (err);
+	}
 	override = piv_force_slot(selk, 0x9A, PIV_ALG_ECCP256);
 	if ((err = cmd_generate(piv_slot_id(override), piv_slot_alg(override))))
 		return (err);
