@@ -27,6 +27,7 @@ static const char *bunyan_name = NULL;
 static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
 static enum bunyan_log_level bunyan_min_level = WARN;
+static boolean_t bunyan_omit_timestamp = B_FALSE;
 
 struct bunyan_var {
 	struct bunyan_var *bv_next;
@@ -260,9 +261,59 @@ bny_timer_print(struct bunyan_timers *tms)
 	return (0);
 }
 
+#if defined(__linux__)
+static boolean_t
+bunyan_detect_journald(void)
+{
+	char *envp;
+
+	/*
+	 * If journald is providing logging for this process, it will set
+	 * JOURNAL_STREAM to <dev>:<inode>, corresponding to the device and
+	 * inode of the socket attached to stderr and stdout.
+	 */
+	if ((envp = getenv("JOURNAL_STREAM")) != NULL) {
+		char *devp, *inop;
+		unsigned long device = ULONG_MAX, inode = ULONG_MAX;
+
+		if ((devp = strdup(envp)) != NULL) {
+			inop = strstr(devp, ":");
+			if (inop != NULL) {
+				*inop = '\0';
+				inop++;
+				device = strtoul(devp, NULL, 10);
+				inode = strtoul(inop, NULL, 10);
+			}
+			free(devp);
+		}
+
+		if (device != ULONG_MAX && inode != ULONG_MAX) {
+			struct stat info;
+
+			if (fstat(STDERR_FILENO, &info) == 0) {
+				if (info.st_dev == device &&
+				    info.st_ino == inode) {
+					return (B_TRUE);
+				}
+			}
+		}
+	}
+	return (B_FALSE);
+}
+#endif /* defined (__linux__) */
+
 void
 bunyan_init(void)
 {
+#if defined(__linux__)
+	/*
+	 * When logging to journald, generating our own timestamps is
+	 * unecessary as the journal has its own native ones.
+	 */
+	if (bunyan_detect_journald()) {
+		bunyan_omit_timestamp = B_TRUE;
+	}
+#endif
 }
 
 void
@@ -469,7 +520,6 @@ print_frame(struct bunyan_frame *frame, uint *pn, struct bunyan_var **evars)
 void
 bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 {
-	char time[128];
 	va_list ap;
 	const char *propname;
 	errf_t *err = NULL;
@@ -480,8 +530,12 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 
 	reset_buf();
 
-	bunyan_timestamp(time, sizeof (time));
-	printf_buf("[%s] ", time);
+	if (!bunyan_omit_timestamp) {
+		char time[128];
+
+		bunyan_timestamp(time, sizeof (time));
+		printf_buf("[%s] ", time);
+	}
 
 	switch (level) {
 	case TRACE:
