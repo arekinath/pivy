@@ -11,16 +11,18 @@ while true; do
   /usr/bin/osascript -e 'display dialog "Please insert your YubiKey and press OK"'
 
   # XXX: we just take the first one we see?
-  while IFS=: read rdrname guid chuid ykpiv; do
+  while IFS=: read rdrname guid chuid ykpiv _; do
     # check it's been set up with a CHUID
     if [[ "$chuid" == "false" && "$ykpiv" == "true" ]]; then
       # if it hasn't set up a basic one + 9e key so we can pin it.
       # the user can do the rest with pivy-tool later.
-      $bindir/pivy-tool -g $guid init
+      $bindir/pivy-tool -g 00000000 init
       # "init" changes the guid
-      guid=$($bindir/pivy-tool list -p | \
+      guid=$($bindir/pivy-tool -p list | \
         /usr/bin/grep "$rdrname" | /usr/bin/awk -F: '{print $2}')
       $bindir/pivy-tool -g $guid -a eccp256 generate 9e
+    elif [[ "$chuid" == "false" ]]; then
+      continue
     fi
     cak="$($bindir/pivy-tool -g $guid pubkey 9e)"
 
