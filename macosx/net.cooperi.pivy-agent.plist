@@ -11,11 +11,12 @@
         <string>@@GUID@@</string>
         <string>-K</string>
         <string>@@CAK@@</string>
+        <string>-i</string>
+        <string>-a</string>
+        <string>@@HOME@@/.ssh/pivy-agent.sock</string>
     </array>
-    <key>StandardOutPath</key>
-    <string>@@HOME@@/.ssh/agent.env</string>
     <key>StandardErrorPath</key>
-    <string>@@HOME@@/.ssh/agent.out</string>
+    <string>@@HOME@@/Library/Logs/pivy-agent.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

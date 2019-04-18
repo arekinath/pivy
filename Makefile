@@ -15,6 +15,8 @@ CURL		= curl -k
 prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
 
+VERSION		= 0.1.4
+
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
@@ -288,9 +290,10 @@ pivy-agent: $(AGENT_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 clean:
 	rm -f pivy-tool $(PIVTOOL_OBJS)
 	rm -f pivy-agent $(AGENT_OBJS)
-	rm -f piv-zfs $(PIVZFS_OBJS)
-	rm -f ebox $(EBOX_OBJS)
+	rm -f pivy-box $(EBOX_OBJS)
+	rm -f pivy-zfs $(PIVZFS_OBJS)
 	rm -fr .dist
+	rm -fr macosx/root macosx/*.pkg
 
 distclean: clean
 	rm -fr libressl
@@ -318,6 +321,26 @@ install_common: pivy-tool pivy-agent pivy-box
 
 ifeq ($(SYSTEM), Darwin)
 install: install_common
+	install -o root -g wheel -m 0755 -d $(DESTDIR)/etc/paths.d
+	echo "$(bindir)" > $(DESTDIR)/etc/paths.d/pivy
+	install -o root -g wheel -m 0755 -d $(DESTDIR)$(prefix)/share
+	install -o root -g wheel -m 0644 macosx/net.cooperi.pivy-agent.plist \
+	    $(DESTDIR)$(prefix)/share
+
+.PHONY: package
+package:
+	$(MAKE) install DESTDIR=macosx/root/ prefix=/opt/pivy
+	pkgbuild --root macosx/root \
+	    --identifier net.cooperi.pivy \
+	    --version $(VERSION) \
+	    --ownership recommended \
+	    --scripts macosx/scripts \
+	    macosx/output.pkg
+	productbuild --distribution macosx/distribution.xml \
+	    --resources macosx/resources \
+	    --package-path macosx \
+	    --version $(VERSION) \
+	    macosx/pivy-$(VERSION).pkg
 
 .dist/net.cooperi.pivy-agent.plist: net.cooperi.pivy-agent.plist .dist pivy-tool
 	@./pivy-tool list

@@ -1,0 +1,10 @@
+#!/bin/bash
+set -ex
+user="$(/usr/bin/python -c 'from SystemConfiguration import SCDynamicStoreCopyConsoleUser; import sys; username = (SCDynamicStoreCopyConsoleUser(None, None, None) or [None])[0]; username = [username,""][username in [u"loginwindow", None, u""]]; sys.stdout.write(username + "\n");')"
+HOME="/Users/${user}"
+uagents="$HOME/Library/LaunchAgents"
+plist="net.cooperi.pivy-agent.plist"
+
+if /usr/bin/su "$user" -c "/bin/launchctl list \"net.cooperi.pivy-agent\"" > /dev/null; then
+    /usr/bin/su "$user" -c "/bin/launchctl unload \"$uagents/$plist\""
+fi

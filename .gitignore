@@ -5,3 +5,5 @@
 /pivy-tool
 /pivy-zfs
 /pivy-box
+/macosx/*.pkg
+/macosx/root
