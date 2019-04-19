@@ -14,6 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <limits.h>
+#include <errno.h>
 #include <sys/errno.h>
 
 #include "libssh/sshkey.h"
