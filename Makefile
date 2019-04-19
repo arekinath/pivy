@@ -5,6 +5,7 @@ LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_
 
 LIBRESSL_INC	= $(CURDIR)/libressl/include
 LIBRESSL_LIB	= $(CURDIR)/libressl/crypto/.libs
+LIBCRYPTO	= $(LIBRESSL_LIB)/libcrypto.a
 
 HAVE_ZFS	:= no
 USE_ZFS		?= no
@@ -142,7 +143,7 @@ pivy-tool :		LIBS+=		$(PIVTOOL_LIBS)
 pivy-tool :		LDFLAGS+=	$(PIVTOOL_LDFLAGS)
 pivy-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 
-pivy-tool: $(PIVTOOL_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-tool: $(PIVTOOL_OBJS) $(LIBCRYPTO)
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
 
 EBOX_SOURCES=			\
@@ -185,7 +186,7 @@ pivy-box :		LIBS+=		$(EBOX_LIBS)
 pivy-box :		LDFLAGS+=	$(EBOX_LDFLAGS)
 pivy-box :		HEADERS=	$(EBOX_HEADERS)
 
-pivy-box: $(EBOX_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-box: $(EBOX_OBJS) $(LIBCRYPTO)
 	$(CC) $(LDFLAGS) -o $@ $(EBOX_OBJS) $(LIBS)
 
 
@@ -231,7 +232,7 @@ pivy-zfs :		LIBS+=		$(PIVZFS_LIBS)
 pivy-zfs :		LDFLAGS+=	$(PIVZFS_LDFLAGS)
 pivy-zfs :		HEADERS=	$(PIVZFS_HEADERS)
 
-pivy-zfs: $(PIVZFS_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-zfs: $(PIVZFS_OBJS) $(LIBCRYPTO)
 	$(CC) $(LDFLAGS) -o $@ $(PIVZFS_OBJS) $(LIBS)
 
 all: pivy-zfs
@@ -277,10 +278,10 @@ pivy-agent :		LIBS+=		$(AGENT_LIBS)
 pivy-agent :		LDFLAGS+=	$(AGENT_LDFLAGS)
 pivy-agent :		HEADERS=	$(AGENT_HEADERS)
 
-pivy-agent: $(AGENT_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-agent: $(AGENT_OBJS) $(LIBCRYPTO)
 	$(CC) $(LDFLAGS) -o $@ $(AGENT_OBJS) $(LIBS)
 
-%.o: %.c $(HEADERS) $(LIBRESSL_INC) $(LIBRESSL_LIB)/libcrypto.a
+%.o: %.c $(HEADERS) $(LIBRESSL_INC) $(LIBCRYPTO)
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
