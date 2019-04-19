@@ -15,7 +15,7 @@ CURL		= curl -k
 prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
 
-VERSION		= 0.1.4
+VERSION		= 0.1.5
 
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
