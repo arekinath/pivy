@@ -961,6 +961,20 @@ ebox_ephem_count(const struct ebox *ebox)
 	return (n);
 }
 
+void *
+ebox_private(const struct ebox *ebox)
+{
+	return (ebox->e_priv);
+}
+
+void *
+ebox_alloc_private(struct ebox *ebox, size_t sz)
+{
+	VERIFY(ebox->e_priv == NULL);
+	ebox->e_priv = calloc(1, sz);
+	return (ebox->e_priv);
+}
+
 errf_t *
 sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 {
