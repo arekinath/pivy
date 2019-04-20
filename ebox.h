@@ -111,6 +111,9 @@ enum ebox_type ebox_type(const struct ebox *ebox);
 uint ebox_ephem_count(const struct ebox *ebox);
 void ebox_free(struct ebox *box);
 
+void *ebox_private(const struct ebox *ebox);
+void *ebox_alloc_private(struct ebox *ebox, size_t sz);
+
 struct ebox_tpl *ebox_tpl(const struct ebox *ebox);
 
 struct ebox_config *ebox_next_config(const struct ebox *box,
