@@ -190,13 +190,11 @@ pivy-box: $(EBOX_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 
 
 PIVZFS_SOURCES=			\
-	piv-zfs.c		\
+	pivy-zfs.c		\
 	tlv.c			\
 	piv.c			\
 	debug.c			\
 	bunyan.c		\
-	json.c			\
-	custr.c			\
 	errf.c			\
 	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
@@ -204,9 +202,7 @@ PIVZFS_HEADERS=			\
 	tlv.h			\
 	piv.h			\
 	bunyan.h		\
-	json.h			\
 	errf.h			\
-	custr.h			\
 	debug.h
 
 ifeq (yes, $(HAVE_ZFS))
@@ -230,20 +226,20 @@ PIVZFS_LIBS=		$(PCSC_LIBS) \
 			$(RDLINE_LIBS) \
 			$(SYSTEM_LIBS)
 
-piv-zfs :		CFLAGS=		$(PIVZFS_CFLAGS)
-piv-zfs :		LIBS+=		$(PIVZFS_LIBS)
-piv-zfs :		LDFLAGS+=	$(PIVZFS_LDFLAGS)
-piv-zfs :		HEADERS=	$(PIVZFS_HEADERS)
+pivy-zfs :		CFLAGS=		$(PIVZFS_CFLAGS)
+pivy-zfs :		LIBS+=		$(PIVZFS_LIBS)
+pivy-zfs :		LDFLAGS+=	$(PIVZFS_LDFLAGS)
+pivy-zfs :		HEADERS=	$(PIVZFS_HEADERS)
 
-piv-zfs: $(PIVZFS_OBJS) $(LIBRESSL_LIB)/libcrypto.a
+pivy-zfs: $(PIVZFS_OBJS) $(LIBRESSL_LIB)/libcrypto.a
 	$(CC) $(LDFLAGS) -o $@ $(PIVZFS_OBJS) $(LIBS)
 
-all: piv-zfs
+all: pivy-zfs
 
-install_pivzfs: piv-zfs install_common
-	install -o root -g wheel -m 0755 piv-zfs $(DESTDIR)$(bindir)
-install: install_pivzfs
-.PHONY: install_pivzfs
+install_pivyzfs: pivy-zfs install_common
+	install -o root -g wheel -m 0755 pivy-zfs $(DESTDIR)$(bindir)
+install: install_pivyzfs
+.PHONY: install_pivyzfs
 
 endif
 
