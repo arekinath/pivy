@@ -1869,9 +1869,13 @@ check_select_key(void)
 
 	if (guid_len == 0) {
 		err = piv_enumerate(ctx, &t);
-		if (err)
+		if (err) {
 			errfx(EXIT_IO_ERROR, err,
 			    "failed to enumerate PIV tokens");
+		}
+		if (t == NULL) {
+			errx(EXIT_NO_CARD, "no PIV cards/tokens found");
+		}
 		if (piv_token_next(t) != NULL) {
 			errx(EXIT_NO_CARD, "multiple PIV cards "
 			    "present and no system token set; you "
