@@ -42,6 +42,7 @@
 
 #include "libssh/ssherr.h"
 
+#if !defined(__sun)
 static void
 ultos(uint64_t n, int base, char *s)
 {
@@ -105,6 +106,7 @@ assfail3(const char *assertion, uintmax_t lv, const char *op, uintmax_t rv,
 	(void) strcat(buf, ")");
 	assfail(buf, filename, line_num);
 }
+#endif
 
 const char *
 ssh_err(int n)
