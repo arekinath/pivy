@@ -371,6 +371,7 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 
 	err = piv_find(ebox_ctx, piv_box_guid(box), GUID_LEN, &tokens);
 	if (errf_caused_by(err, "NotFoundError")) {
+		erfree(err);
 		err = piv_enumerate(ebox_ctx, &tokens);
 		if (err && agerr) {
 			err = errf("AgentError", agerr, "ssh-agent unlock "
