@@ -2404,6 +2404,8 @@ ebox_decrypt_recovery(struct ebox *box)
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
+	/* TODO: support non-authenticated ciphers by adding an HMAC? */
+	VERIFY3U(authlen, >, 0);
 
 	iv = box->e_rcv_iv.b_data;
 	VERIFY(iv != NULL);
@@ -2497,6 +2499,8 @@ ebox_encrypt_recovery(struct ebox *box)
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
+	/* TODO: support non-authenticated ciphers by adding an HMAC? */
+	VERIFY3U(authlen, >, 0);
 
 	plainlen = box->e_rcv_plain.b_len;
 	padding = blocksz - (plainlen % blocksz);

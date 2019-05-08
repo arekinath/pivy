@@ -4217,6 +4217,8 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	authlen = cipher_authlen(cipher);
 	blocksz = cipher_blocksize(cipher);
 	keylen = cipher_keylen(cipher);
+	/* TODO: support non-authenticated ciphers by adding an HMAC */
+	VERIFY3U(authlen, >, 0);
 
 	dgalg = ssh_digest_alg_by_name(box->pdb_kdf);
 	if (dgalg == -1) {
