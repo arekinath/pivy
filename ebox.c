@@ -178,7 +178,8 @@ enum ebox_part_tag {
 	EBOX_PART_CAK = 3,
 	EBOX_PART_GUID = 4,
 	EBOX_PART_BOX = 5,
-	EBOX_PART_SLOT = 6
+	EBOX_PART_SLOT = 6,
+	EBOX_PART_OPTIONAL_FLAG = 0x80,
 };
 
 #define	EBOX_STREAM_DEFAULT_CHUNK	(128 * 1024)
@@ -704,7 +705,7 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 		goto out;
 	}
 	while (tag != EBOX_PART_END) {
-		switch (tag) {
+		switch (tag & ~EBOX_PART_OPTIONAL_FLAG) {
 		case EBOX_PART_PUBKEY:
 			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
 				err = ssherrf("sshbuf_get_cstring8", rc);
@@ -780,6 +781,15 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 			}
 			break;
 		default:
+			if ((tag & EBOX_PART_OPTIONAL_FLAG) != 0) {
+				rc = sshbuf_skip_string8(buf);
+				if (rc) {
+					err = ssherrf("sshbuf_skip_string8",
+					    rc);
+					goto out;
+				}
+				break;
+			}
 			err = errf("UnknownTagError", NULL, "unknown tag %d "
 			    "at +%lx", tag, buf->off);
 			goto out;
@@ -1636,7 +1646,7 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 		goto out;
 	}
 	while (tag != EBOX_PART_END) {
-		switch (tag) {
+		switch (tag & ~EBOX_PART_OPTIONAL_FLAG) {
 		case EBOX_PART_PUBKEY:
 			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
 				err = ssherrf("sshbuf_get_cstring8", rc);
@@ -1803,6 +1813,15 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 			box = NULL;
 			break;
 		default:
+			if ((tag & EBOX_PART_OPTIONAL_FLAG) != 0) {
+				rc = sshbuf_skip_string8(buf);
+				if (rc) {
+					err = ssherrf("sshbuf_skip_string8",
+					    rc);
+					goto out;
+				}
+				break;
+			}
 			err = errf("TagError", NULL,
 			    "invalid ebox part tag 0x%02x at +%lx",
 			    tag, buf->off);
