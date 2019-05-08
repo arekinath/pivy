@@ -1,0 +1,4 @@
+language: c
+os: osx
+osx_image: xcode9.2
+script: make && sudo make package
