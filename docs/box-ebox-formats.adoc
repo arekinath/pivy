@@ -1,0 +1,639 @@
+:toc: left
+:source-highlighter: pygments
+:doctype: book
+:idprefix:
+:docinfo:
+
+# Box and Ebox formats
+Alex Wilson <alex.wilson@joyent.com>
+v2.0, 2019-05-09
+
+## Motivation
+
+:url-rfd77: https://github.com/joyent/rfd/blob/master/rfd/0077/README.adoc
+:url-cbox: https://libsodium.gitbook.io/doc/public-key_cryptography/authenticated_encryption
+
+In {url-rfd77}[RFD 77], we explore the background, constraints, and overall
+design of a system for managing at-rest encryption keys in the context of
+Triton and Manta (Joyent's major software products). As part of this design,
+we specify the storage of key material in "boxes", which are designed to
+protect the key material such that it can only be retrieved with the usage of
+a hardware token device (a PIV-compatible token such as a Yubico YubiKey).
+
+The format for such storage is inspired by the {url-cbox}[`crypto_box` functions
+from libsodium], in particular the "sealed box" primitive, which anonymously
+encrypts data such that it can be retrieved by the holder of a particular EC
+private key.
+
+In RFD 77, we extend the sealed box idea by specifying a system for "recovery"
+in case the original recipient private key of the sealed box is unavailable
+(e.g. due to hardware device failure). In this system, as well as the original
+recipient key, the box can also be "unsealed" by a using a threshold
+scheme of N out of M "recovery" private keys.
+
+In this way, systems may have a primary hardware device which can unlock each
+system's data on its own, and in the face of failure of that device, have the
+data recovered by administrators using a "two-person" or "N-person" rule.
+
+The storage formats specified in this document are designed to implement this
+concept.
+
+## Storage format primitives
+
+Rather than completely developing our own storage format and parsing code for
+it, we re-use the OpenSSH wire format parser-generators (found in `sshbuf.c` and
+friends in the OpenSSH code). These provide battle-hardened length-checked
+serialization and de-serialization already for numbers, strings and byte
+buffers, as well as pre-made formats for storing EC curve points and keys.
+
+The basic serialization format types we use from OpenSSH:
+
+ * `uint8` -- an unsigned 8-bit integer
+ * `uint` -- an unsigned 32-bit big-endian integer
+ * `uint64` -- an unsigned 64-bit big-endian integer
+ * `string` -- a byte string, which consists of a `uint` length followed by
+   that many bytes
+ * `cstring` -- identical to `string` except the API will only accept and return
+   values with a C-style zero terminating byte, and checks the data in the
+   byte string does not contain any other zero bytes
+ * `bignum` -- stores a "bigint" (an arbitrary precision integer) as a `string`,
+   with a leading sign bit
+ * `eckey` -- stores an EC curve point (both X and Y values) as a `string` in
+   the standard format, always uncompressed (so the first byte is `0x04`)
+ * `key` -- stores an arbitrary SSH-format public key, inside a `string`,
+   including a type prefix so it may be EC or RSA or other types
+
+To these we also add:
+
+ * `string8` -- a byte string like `string` but with a `uint8` length rather
+   than `uint`
+ * `cstring8` -- like `string8` but for `cstring`
+ * `bignum8` -- like `string8` but for `bignum`
+ * `eckey8` -- a byte string in `string8` format containing a standard EC curve
+   point (public key), always compressed (so the first byte is `0x02` or `0x03`
+   depending on sign)
+
+These additional types are added for compactness in certain contexts (the Ebox
+section will explain in more detail why compactness is needed).
+
+## The Box primitive
+
+Like the libsodium "sealed box", the core components of our Box primitive
+consist of:
+
+ * An ephemeral EC private key and matching public key;
+ * A nonce;
+ * ECDH, deriving a shared secret from the ephemeral and recipient EC keys;
+ * A hash function, used to combine the ECDH output with the nonce; and
+ * The message data, which we encrypt with an authenticated stream cipher,
+   using the output of the hash function as key.
+
+Unlike the libsodium "sealed box", we make some different choices in specific
+algorithms and methods, due to the constraints of working with existing hardware
+devices:
+
+ * The PIV standard only supports ECDH on the NIST P-family curves (namely
+   P-256, P-384 and P-521), so we use these instead of Curve25519.
+ * We use SHA-512 as our KDF hash, instead of the HSalsa20 construction used
+   by libsodium, since it's more readily accessible from OpenSSL and compatible
+   libcrypto implementations (and language-specific crypto libraries). The
+   symmetric key is calculated as `SHA512(ECDH shared secret || nonce)` where
+   `||` represents string concatenation.
+ * We generate our nonce randomly rather than based on a hash of the public keys
+   (for reasons explained further in the Ebox section).
+
+### Storage format
+
+[svgbob]
+....
+  +----------+--------------------+
+  | uint8[2] : magic              | <---  always 0xB0, 0xC5
+  +----------+--------------------+
+  | uint8    : version            | <---  2
+  +==========+====================+
+  | uint8    : "guid/slot valid"  | <---  "0 (false)" or "1 (true)"
+  +----------+--------------------+
+  | string8  : guid               | <-.
+  +----------+--------------------+   +-- "all 0" if "guid/slot valid = 0"
+  | uint8    : slotid             | <-'
+  +==========+====================+
+  | cstring8 : cipher             | <--- e.g. "chacha20-poly1305"
+  +----------+--------------------+
+  | cstring8 : KDF                | <--- e.g. "sha512"
+  +==========+====================+
+  | string8  : nonce              |
+  +----------+--------------------+
+  | cstring8 : curve              | <--- e.g. "nistp256"
+  +----------+--------------------+
+  | eckey8   : recipient pubkey   |
+  +----------+--------------------+
+  | eckey8   : ephemeral pubkey   |
+  +==========+====================+
+  | string8  : IV                 |
+  +----------+--------------------+
+  | string   : ciphertext + tag   |
+  +----------+--------------------+
+....
+
+Important notes:
+
+ * Only `cipher` values which constitute an authenticated cipher are allowed
+   (e.g. `chacha20-poly1305` or `aes256-ccm`).
+ * Nonces are expected to be generated as 128 uniform random bits.
+   Implementations may accept shorter lengths, but should generate at least 16
+   bytes on output.
+ * A zero-length IV is interpreted as all zeroes up to the length required. For
+   ChaCha20-Poly1305 the current implementation always uses a zero IV.
+
+### Example data
+
+[svgbob]
+....
+            | +0                                      | +8                                     | +10
+            |                                         |                                        |
+            /  magic   ver  g/sv  *-- guid --->                                                \ 
+            +---------+----+----+----+----------------------------------------------------------
+00000000    | b0   c5 | 02 | 01 | 10 : 56   2a   20      e4   2e   d0   e5   81   3c   53   0e
+            +---------+----+----+----+----------------------------------------------------------
+                                      slot  *-- cipher --->
+           --------------------------+----+----+------------------------------------------------
+00000010      d7   fe   75   be   92 | 9d | 11 : 63      68   61   63   68   61   32   30   2d
+           --------------------------+----+----+------------------------------------------------
+              "(chacha20-poly1305)"                      *-- kdf --->           "(sha512)"  *-->
+           --------------------------------------------+----+-----------------------------+-----
+00000020      70   6f   6c   79   31   33   30   35    | 06 : 73   68   61   35   31   32 | 10 :
+           --------------------------------------------+----+-----------------------------+-----
+              ---> nonce --->                          
+           -+----------------------------------------------------------------------------------+
+00000030    : dd   35   c2   36   11   b6   5b   b3      b3   5e   1b   4a   2e   15   d3   54 |
+           -+----------------------------------------------------------------------------------+
+             *-- curve --->                    "(nistp256)"   *-- recipient pubkey --->
+            +----+------------------------------------------+----+----+-------------------------
+00000040    | 08 : 6e   69   73   74   70   32   35      36 | 21 : 03 : c1   45   fb   5a   10
+            +----+------------------------------------------+----+----+-------------------------
+               ---> recipient pubkey --->              
+            ------------------------------------------------------------------------------------
+00000050      38   65   72   b6   40   4d   8f   f8      5f   cc   dd   71   01   c0   80   70
+            ------------------------------------------------------------------------------------
+                                                                       *-- ephemeral pubkey --->
+            ----------------------------------------------------------+----+----+---------------
+00000060      ec   a2   be   35   68   dc   2c   ff      ea   14   50 | 21 : 03 : 29   04   49
+            ----------------------------------------------------------+----+----+---------------
+                                                       
+            ------------------------------------------------------------------------------------
+00000070      5f   e5   dc   a0   98   99   15   43      2c   e6   a3   93   5a   bf   98   a0
+            ------------------------------------------------------------------------------------
+                                                                                  iv   *------>
+            --------------------------------------------------------------------+----+----------
+00000080      7a   90   ff   10   ef   7b   00   d8      47   47   ba   41   6a | 00 | 00   00
+            --------------------------------------------------------------------+----+----------
+             --> ciphertext + tag  --->                
+            ----------+-------------------------------------------------------------------------
+00000090      00   18 : 58   53   5d   d8   45   0a      ec   3a   69   c0   de   64   ab   25
+            ----------+-------------------------------------------------------------------------
+                                                       
+            -----------------------------------------------------+
+000000a0      d2   04   34   06   0e   36   88   00      08   59 |
+            -----------------------------------------------------+
+....
+
+
+## The Ebox primitive
+
+:url-sss: https://github.com/dsprenkels/sss
+
+Conceptually, the Ebox is a series of Box primitives formatted together.
+For a "primary" token, a single Box is generated with the final key directly
+contained within it. For each set of "recovery" tokens, and each token in
+that set, a Box is generated that contains a "key share" instead.
+
+We refer to each of the possible ways to get to the final key for an Ebox
+as "configurations" -- either a primary configuration containing one primary
+token, or a recovery configuration containing a threshold set.
+
+For recovery configurations, we use GF^256 Shamir secret sharing (taking the
+implementation from {url-sss}[dsprenkel's SSS library]) to generate and
+recombine the key shares into a single 32-byte intermediate key. This
+intermediate key then is used to symmetrically encrypt a "recovery box" which
+contains the final key. This construction allows the final key to be of
+arbitrary length (GF^256 secret sharing can only store 32 bytes exactly),
+authenticates the output data (so we can detect corrupted shares reliably), and
+allows the storage of additional data that is only available after recovery (a
+useful feature for RFD77).
+
+The two possible processes for arriving at the final key from an ebox are
+shown below:
+
+[svgbob]
+....
++-----------------+-----+   unseal
+|Primary config   | box |---------------+
++-----------------+-----+               |
+                                        |
+                                        |
+                                        |
+                                        |
+                                        |                                                +--------------+
+                                        +---------------------------+------------------->|Final key     |
+                                                                    ^                    +--------------+
+                                                                    |
+                                                                    |
+                                                                    |
++-----------------+-----+   unseal  +------+   GF^256 SS       +-----+-------+
+|Recovery config  | box +---------->|share +--------+          |recovery box +-----> "(additional info)"
+|                 +-----+           +------+        |          |contents     |
+| N=2             | box +---------->|share +--------+          +-------------+
+|                 +-----+           +------+        |                ^
+|                 | box |                           |                |
++-----------------+-----+                           |                | aes256-gcm
+                                                    |                |
+                                                    |       +--------+---+
+                                                    +------>|intermediate|
+                                                            |key         |
+                                                            +------------+
+
+....
+
+The Ebox storage format has to fit into ZFS pool properties (or Linux LUKS
+token metadata slots), which have a limited size. ZFS pool properties must be
+under 8KB, while LUKS metadata slots are limited to closer to 2KB. This can be
+a tight constraint when dealing with recovery configurations that may contain
+boxes for 20 or more different keys. In order to make the Ebox format as compact
+as possible, we avoid storing redundant information, and also make a notable
+change to the Box format design above.
+
+Within the Ebox, all the Box primitives stored whose recipient key is on a given
+curve use the same shared ephemeral key. This means that the nonce value is
+of critical importance in the case where the same recipient key occurs more than
+once in the Ebox (e.g. in two different recovery configurations). This is
+unlike in the regular Box primitive, where the nonce is more or less just
+insurance (since no two Boxes should have the same ephemeral key).
+
+The set of ephemeral public keys (one for each curve) used by the Ebox are
+stored in the header independently of the embedded Boxes.
+
+### Storage format
+
+Several parts of the storage format for Ebox primitives may repeat an arbitrary
+number of times. These are either preceeded by a count of the number of
+repetitions, or (in the case of the part information structure) have a unique
+ending tag.
+
+The overall structure contains the components discussed above:
+
+ * Basic metadata (magic number, version, etc)
+ * The recovery box (which is unlocked by the intermediate key)
+ * Ephemeral keys (one for each curve used)
+ * Configurations, each containing:
+   ** Metadata about the configuration (whether it is PRIMARY or RECOVERY,
+      and if the latter, the value of N)
+   ** Some number of "parts" which each represent one participating key (PRIMARY
+      configurations must have exactly 1 part) and contain:
+      *** A Box containing either the final key (PRIMARY) or a secret-sharing
+          piece of the intermediate key (RECOVERY)
+      *** Metadata about the part (GUID, slot, a friendly name, etc)
+
+A type-tagged structure is used for the part metadata fields, which may seem
+complex, but allows for easy future extensibility if additional information
+about a part is found useful or required. Unless the `OPTIONAL` flag on the tag
+is set, implementations must abort parsing and return an error upon encountering
+a tag they do not recognise. OPTIONAL tags are required to be of a determinable
+length (they contain a `string8` always), but other tags are not, making
+skipping over them without knowledge of their exact structure impossible. This
+is intended to encourage parsers to exhibit the correct abort-on-unknown
+behaviour (by giving implementors no other real option).
+
+Adding additional type tags which are not OPTIONAL should be considered a
+format-breaking change and bump the top-level version number in the structure.
+
+[svgbob]
+....
+                                o-- ebox --o
+                    +----------+---------------------------+
+                    | uint8[2] : magic                     | <---  always 0xEB, 0x0C
+                    +----------+---------------------------+                    +---------+---+
+                    | uint8    : version                   | <---  2            |TEMPLATE : 1 |
+                    +----------+---------------------------+                    |KEY      : 2 |
+                    | uint8    : type                      | <------------------|STREAM   : 3 |
+                    +==========+===========================+                    +---------+---+
+                    | cstring8 : recovery cipher           | <--- e.g. "chacha20-poly1305"
+                    +----------+---------------------------+
+                    | string8  : recovery IV               |
+                    +----------+---------------------------+
+                    | string8  : recovery ciphertext + tag |
+                    +==========+===========================+
+                    | uint8    : number of ephems          |
+               .--  +==========+===========================+
+               |    | cstring8 : curve                     |
+  repeat  -----+    +----------+---------------------------+
+               |    | eckey8   : ephemeral pubkey          |
+               '--  +==========+===========================+
+                    | uint8    : number of configs         |           +----------+---+
+             .--    +==========+===========================+           |PRIMARY   : 1 |
+             |      | uint8    : config type               | <---------|RECOVERY  : 2 |
+             |      +----------+---------------------------+           +----------+---+
+             |      | uint8    : N                         | <--- always 1 if "(config type = PRIMARY)"
+  repeat ----+      +----------+---------------------------+
+             |      | uint8    : number of parts (M)       |
+             |   .- +==========+===========================+
+  repeat --- | --+  | ...      : part information          |  -------.
+             '-- '- +==========+===========================+         |
+                                                                     |
+                                       .-----------------------------'
+                                       |
+                                       v
+
+                              o-- ebox part --o
+               .--  +==========+===========================+                +--------------+------+
+               |    | uint8    : tag                       | <--------------| PUBKEY       : 1    |
+  repeat  -----+    +----------+---------------------------+                | NAME         : 2    |
+               |    | ...      : tag-specific              | -------.       | CAK          : 3    |
+               '--  +==========+===========================+        |       | GUID         : 4    |
+                    | uint8    : end tag                   | <--- always 0  | BOX          : 5    |
+                    +----------+---------------------------+        |       | SLOT         : 6    |
+                                                                    |       +--------------+------+
+                                                                    |       | OPTIONAL     : 0x80 |
+                                       .----------------------------'       +--------------+------+
+                                       v
+
+                             o-- tag-specific --o
+                    +----------+---------------------------+
+                    | uint8    : tag = GUID                |
+                    +==========+===========================+
+                    | string8  : guid value                |
+                    +----------+---------------------------+
+
+                    +----------+---------------------------+
+                    | uint8    : tag = SLOT                |
+                    +==========+===========================+
+                    | uint8    : slot ID                   |
+                    +----------+---------------------------+
+
+                    +----------+---------------------------+
+                    | uint8    : tag = NAME                |
+                    +==========+===========================+
+                    | cstring8 : friendly name for part    |
+                    +----------+---------------------------+
+
+                    +----------+---------------------------+
+                    | uint8    : tag = CAK                 |
+                    +==========+===========================+
+                    | key      : cak (9e) pubkey           | <--- might not be an EC key (RSA)
+                    +----------+---------------------------+
+
+                    +----------+---------------------------+
+                    | uint8    : tag = BOX                 |
+                    +==========+===========================+
+                    | cstring8 : cipher                    | <--- e.g. "chacha20-poly1305"
+                    +----------+---------------------------+
+                    | cstring8 : KDF                       | <--- e.g. "sha512"
+                    +----------+---------------------------+
+                    | string8  : nonce                     | <--- at least 16 bytes (128 bits)
+                    +----------+---------------------------+
+                    | cstring8 : curve                     | <--- e.g. "nistp256"
+                    +----------+---------------------------+
+                    | eckey8   : recipient pubkey          |
+                    +----------+---------------------------+
+                    | string8  : IV                        |
+                    +----------+---------------------------+
+                    | string   : ciphertext + tag          |
+                    +----------+---------------------------+
+
+                    +----------+---------------------------+
+                    | uint8    : tag = "OPTIONAL | ???"    | <--- bitwise OR
+                    +==========+===========================+
+                    | string8  : data                      | <--- for future extensibility
+                    +----------+---------------------------+
+....
+
+Important notes:
+
+ * Cipher choice and IV values follow the same rules and caveats as for the Box
+   structure, above.
+ * Nonce values in the Ebox structure must be at least 128 bits (16 bytes)
+   in length (due to the duplicate key issue discussed above). Implementations
+   must reject shorter nonces.
+ * The GUID and slot fields in part metadata refer, respectively, to the PIV
+   CHUID UUID written into a PIV device at personalisation time, and the
+   PIV "key reference" value (normally `0x9D` for the Key Management Key slot)
+   on the device storing the recipient key.
+ * The "CAK" key metadata field refers to the Card Authentication Key (slot
+   reference `0x9E`), which PIV clients use to verify the authenticity of the
+   device before providing it with any sensitive information. It is
+   particularly important for PRIMARY configurations, where it is used to
+   authenticate the device before asking the user to supply a PIN/password to
+   unlock the use of the actual key material.
+
+### Example data
+
+TODO: eboxes are pretty big, this will be a hueg diagram
+
+## Recovery challenge-responses
+
+In order to allow Ebox recovery to proceed when some (or all) of a set of
+recovery tokens are not physically present on the machine performing recovery,
+we also specify here a system and set of formats for using challenge and
+response message pairs in a secure manner to make use of a remote device.
+
+The challenge-response system is the purpose behind the "GUID/slot valid"
+field in the Box structure, which allows the construction of a Box with a
+recipient key that is not actually in a hardware device.
+
+The recovery machine generates a temporary EC key pair in memory (which it
+must endeavour to prevent any possiblity of being written out to disk -- e.g.
+by using `mlockall()`, `MADV_DONTDUMP` and other OS facilities). The outgoing
+challenge values include the public key of this temporary pair, and the
+responses generated by each remote machine will be placed in a box using that
+public key as the recipient key.
+
+In this way, the responses are not replayable or easily manipulated, as they are
+effectively authenticated and the temporary key pair will be destroyed at
+termination of the recovery attempt. The challenges, however, are subject to
+potential replay attacks, and we attempt to mitigate this by including
+information making them unique.
+
+Challenges are enclosed in a single Box primitive whose recipient key is the
+same hardware device key which is the recipient on the secret-sharing piece box
+in the Ebox structure. The original secret-sharing box is enclosed within it,
+verbatim.
+
+### Additional information and verification words
+
+As mentioned above, the challenge message includes additional information to
+try to help operators prevent replay attacks on the challenge-response process.
+This information includes:
+
+ * The hostname of the machine generating the challenge;
+ * The exact time at which the challenge was generated;
+ * A description string which includes the name of the filesystem being
+   unlocked or file being decrypted; and
+ * A set of 4 randomly chosen English words called the "verification words".
+
+The verification words are printed in plaintext separately to the challenge
+message on the machine generating the challenge. The intended use is for an
+operator to copy-paste the challenge message through instant messaging or
+chat to another staff member, and then place a voice call or SMS message or use
+another communication tool to transport the expected verification words.
+
+When generating a response to a challenge message, the verification words that
+were contained in the encrypted challenge message are printed out again, so
+that the operator can manually verify them.
+
+The verification word list has been chosen to try to minimise the probability
+of confusion between words in both spoken and written media. The list contains
+exactly 256 words, so that the index into the list is all that is sent in
+the challenge message itself for compactness.
+
+### Storage format
+
+Like the Ebox primitive, the encoding of challenges and responses must be
+as compact as possible. The intended transportation of these messages is over
+some form of workplace chat system or instant messaging, which usually have
+limited message lengths. Longer messages typically lead to more mistakes
+made while copying and pasting between applications.
+
+Challenges and responses are printed and accepted in Base64 encoding, and
+implementations should line-wrap the base64 output at a maximum of 64 characters
+per line. This ensures a low probability of line wrapping happening elsewhere in
+the transportation process accidentally corrupting the message (by e.g. eliding
+characters accidentally near the wrap point).
+
+As mentioned above, both the challenge and response messages are enclosed in a
+Box primitive, serialised as shown earlier. The challenge box is addressed to
+the same hardware key as the key piece box it contains, while the response box
+is addressed to the temporary key generated in memory by the machine performing
+recovery and does not have GUID/slot information.
+
+The structure of the decrypted contents of the challenge and response boxes
+are shown below.
+
+#### Challenge payload
+
+[svgbob]
+....
+                    +----------+--------------------+
+                    | uint8    : version            | <---  1
+                    +----------+--------------------+                +--------------+---+
+                    | uint8    : type               | <--------------| RECOVERY     : 1 |
+                    +----------+--------------------+                +--------------+---+
+                    | uint8    : part id            |
+                    +----------+--------------------+
+                    | eckey8   : temporary key      | <---  "key generated in RAM on the recovery machine"
+                    +==========+====================+
+                    | eckey8   : ephemeral key      | --.
+                    +----------+--------------------+   |
+                    | string8  : nonce              |   |
+                    +----------+--------------------+   +-- "key piece box (other parameters same as outer)"
+                    | string8  : IV                 |   |
+                    +----------+--------------------+   |
+                    | string8  : ciphertext + tag   | --'            +--------------+------+
+               .--  +==========+====================+                | HOSTNAME     : 1    |
+               |    | uint8    : tag                | <--------------| CTIME        : 2    |
+   repeat -----+    +----------+--------------------+                | DESCRIPTION  : 3    |
+               |    | string8  : tag-specific       | -----.         | WORDS        : 4    |
+               '--  +==========+====================+      |         +--------------+------+
+                    | uint8    : end tag            | <--- always 0
+                    +----------+--------------------+      |
+                                                           |
+                                                           |
+                                   .-----------------------'
+                                   |
+                                   v
+
+                    +----------+--------------------+
+                    | uint8    : tag = HOSTNAME     |
+                    +==========+====================+
+                    | cstring8 : hostname           |
+                    +----------+--------------------+
+
+                    +----------+--------------------+
+                    | uint8    : tag = CTIME        |
+                    +==========+====================+
+                    | uint8    : length = 8         |
+                    +----------+--------------------+
+                    | uint64   : time created       |
+                    +----------+--------------------+
+
+                    +----------+--------------------+
+                    | uint8    : tag = DESCRIPTION  |
+                    +==========+====================+
+                    | cstring8 : description        |
+                    +----------+--------------------+
+
+                    +----------+--------------------+
+                    | uint8    : tag = WORDS        |
+                    +==========+====================+
+                    | uint8    : length = 4         |
+                    +----------+--------------------+
+                    | uint8    : word index 0       |
+                    +----------+--------------------+
+                    | uint8    : word index 1       |
+                    +----------+--------------------+
+                    | uint8    : word index 2       |
+                    +----------+--------------------+
+                    | uint8    : word index 3       |
+                    +----------+--------------------+
+....
+
+Important notes:
+
+ * The inner key box is presumed by receivers to have the same cipher, KDF,
+   recipient key etc. as the outer box enclosing the challenge. Implementations
+   constructing new challenges must be careful to ensure this presumption is
+   correct (by choosing the parameters used for the outer Box to match).
+ * Unlike the tag structure used in the Ebox primitive, the information tags
+   in the challenge payload always have a length byte following the tag (note
+   that the "tag-specific" section is listed as a `string8`). Implementations
+   are expected to skip any unknown tags they encounter and ignore their data.
+ * The "part id" field may be randomly generated or chosen sequentially by
+   the machine performing recovery. It is intended primarily to allow
+   de-duplication of responses by the challenge sender. Random generation is
+   recommended, as it may help to reduce the success rate of a replay attack.
+ * Implementations must reject any challenge message which does not contain
+   at least the CTIME and WORDS tags.
+
+#### Response payload
+
+The response payload consists entirely of tagged fields.
+
+[svgbob]
+....
+                                                                     +--------------+------+
+               .--  +==========+====================+                | ID           : 1    |
+               |    | uint8    : tag                | <--------------| KEYPIECE     : 2    |
+   repeat -----+    +----------+--------------------+                +--------------+------+
+               |    | ...      : tag-specific       | -----.
+               '--  +==========+====================+      |
+                    | uint8    : end tag            | <--- always 0
+                    +----------+--------------------+      |
+                                                           |
+                                   .-----------------------'
+                                   |
+                                   v
+
+                    +----------+--------------------+
+                    | uint8    : tag = ID           |
+                    +==========+====================+
+                    | uint8    : part id            | <--- "same as ID in challenge"
+                    +----------+--------------------+
+
+                    +----------+--------------------+
+                    | uint8    : tag = KEYPIECE     |
+                    +==========+====================+
+                    | string8  : key piece          | <--- "contents of the key piece box"
+                    +----------+--------------------+
+
+                    +----------+--------------------+
+                    | uint8    : tag = (else)       |
+                    +==========+====================+
+                    | string8  : data               |
+                    +----------+--------------------+
+....
+
+Important notes:
+
+ * Other than the compulsory ID tag, all tag-specific data must consist of a
+   `string8`. Implementations must skip any unknown tags (assuming they contain
+   a `string8`). All implementations must understand both ID and KEYPIECE.
+ * Implementations must reject any response message that does not contain both
+   ID and KEYPIECE fields.
