@@ -31,15 +31,24 @@
 #include "piv.h"
 #include "libssh/digest.h"
 
+/*
+ * This file contains the API for dealing with ebox structures, as well as
+ * recovery challenge-response messages and ebox streams.
+ *
+ * For background on the ebox format and what it does, see the file
+ * docs/box-ebox-formats.adoc
+ *
+ * Eboxes protect some amount of key material, and give you multiple
+ * "configurations" which are alternative ways to obtain it. Configurations
+ * may either be PRIMARY (in which case unlocking a single piv_ecdh_box gives
+ * you the final key), or RECOVERY (in which case you have to unlock some N out
+ * of the M available).
+ */
+
 enum ebox_type {
 	EBOX_TEMPLATE = 0x01,
 	EBOX_KEY = 0x02,
 	EBOX_STREAM = 0x03
-};
-
-enum ebox_recov_tag {
-	EBOX_RECOV_TOKEN = 0x01,
-	EBOX_RECOV_KEY = 0x02
 };
 
 enum ebox_config_type {
@@ -62,26 +71,32 @@ struct ebox_challenge;
 struct ebox_stream;
 struct ebox_stream_chunk;
 
+/*
+ * Ebox templates (ebox_tpl_*) store the metadata about possible configurations
+ * separately to an actual ebox, so that they can be kept and re-used for
+ * storing multiple keys.
+ */
 struct ebox_tpl *ebox_tpl_alloc(void);
 void ebox_tpl_free(struct ebox_tpl *tpl);
 uint ebox_tpl_version(const struct ebox_tpl *tpl);
-void *ebox_tpl_private(const struct ebox_tpl *tpl);
-void *ebox_tpl_alloc_private(struct ebox_tpl *tpl, size_t sz);
+
+/* Recursively clones the entire ebox_tpl, all configurations and parts. */
 struct ebox_tpl *ebox_tpl_clone(struct ebox_tpl *tpl);
+
 void ebox_tpl_add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config);
 void ebox_tpl_remove_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config);
+
 struct ebox_tpl_config *ebox_tpl_next_config(const struct ebox_tpl *tpl,
     const struct ebox_tpl_config *prev);
 
 struct ebox_tpl_config *ebox_tpl_config_alloc(enum ebox_config_type type);
 void ebox_tpl_config_free(struct ebox_tpl_config *config);
-void ebox_tpl_config_free_private(struct ebox_tpl_config *config);
-void *ebox_tpl_config_private(const struct ebox_tpl_config *config);
-void *ebox_tpl_config_alloc_private(struct ebox_tpl_config *config, size_t sz);
-errf_t *ebox_tpl_config_set_n(struct ebox_tpl_config *config, uint n);
+
 uint ebox_tpl_config_n(const struct ebox_tpl_config *config);
 enum ebox_config_type ebox_tpl_config_type(
     const struct ebox_tpl_config *config);
+
+errf_t *ebox_tpl_config_set_n(struct ebox_tpl_config *config, uint n);
 void ebox_tpl_config_add_part(struct ebox_tpl_config *config,
     struct ebox_tpl_part *part);
 void ebox_tpl_config_remove_part(struct ebox_tpl_config *config,
@@ -92,51 +107,39 @@ struct ebox_tpl_part *ebox_tpl_config_next_part(
 struct ebox_tpl_part *ebox_tpl_part_alloc(const uint8_t *guid, size_t guidlen,
     enum piv_slotid slot, struct sshkey *pubkey);
 void ebox_tpl_part_free(struct ebox_tpl_part *part);
-void ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name);
-void ebox_tpl_part_set_cak(struct ebox_tpl_part *part, struct sshkey *cak);
-void *ebox_tpl_part_private(const struct ebox_tpl_part *part);
-void *ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz);
-void ebox_tpl_part_free_private(struct ebox_tpl_part *part);
+
+/* Read-only attributes of the part. */
 const char *ebox_tpl_part_name(const struct ebox_tpl_part *part);
+/*
+ * Note that these "struct sshkey *" pointers are owned by the ebox_tpl_part
+ * and should not be modified. They should be const but aren't because of
+ * some sshkey functions.
+ */
 struct sshkey *ebox_tpl_part_pubkey(const struct ebox_tpl_part *part);
 struct sshkey *ebox_tpl_part_cak(const struct ebox_tpl_part *part);
 const uint8_t *ebox_tpl_part_guid(const struct ebox_tpl_part *part);
 enum piv_slotid ebox_tpl_part_slot(const struct ebox_tpl_part *part);
 
+/* These both make a copy of their argument. */
+void ebox_tpl_part_set_name(struct ebox_tpl_part *part, const char *name);
+void ebox_tpl_part_set_cak(struct ebox_tpl_part *part, struct sshkey *cak);
+
+/*
+ * These functions allow an opaque "private" data pointer to be stashed on
+ * a struct ebox_tpl_*, which can be freely used by client applications.
+ */
+void *ebox_tpl_private(const struct ebox_tpl *tpl);
+void *ebox_tpl_alloc_private(struct ebox_tpl *tpl, size_t sz);
+void ebox_tpl_config_free_private(struct ebox_tpl_config *config);
+void *ebox_tpl_config_private(const struct ebox_tpl_config *config);
+void *ebox_tpl_config_alloc_private(struct ebox_tpl_config *config, size_t sz);
+void *ebox_tpl_part_private(const struct ebox_tpl_part *part);
+void *ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz);
+void ebox_tpl_part_free_private(struct ebox_tpl_part *part);
+
+/* Serialise and de-serialise an ebox structure. */
 errf_t *sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
 errf_t *sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
-
-uint ebox_version(const struct ebox *ebox);
-enum ebox_type ebox_type(const struct ebox *ebox);
-uint ebox_ephem_count(const struct ebox *ebox);
-void ebox_free(struct ebox *box);
-
-void *ebox_private(const struct ebox *ebox);
-void *ebox_alloc_private(struct ebox *ebox, size_t sz);
-
-struct ebox_tpl *ebox_tpl(const struct ebox *ebox);
-
-struct ebox_config *ebox_next_config(const struct ebox *box,
-    const struct ebox_config *prev);
-struct ebox_part *ebox_config_next_part(const struct ebox_config *config,
-    const struct ebox_part *prev);
-
-struct ebox_tpl_config *ebox_config_tpl(const struct ebox_config *config);
-struct ebox_tpl_part *ebox_part_tpl(const struct ebox_part *part);
-
-void *ebox_config_private(const struct ebox_config *config);
-void *ebox_config_alloc_private(struct ebox_config *config, size_t sz);
-
-void *ebox_part_private(const struct ebox_part *part);
-void *ebox_part_alloc_private(struct ebox_part *part, size_t sz);
-
-struct piv_ecdh_box *ebox_part_box(const struct ebox_part *part);
-
-errf_t *sshbuf_get_ebox(struct sshbuf *buf, struct ebox **box);
-errf_t *sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
-
-void ebox_stream_free(struct ebox_stream *str);
-void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
 
 /*
  * Creates a new ebox based on a given template, sealing up the provided key
@@ -145,10 +148,91 @@ void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
 errf_t *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
     size_t keylen, const uint8_t *rtoken, size_t rtokenlen,
     struct ebox **pebox);
+void ebox_free(struct ebox *box);
+
+uint ebox_version(const struct ebox *ebox);
+enum ebox_type ebox_type(const struct ebox *ebox);
+uint ebox_ephem_count(const struct ebox *ebox);
 
 const char *ebox_cipher(const struct ebox *box);
 const uint8_t *ebox_key(const struct ebox *box, size_t *len);
 const uint8_t *ebox_recovery_token(const struct ebox *box, size_t *len);
+
+/*
+ * Returns the template "shadow" of the ebox. This is an ebox_tpl that's
+ * owned by the struct ebox (so you must not free or modify it). It contains
+ * a complete copy of a template that would produce this ebox if given the
+ * same key (so it contains the same number of configs and parts and the
+ * parts have all the information on them that's in the ebox).
+ *
+ * The ebox_config_tpl and ebox_part_tpl() functions are conveniences that
+ * return the shadow of a particular ebox_config or ebox_part. For a lot of
+ * the information that you might want to know about an ebox_part, you will
+ * have to use the shadow template (e.g. the friendly name).
+ */
+struct ebox_tpl *ebox_tpl(const struct ebox *ebox);
+struct ebox_tpl_config *ebox_config_tpl(const struct ebox_config *config);
+struct ebox_tpl_part *ebox_part_tpl(const struct ebox_part *part);
+
+struct ebox_config *ebox_next_config(const struct ebox *box,
+    const struct ebox_config *prev);
+struct ebox_part *ebox_config_next_part(const struct ebox_config *config,
+    const struct ebox_part *prev);
+
+/*
+ * Returns a pointer to the ebox part secret box.
+ *
+ * You can and should modify this box by unsealing it, but don't free it (it's
+ * part of the ebox_part). Functions like ebox_unlock() and ebox_recover()
+ * expect you to iterate over the parts in a config and use this method to
+ * retrieve the piv_ecdh_box and call piv_box_open().
+ *
+ * You don't need to call piv_box_take_data() though.
+ */
+struct piv_ecdh_box *ebox_part_box(const struct ebox_part *part);
+
+/* Serialise/de-serialise an ebox */
+errf_t *sshbuf_get_ebox(struct sshbuf *buf, struct ebox **box);
+errf_t *sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
+
+/*
+ * Unlock an ebox using a primary config.
+ *
+ * One of the primary config's part boxes must have been already unsealed
+ * before calling this (see ebox_part_box() and piv_box_open()).
+ *
+ * Errors:
+ *  - InsufficientParts: none of the part boxes were unsealed
+ */
+errf_t *ebox_unlock(struct ebox *ebox, struct ebox_config *config);
+
+/*
+ * Perform recovery on an ebox using a recovery config.
+ *
+ * N out of M of the parts on this config must have been processed with
+ * ebox_challenge_response() before calling this.
+ *
+ * Errors:
+ *  - InsufficientParts: insufficient number of parts available on this config
+ *                       that are ready for recovery
+ *  - AlreadyUnlocked: the ebox is already unlocked or recovered
+ *  - RecoveryFailed: the recovery box data was invalid or corrupt
+ */
+errf_t *ebox_recover(struct ebox *ebox, struct ebox_config *config);
+
+/*
+ * These functions allow an opaque "private" data pointer to be stashed on
+ * a struct ebox_*, which can be freely used by client applications. This is
+ * particularly useful because of functions like ebox_challenge_response() which
+ * give you back a pointer to an ebox_part (so you can then transform that back
+ * into some application-specific information about the part).
+ */
+void *ebox_private(const struct ebox *ebox);
+void *ebox_alloc_private(struct ebox *ebox, size_t sz);
+void *ebox_config_private(const struct ebox_config *config);
+void *ebox_config_alloc_private(struct ebox_config *config, size_t sz);
+void *ebox_part_private(const struct ebox_part *part);
+void *ebox_part_alloc_private(struct ebox_part *part, size_t sz);
 
 /*
  * Generate a challenge for a given recovery config + part.
@@ -159,7 +243,7 @@ const uint8_t *ebox_recovery_token(const struct ebox *box, size_t *len);
  * remote end).
  *
  * Errors:
- *  - ENOMEM: description was too long for available space
+ *  - LengthError: description was too long for available space
  */
 errf_t *ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
     const char *descfmt, ...);
@@ -190,12 +274,20 @@ uint64_t ebox_challenge_ctime(const struct ebox_challenge *chal);
 const uint8_t *ebox_challenge_words(const struct ebox_challenge *chal,
     size_t *len);
 struct sshkey *ebox_challenge_destkey(const struct ebox_challenge *chal);
+
+/*
+ * Returns a pointer to the keybox within the ebox_challenge, in the same style
+ * as ebox_part_box().
+ *
+ * You'll need to call piv_box_open() on this before you can use
+ * sshbuf_put_ebox_challenge_response() to generate a response.
+ */
 struct piv_ecdh_box *ebox_challenge_box(const struct ebox_challenge *chal);
 
 
 /*
- * Serializes a response to an ebox challenge inside a piv_ecdh_box as a
- * one-step process. The c_keybox on chal must be already unsealed.
+ * Generate and serialise a response to an ebox challenge inside a piv_ecdh_box
+ * as a one-step process. The keybox on chal must be already unsealed.
  *
  * The data written in the buf is ready to be transported to the original
  * requesting machine.
@@ -215,30 +307,6 @@ errf_t *sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
 errf_t *ebox_challenge_response(struct ebox_config *config,
     struct piv_ecdh_box *respbox, struct ebox_part **ppart);
 
-/*
- * Unlock an ebox using a primary config.
- *
- * One of the primary config's part boxes must have been already unsealed
- * before calling this.
- *
- * Errors:
- *  - EINVAL: none of the part boxes were unsealed
- */
-errf_t *ebox_unlock(struct ebox *ebox, struct ebox_config *config);
-
-/*
- * Perform recovery on an ebox using a recovery config.
- *
- * N out of M of the parts on this config must have been processed with
- * ebox_challenge_response() before calling this.
- *
- * Errors:
- *  - EINVAL: insufficient number of parts available on this config that are
- *            ready for recovery
- *  - EAGAIN: the ebox is already unlocked or recovered
- *  - EBADF: the recovery box data was invalid or corrupt
- */
-errf_t *ebox_recover(struct ebox *ebox, struct ebox_config *config);
 
 errf_t *sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
 errf_t *sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
@@ -261,5 +329,8 @@ errf_t *ebox_stream_decrypt_chunk(struct ebox_stream_chunk *chunk);
 errf_t *ebox_stream_encrypt_chunk(struct ebox_stream_chunk *chunk);
 const uint8_t *ebox_stream_chunk_data(const struct ebox_stream_chunk *chunk,
     size_t *size);
+
+void ebox_stream_free(struct ebox_stream *str);
+void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
 
 #endif

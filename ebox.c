@@ -143,6 +143,11 @@ enum resptag {
 	RTAG_KEYPIECE = 2,
 };
 
+enum ebox_recov_tag {
+	EBOX_RECOV_TOKEN = 0x01,
+	EBOX_RECOV_KEY = 0x02
+};
+
 struct ebox_challenge {
 	uint8_t c_version;
 	enum ebox_chaltype c_type;
