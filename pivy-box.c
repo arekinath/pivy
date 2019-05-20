@@ -1842,6 +1842,7 @@ interactive_recovery(struct ebox_config *config)
 	uint n, ncur;
 	uint i;
 	char *line;
+    char *b64;
 	errf_t *error;
 	const uint8_t *words;
 	size_t wordlen;
@@ -1948,21 +1949,25 @@ partagain:
 		    "Recovering pivy-box data for part %s",
 		    state->ps_ans->a_text);
 		if (error) {
-                        sshbuf_free(buf);
+			sshbuf_free(buf);
 			return (error);
-                }
+		}
 		chal = ebox_part_challenge(part);
 		sshbuf_reset(buf);
 		error = sshbuf_put_ebox_challenge(buf, chal);
 		if (error) {
-                        sshbuf_free(buf);
+			sshbuf_free(buf);
 			return (error);
-                }
+		}
+		b64 = sshbuf_dtob64(buf);
+		VERIFY(b64 != NULL);
 		fprintf(stderr, "-- Begin challenge for remote device %s --\n",
 		    state->ps_ans->a_text);
-		printwrap(stderr, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+		printwrap(stderr, b64, BASE64_LINE_LEN);
 		fprintf(stderr, "-- End challenge for remote device %s --\n",
 		    state->ps_ans->a_text);
+		free(b64);
+		b64 = NULL;
 
 		words = ebox_challenge_words(chal, &wordlen);
 		fprintf(stderr, "\nVERIFICATION WORDS for %s:",
@@ -2001,7 +2006,7 @@ partagain:
 		state->ps_intent = INTENT_NONE;
 		++ncur;
 	}
-        sshbuf_free(buf);
+	sshbuf_free(buf);
 	return (NULL);
 
 }
