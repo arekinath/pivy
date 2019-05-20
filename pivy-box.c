@@ -1947,13 +1947,17 @@ partagain:
 		error = ebox_gen_challenge(config, part,
 		    "Recovering pivy-box data for part %s",
 		    state->ps_ans->a_text);
-		if (error)
+		if (error) {
+                        sshbuf_free(buf);
 			return (error);
+                }
 		chal = ebox_part_challenge(part);
 		sshbuf_reset(buf);
 		error = sshbuf_put_ebox_challenge(buf, chal);
-		if (error)
+		if (error) {
+                        sshbuf_free(buf);
 			return (error);
+                }
 		fprintf(stderr, "-- Begin challenge for remote device %s --\n",
 		    state->ps_ans->a_text);
 		printwrap(stderr, sshbuf_dtob64(buf), BASE64_LINE_LEN);
@@ -1997,6 +2001,7 @@ partagain:
 		state->ps_intent = INTENT_NONE;
 		++ncur;
 	}
+        sshbuf_free(buf);
 	return (NULL);
 
 }
