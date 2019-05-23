@@ -698,6 +698,7 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	char *tname;
 	struct sshkey *k;
 	uint8_t slotid = PIV_SLOT_KEY_MGMT;
+	boolean_t gotguid = B_FALSE;
 
 	part = calloc(1, sizeof (struct ebox_tpl_part));
 	VERIFY(part != NULL);
@@ -777,6 +778,7 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 			bcopy(guid, part->etp_guid, len);
 			free(guid);
 			guid = NULL;
+			gotguid = B_TRUE;
 			break;
 		case EBOX_PART_SLOT:
 			rc = sshbuf_get_u8(buf, &slotid);
@@ -806,6 +808,12 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	}
 
 	part->etp_slot = slotid;
+
+	if (part->etp_pubkey == NULL || !gotguid) {
+		err = errf("IncompletePartError", NULL, "ebox part missing "
+		    "compulsory tags (pubkey or guid) at +%lx", buf->off);
+		goto out;
+	}
 
 	*ppart = part;
 	part = NULL;
