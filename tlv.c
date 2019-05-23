@@ -37,6 +37,7 @@ tlv_init(const uint8_t *buf, size_t offset, size_t len)
 	VERIFY(ts != NULL);
 	ts->ts_buf = (uint8_t *)buf;
 	ts->ts_offset = offset;
+	ts->ts_len = len;
 	ts->ts_end = offset + len;
 	return (ts);
 }
@@ -142,14 +143,14 @@ tlv_read_tag(struct tlv_state *ts)
 	struct tlv_stack_frame *sf;
 	size_t origin = ts->ts_offset;
 
-	VERIFY(!tlv_at_buf_end(ts));
+	VERIFY(!tlv_at_end(ts));
 	d = buf[ts->ts_offset++];
 	ts->ts_len--;
 	tag = d;
 
 	if ((d & TLV_TAG_MASK) == TLV_TAG_CONT) {
 		do {
-			VERIFY(!tlv_at_buf_end(ts));
+			VERIFY(!tlv_at_end(ts));
 			d = buf[ts->ts_offset++];
 			ts->ts_len--;
 			tag <<= 8;
@@ -157,7 +158,7 @@ tlv_read_tag(struct tlv_state *ts)
 		} while ((d & TLV_CONT) == TLV_CONT);
 	}
 
-	VERIFY(!tlv_at_buf_end(ts));
+	VERIFY(!tlv_at_end(ts));
 	d = buf[ts->ts_offset++];
 	ts->ts_len--;
 	if ((d & TLV_CONT) == TLV_CONT) {
@@ -175,6 +176,7 @@ tlv_read_tag(struct tlv_state *ts)
 		len = d;
 	}
 	VERIFY3U(tlv_buf_rem(ts), >=, len);
+	VERIFY3U(tlv_rem(ts), >=, len);
 
 	sf = calloc(1, sizeof (*sf));
 	VERIFY(sf != NULL);
