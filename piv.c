@@ -1337,6 +1337,7 @@ piv_release(struct piv_token *pk)
 		}
 		free(pk->pt_hist_url);
 		free((char *)pk->pt_rdrname);
+		free(pk->pt_guidhex);
 
 		next = pk->pt_next;
 		free(pk);
@@ -1430,7 +1431,7 @@ void
 piv_apdu_free(struct apdu *a)
 {
 	if (a->a_reply.b_data != NULL) {
-		explicit_bzero(a->a_reply.b_data, MAX_APDU_SIZE);
+		explicit_bzero(a->a_reply.b_data, a->a_reply.b_size);
 		free(a->a_reply.b_data);
 	}
 	free(a);

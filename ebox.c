@@ -695,7 +695,7 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	errf_t *err = NULL;
 	size_t len;
 	uint8_t tag, *guid;
-	char *tname;
+	char *tname = NULL;
 	struct sshkey *k;
 	uint8_t slotid = PIV_SLOT_KEY_MGMT;
 	boolean_t gotguid = B_FALSE;
@@ -713,6 +713,8 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 	while (tag != EBOX_PART_END) {
 		switch (tag & ~EBOX_PART_OPTIONAL_FLAG) {
 		case EBOX_PART_PUBKEY:
+			free(tname);
+			tname = NULL;
 			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
 				err = ssherrf("sshbuf_get_cstring8", rc);
 				goto out;
@@ -820,6 +822,7 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 out:
 	sshbuf_free(kbuf);
 	ebox_tpl_part_free(part);
+	free(tname);
 	return (err);
 }
 
@@ -1120,6 +1123,7 @@ ebox_free(struct ebox *box)
 		explicit_bzero(box->e_rcv_key.b_data, box->e_rcv_key.b_len);
 		free(box->e_rcv_key.b_data);
 	}
+	free(box->e_rcv_cipher);
 	if (box->e_rcv_iv.b_data != NULL)
 		free(box->e_rcv_iv.b_data);
 	if (box->e_rcv_enc.b_data != NULL)
@@ -1638,7 +1642,7 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 	size_t len;
 	uint8_t tag, *guid;
 	errf_t *err = NULL;
-	char *tname;
+	char *tname = NULL;
 	struct sshkey *k = NULL, *ephk;
 	struct piv_ecdh_box *box = NULL;
 	boolean_t gotguid = B_FALSE;
@@ -1661,6 +1665,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 	while (tag != EBOX_PART_END) {
 		switch (tag & ~EBOX_PART_OPTIONAL_FLAG) {
 		case EBOX_PART_PUBKEY:
+			free(tname);
+			tname = NULL;
 			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
 				err = ssherrf("sshbuf_get_cstring8", rc);
 				goto out;
@@ -1770,6 +1776,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 				goto out;
 			}
 			box->pdb_nonce.b_len = box->pdb_nonce.b_size;
+			free(tname);
+			tname = NULL;
 			if ((rc = sshbuf_get_cstring8(buf, &tname, NULL))) {
 				err = ssherrf("sshbuf_get_cstring8", rc);
 				goto out;
@@ -1884,6 +1892,7 @@ out:
 	ebox_part_free(part);
 	piv_box_free(box);
 	sshkey_free(k);
+	free(tname);
 	return (err);
 }
 

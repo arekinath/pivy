@@ -135,10 +135,9 @@ assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
 	if (partname == NULL)
 		fmt = "Enter %s for token %s: ";
 
+again:
 	if (ebox_pin == NULL && !prompt)
 		return;
-
-again:
 	if (ebox_pin == NULL && prompt) {
 		char prompt[64];
 		char *guid = piv_token_shortid(pk);
@@ -180,6 +179,7 @@ again:
 		warnx("invalid PIN (%d attempts remaining)", retries);
 		free(ebox_pin);
 		ebox_pin = NULL;
+		erfree(er);
 		goto again;
 	} else if (errf_caused_by(er, "MinRetriesError")) {
 		piv_txn_end(pk);
@@ -379,6 +379,7 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 			    "the local system");
 		}
 	}
+	erfree(agerr);
 	if (err)
 		goto out;
 
@@ -425,7 +426,8 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 pin:
 	assert_pin(token, name, prompt);
 	err = piv_box_open(token, slot, box);
-	if (errf_caused_by(err, "PermissionError") && !prompt) {
+	if (errf_caused_by(err, "PermissionError") && !prompt && !ebox_batch) {
+		erfree(err);
 		prompt = B_TRUE;
 		goto pin;
 	} else if (err) {
@@ -458,6 +460,8 @@ printwrap(FILE *stream, const char *data, size_t col)
 		fprintf(stream, "%s\n", buf);
 		offset += rem;
 	}
+
+	free(buf);
 }
 
 static errf_t *
@@ -1850,6 +1854,13 @@ interactive_recovery(struct ebox_config *config)
 	tconfig = ebox_config_tpl(config);
 	n = ebox_tpl_config_n(tconfig);
 
+	if (ebox_batch) {
+		error = errf("InteractiveError", NULL,
+		    "interactive recovery is required but the -b batch option "
+		    "was provided");
+		return (error);
+	}
+
 	q = calloc(1, sizeof (struct question));
 	a = (struct answer *)ebox_config_private(config);
 	question_printf(q, "-- Recovery config %c --\n", a->a_key);
@@ -2045,6 +2056,13 @@ interactive_unlock_ebox(struct ebox *ebox)
 		}
 	}
 
+	if (ebox_batch) {
+		error = errf("InteractiveError", NULL,
+		    "interactive recovery is required but the -b batch option "
+		    "was provided");
+		return (error);
+	}
+
 	q = calloc(1, sizeof (struct question));
 	question_printf(q, "-- Recovery mode --\n");
 	question_printf(q, "No primary configuration could proceed using a "
@@ -2214,6 +2232,7 @@ read_stdin_b64(size_t limit)
 			errfx(EXIT_ERROR, error, "error reading input");
 		}
 	}
+	free(buf);
 	return (sbuf);
 }
 
@@ -2415,6 +2434,7 @@ cmd_tpl_show(int argc, char *argv[])
 			errfx(EXIT_ERROR, error, "failed to parse input as "
 			    "a base64-encoded ebox template");
 		}
+		sshbuf_free(sbuf);
 	}
 
 	print_tpl(stderr, ebox_stpl);
@@ -2470,11 +2490,11 @@ cmd_key_lock(int argc, char *argv[])
 	size_t keylen;
 	struct ebox *ebox;
 	errf_t *error;
-	struct sshbuf *buf;
+	struct sshbuf *kbuf, *buf;
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	kbuf = read_stdin_b64(EBOX_MAX_SIZE);
 	key = sshbuf_ptr(buf);
 	keylen = sshbuf_len(buf);
 
@@ -2499,6 +2519,9 @@ cmd_key_lock(int argc, char *argv[])
 	} else {
 		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
 	}
+
+	sshbuf_free(buf);
+	sshbuf_free(kbuf);
 
 	ebox_free(ebox);
 	return (ERRF_OK);
@@ -2563,6 +2586,7 @@ cmd_key_info(int argc, char *argv[])
 		errfx(EXIT_ERROR, error, "failed to parse input as "
 		    "a base64-encoded ebox");
 	}
+	sshbuf_free(buf);
 
 	fprintf(stderr, "-- ebox --\n");
 	fprintf(stderr, "version: %u\n", ebox_version(ebox));
@@ -2582,6 +2606,8 @@ cmd_key_info(int argc, char *argv[])
 	tpl = ebox_tpl(ebox);
 	print_tpl(stderr, tpl);
 
+	ebox_free(ebox);
+
 	return (ERRF_OK);
 }
 
@@ -2593,6 +2619,7 @@ cmd_key_unlock(int argc, char *argv[])
 	struct sshbuf *buf;
 	size_t keylen;
 	const uint8_t *key;
+	char *b64;
 
 	buf = read_stdin_b64(EBOX_MAX_SIZE);
 	error = sshbuf_get_ebox(buf, &ebox);
@@ -2600,6 +2627,7 @@ cmd_key_unlock(int argc, char *argv[])
 		errfx(EXIT_ERROR, error, "failed to parse input as "
 		    "a base64-encoded ebox");
 	}
+	sshbuf_free(buf);
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
@@ -2614,9 +2642,12 @@ cmd_key_unlock(int argc, char *argv[])
 	if (ebox_raw_out) {
 		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
 	} else {
-		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+		b64 = sshbuf_dtob64(buf);
+		printwrap(stdout, b64, BASE64_LINE_LEN);
+		free(b64);
 	}
 	sshbuf_free(buf);
+	ebox_free(ebox);
 	return (ERRF_OK);
 }
 
@@ -2832,6 +2863,7 @@ cmd_challenge_info(int argc, char *argv[])
 		errfx(EXIT_ERROR, error, "failed to parse input as "
 		    "a base64-encoded ebox challenge");
 	}
+	sshbuf_free(sbuf);
 
 	error = local_unlock(box, NULL, NULL);
 	if (error) {
@@ -2905,6 +2937,8 @@ cmd_challenge_respond(int argc, char *argv[])
 	fprintf(stdout, "-- Begin response --\n");
 	printwrap(stdout, sshbuf_dtob64(sbuf), BASE64_LINE_LEN);
 	fprintf(stdout, "-- End response --\n");
+
+	sshbuf_free(sbuf);
 
 	return (NULL);
 }
