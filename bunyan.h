@@ -13,12 +13,12 @@
 #include <sys/types.h>
 
 enum bunyan_log_level {
-	TRACE = 10,
-	DEBUG = 20,
-	INFO = 30,
-	WARN = 40,
-	ERROR = 50,
-	FATAL = 60
+	BNY_TRACE = 10,
+	BNY_DEBUG = 20,
+	BNY_INFO = 30,
+	BNY_WARN = 40,
+	BNY_ERROR = 50,
+	BNY_FATAL = 60
 };
 
 enum bunyan_arg_type {

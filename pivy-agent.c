@@ -222,13 +222,13 @@ extern char *__progname;
 static int fingerprint_hash = SSH_FP_HASH_DEFAULT;
 
 extern void bunyan_timestamp(char *, size_t);
-static int ssh_dbglevel = WARN;
+static int ssh_dbglevel = BNY_WARN;
 static void
 sdebug(const char *fmt, ...)
 {
 	va_list args;
 	char ts[128];
-	if (ssh_dbglevel > TRACE)
+	if (ssh_dbglevel > BNY_TRACE)
 		return;
 	bunyan_timestamp(ts, sizeof (ts));
 	va_start(args, fmt);
@@ -242,7 +242,7 @@ error(const char *fmt, ...)
 {
 	va_list args;
 	char ts[128];
-	if (ssh_dbglevel > ERROR)
+	if (ssh_dbglevel > BNY_ERROR)
 		return;
 	bunyan_timestamp(ts, sizeof (ts));
 	va_start(args, fmt);
@@ -282,7 +282,7 @@ agent_piv_close(boolean_t force)
 	uint64_t now = monotime();
 	VERIFY(txnopen);
 	if (force || now >= txntimeout) {
-		bunyan_log(TRACE, "closing txn",
+		bunyan_log(BNY_TRACE, "closing txn",
 		    "now", BNY_UINT64, now,
 		    "txntimeout", BNY_UINT64, txntimeout, NULL);
 		piv_txn_end(selk);
@@ -294,7 +294,7 @@ static void
 drop_pin(void)
 {
 	if (pin_len != 0) {
-		bunyan_log(INFO, "clearing PIN from memory", NULL);
+		bunyan_log(BNY_INFO, "clearing PIN from memory", NULL);
 		explicit_bzero(pin, pin_len);
 	}
 	pin_len = 0;
@@ -390,7 +390,7 @@ agent_piv_open(void)
 		if (slot != NULL)
 			VERIFY0(sshkey_demote(piv_slot_pubkey(slot), &cak));
 	}
-	bunyan_log(TRACE, "opened new txn", NULL);
+	bunyan_log(BNY_TRACE, "opened new txn", NULL);
 	txnopen = B_TRUE;
 	txntimeout = monotime() + 2000;
 	card_probe_fails = 0;
@@ -403,11 +403,11 @@ probe_card(void)
 	errf_t *err;
 	if (card_probe_fails > card_probe_limit)
 		return;
-	bunyan_log(TRACE, "doing idle probe", NULL);
+	bunyan_log(BNY_TRACE, "doing idle probe", NULL);
 
 	last_op = monotime();
 	if ((err = agent_piv_open())) {
-		bunyan_log(TRACE, "error opening for idle probe",
+		bunyan_log(BNY_TRACE, "error opening for idle probe",
 		    "error", BNY_ERF, err, NULL);
 		errf_free(err);
 		/*
@@ -421,7 +421,7 @@ probe_card(void)
 		return;
 	}
 	if (cak != NULL && (err = auth_cak())) {
-		bunyan_log(WARN, "CAK authentication failed",
+		bunyan_log(BNY_WARN, "CAK authentication failed",
 		    "error", BNY_ERF, err, NULL);
 		agent_piv_close(B_TRUE);
 		/* Always drop PIN on a CAK failure. */
@@ -1169,9 +1169,10 @@ process_extension(SocketEntry *e)
 
 	if (err) {
 		send_extfail(e);
-		bunyan_log(WARN, "failed to process extension command",
+		bunyan_log(BNY_WARN, "failed to process extension command",
 		    "error", BNY_ERF, err, NULL);
-		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
+		if (errf_caused_by(err, "NoPINError") &&
+		    bunyan_get_level() > BNY_WARN)
 			warnfx(err, "denied command due to lack of PIN");
 		errf_free(err);
 		err = ERRF_OK;
@@ -1221,7 +1222,7 @@ process_lock_agent(SocketEntry *e, int lock)
 			pin_len = pwlen;
 			bcopy(passwd, pin, pwlen + 1);
 			send_status(e, 1);
-			bunyan_log(INFO, "storing PIN in memory", NULL);
+			bunyan_log(BNY_INFO, "storing PIN in memory", NULL);
 			card_probe_interval = card_probe_interval_pin;
 			goto out;
 		}
@@ -1312,7 +1313,7 @@ process_message(u_int socknum)
 	    "remote_pid", BNY_INT, (int)e->pid,
 	    "remote_cmd", BNY_STRING, (e->exepath == NULL) ? "???" : e->exepath,
 	    NULL);
-	bunyan_log(DEBUG, "received ssh-agent message", NULL);
+	bunyan_log(BNY_DEBUG, "received ssh-agent message", NULL);
 
 	last_op = monotime();
 
@@ -1342,15 +1343,16 @@ process_message(u_int socknum)
 	}
 
 	if (err) {
-		bunyan_log(WARN, "failed to process command",
+		bunyan_log(BNY_WARN, "failed to process command",
 		    "error", BNY_ERF, err, NULL);
-		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
+		if (errf_caused_by(err, "NoPINError") &&
+		    bunyan_get_level() > BNY_WARN)
 			warnfx(err, "denied command due to lack of PIN");
 		sshbuf_reset(e->request);
 		send_status(e, 0);
 		errf_free(err);
 	} else {
-		bunyan_log(INFO, "processed ssh-agent message", NULL);
+		bunyan_log(BNY_INFO, "processed ssh-agent message", NULL);
 	}
 
 	bunyan_pop(msg_log_frame);
@@ -1678,7 +1680,7 @@ check_parent_exists(void)
 	 * so testing for that should be safe.
 	 */
 	if (parent_pid != -1 && getppid() != parent_pid) {
-		bunyan_log(INFO, "Parent has died - Authentication agent exiting.");
+		bunyan_log(BNY_INFO, "Parent has died - Authentication agent exiting.");
 		cleanup_socket();
 		_exit(2);
 	}
@@ -2024,14 +2026,14 @@ main(int ac, char **av)
 	umask(prev_mask);
 
 	if (d_flag) {
-		ssh_dbglevel = TRACE;
-		bunyan_set_level(TRACE);
+		ssh_dbglevel = BNY_TRACE;
+		bunyan_set_level(BNY_TRACE);
 	} else if (D_flag) {
-		ssh_dbglevel = DEBUG;
-		bunyan_set_level(DEBUG);
+		ssh_dbglevel = BNY_DEBUG;
+		bunyan_set_level(BNY_DEBUG);
 	} else if (i_flag) {
-		ssh_dbglevel = INFO;
-		bunyan_set_level(INFO);
+		ssh_dbglevel = BNY_INFO;
+		bunyan_set_level(BNY_INFO);
 	}
 
 	if (d_flag >= 2) {
@@ -2051,16 +2053,16 @@ main(int ac, char **av)
 		goto skip;
 	}
 #if defined(__APPLE__)
-	ssh_dbglevel = INFO;
-	bunyan_set_level(INFO);
+	ssh_dbglevel = BNY_INFO;
+	bunyan_set_level(BNY_INFO);
 	if (ac != 0) {
-		bunyan_log(FATAL, "OSX does not support fork() inside "
+		bunyan_log(BNY_FATAL, "OSX does not support fork() inside "
 		    "applications which use smartcards, and you have "
 		    "specified a command to run. It is not possible to "
 		    "execute it and remain in the foreground", NULL);
 		exit(1);
 	}
-	bunyan_log(WARN, "OSX does not support fork() inside applications "
+	bunyan_log(BNY_WARN, "OSX does not support fork() inside applications "
 	    "which use smartcards; this agent will operate in the foreground",
 	    NULL);
 	format = c_flag ? "setenv %s %s;\n" : "%s=%s; export %s;\n";
@@ -2099,8 +2101,8 @@ main(int ac, char **av)
 		exit(1);
 	}
 	/* child */
-	ssh_dbglevel = WARN;
-	bunyan_set_level(WARN);
+	ssh_dbglevel = BNY_WARN;
+	bunyan_set_level(BNY_WARN);
 
 	if (setsid() == -1) {
 		error("setsid: %s", strerror(errno));
@@ -2122,7 +2124,7 @@ skip:
 
 	r = mlockall(MCL_CURRENT | MCL_FUTURE);
 	if (r != 0) {
-		bunyan_log(WARN, "mlockall() failed, sensitive data (e.g. PIN) "
+		bunyan_log(BNY_WARN, "mlockall() failed, sensitive data (e.g. PIN) "
 		    "may be swapped out to disk if system is low on memory",
 		    "error", BNY_STRING, strerror(r), NULL);
 	}
@@ -2134,7 +2136,7 @@ skip:
 #if defined(MADV_DONTDUMP)
 	r = madvise(pinmem, 3*pgsz, MADV_DONTDUMP);
 	if (r != 0) {
-		bunyan_log(WARN, "madvice(MADV_DONTDUMP) failed, sensitive "
+		bunyan_log(BNY_WARN, "madvice(MADV_DONTDUMP) failed, sensitive "
 		    "data (e.g. PIN) may be contined in core dumps",
 		    "error", BNY_STRING, strerror(errno), NULL);
 	}
@@ -2160,7 +2162,7 @@ skip:
 
 	r = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
 	if (r != SCARD_S_SUCCESS) {
-		bunyan_log(ERROR, "SCardEstablishContext failed",
+		bunyan_log(BNY_ERROR, "SCardEstablishContext failed",
 		    "error", BNY_STRING, pcsc_stringify_error(r), NULL);
 		return (1);
 	}

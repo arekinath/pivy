@@ -2158,7 +2158,7 @@ main(int argc, char *argv[])
 	while ((c = getopt(argc, argv, optstring)) != -1) {
 		switch (c) {
 		case 'd':
-			bunyan_set_level(TRACE);
+			bunyan_set_level(BNY_TRACE);
 			if (++d_level > 1)
 				piv_full_apdu_debug = B_TRUE;
 			break;

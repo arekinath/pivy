@@ -27,7 +27,7 @@
 static const char *bunyan_name = NULL;
 static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
-static enum bunyan_log_level bunyan_min_level = WARN;
+static enum bunyan_log_level bunyan_min_level = BNY_WARN;
 static boolean_t bunyan_omit_timestamp = B_FALSE;
 
 struct bunyan_var {
@@ -512,22 +512,22 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 	}
 
 	switch (level) {
-	case TRACE:
+	case BNY_TRACE:
 		printf_buf("TRACE: ");
 		break;
-	case DEBUG:
+	case BNY_DEBUG:
 		printf_buf("DEBUG: ");
 		break;
-	case INFO:
+	case BNY_INFO:
 		printf_buf("INFO: ");
 		break;
-	case WARN:
+	case BNY_WARN:
 		printf_buf("WARN: ");
 		break;
-	case ERROR:
+	case BNY_ERROR:
 		printf_buf("ERROR: ");
 		break;
-	case FATAL:
+	case BNY_FATAL:
 		printf_buf("FATAL: ");
 		break;
 	}
