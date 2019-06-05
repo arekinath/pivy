@@ -276,6 +276,8 @@ sw_to_name(enum iso_sw sw)
 		return ("WRONG_LENGTH");
 	case SW_INS_NOT_SUP:
 		return ("INS_NOT_SUPPORTED");
+	case SW_FILE_INVALID:
+		return ("FILE_INVALID");
 	default:
 		/* FALL THROUGH */
 		(void)0;
@@ -3436,6 +3438,13 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	if (apdu->a_sw == SW_NO_ERROR) {
 		err = ERRF_OK;
 		pk->pt_reset = B_TRUE;
+
+	} else if (apdu->a_sw == SW_FILE_INVALID) {
+		if (retries != NULL)
+			*retries = 0;
+		err = errf("PermissionError", swerrf("INS_VERIFY(%x)",
+		    apdu->a_sw, type), "PIN is blocked (has run out of "
+		    "retry attempts) and cannot be used");
 
 	} else if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
 		if (retries != NULL)

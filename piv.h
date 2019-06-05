@@ -878,6 +878,7 @@ enum iso_sw {
 	SW_OUT_OF_MEMORY = 0x6A84,
 	SW_WRONG_LENGTH = 0x6700,
 	SW_INS_NOT_SUP = 0x6D00,
+	SW_FILE_INVALID = 0x6983,
 };
 
 /*
