@@ -1016,6 +1016,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	size_t certlen, chainlen, len;
 	uint flags;
 	int found = 0;
+	uint tag;
 	struct tlv_state *tlv = NULL;
 
 	if ((msg = sshbuf_new()) == NULL)
@@ -1061,7 +1062,9 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	agent_piv_close(B_FALSE);
 
 	tlv = tlv_init(chain, 0, chainlen);
-	if (tlv_read_tag(tlv) != 0x70) {
+	if ((err = tlv_read_tag(tlv, &tag)))
+		goto out;
+	if (tag != 0x70) {
 		err = errf("InvalidDataError", NULL, "PIV device returned "
 		    "wrong tag at start of attestation cert");
 		goto out;

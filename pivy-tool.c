@@ -1319,7 +1319,8 @@ cmd_attest(uint slotid)
 	ptr = NULL;
 	len = 0;
 	tlv = tlv_init(chain, 0, chainlen);
-	tag = tlv_read_tag(tlv);
+	if ((err = tlv_read_tag(tlv, &tag)))
+		goto error;
 	if (tag != 0x70) {
 		err = errf("PIVTagError", NULL,
 		    "Got TLV tag 0x%x instead of 0x70", tag);
@@ -1327,8 +1328,6 @@ cmd_attest(uint slotid)
 	}
 	ptr = tlv_ptr(tlv);
 	len = tlv_rem(tlv);
-	tlv_skip(tlv);
-	tlv_free(tlv);
 
 	x509 = d2i_X509(NULL, (const uint8_t **)&ptr, len);
 	if (x509 == NULL) {
@@ -1337,6 +1336,9 @@ cmd_attest(uint slotid)
 	}
 	PEM_write_X509(stdout, x509);
 	X509_free(x509);
+
+	tlv_skip(tlv);
+	tlv_free(tlv);
 
 	free(cert);
 	free(chain);
@@ -1460,7 +1462,7 @@ again:
 	}
 
 	fwrite(sig, 1, siglen, stdout);
-
+	free(sig);
 	free(buf);
 
 	return (ERRF_OK);

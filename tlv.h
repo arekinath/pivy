@@ -33,14 +33,15 @@ struct tlv_state {
 struct tlv_state *tlv_init(const uint8_t *buf, size_t offset, size_t len);
 struct tlv_state *tlv_init_write(void);
 void tlv_enable_debug(struct tlv_state *ts);
-uint tlv_read_tag(struct tlv_state *ts);
-uint8_t tlv_read_byte(struct tlv_state *ts);
-uint16_t tlv_read_short(struct tlv_state *ts);
-uint tlv_read_uint(struct tlv_state *ts);
-size_t tlv_read(struct tlv_state *ts, uint8_t *dest, size_t offset,
-    size_t maxLen);
+errf_t *tlv_read_tag(struct tlv_state *ts, uint *tag);
+errf_t *tlv_read_byte(struct tlv_state *ts, uint8_t *out);
+errf_t *tlv_read_short(struct tlv_state *ts, uint16_t *out);
+errf_t *tlv_read_uint(struct tlv_state *ts, uint *out);
+errf_t *tlv_read(struct tlv_state *ts, uint8_t *dest, size_t offset,
+    size_t maxLen, size_t *len);
 void tlv_skip(struct tlv_state *ts);
-void tlv_end(struct tlv_state *ts);
+void tlv_abort(struct tlv_state *ts);
+errf_t *tlv_end(struct tlv_state *ts);
 
 void tlv_pushl(struct tlv_state *ts, uint tag, size_t maxlen);
 void tlv_pop(struct tlv_state *ts);

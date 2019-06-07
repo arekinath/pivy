@@ -134,23 +134,32 @@ tlv_pop(struct tlv_state *ts)
 	}
 }
 
-uint
-tlv_read_tag(struct tlv_state *ts)
+errf_t *
+tlv_read_tag(struct tlv_state *ts, uint *ptag)
 {
 	const uint8_t *buf = ts->ts_buf;
 	uint8_t d;
 	uint tag, len, octs;
 	struct tlv_stack_frame *sf;
 	size_t origin = ts->ts_offset;
+	errf_t *error;
 
-	VERIFY(!tlv_at_end(ts));
+	if (tlv_at_end(ts)) {
+		error = errf("LengthError", NULL, "tlv_read_tag called "
+		    "past end of buffer");
+		return (error);
+	}
 	d = buf[ts->ts_offset++];
 	ts->ts_len--;
 	tag = d;
 
 	if ((d & TLV_TAG_MASK) == TLV_TAG_CONT) {
 		do {
-			VERIFY(!tlv_at_end(ts));
+			if (tlv_at_end(ts)) {
+				error = errf("LengthError", NULL, "TLV tag "
+				    "continued past end of buffer");
+				return (error);
+			}
 			d = buf[ts->ts_offset++];
 			ts->ts_len--;
 			tag <<= 8;
@@ -158,14 +167,26 @@ tlv_read_tag(struct tlv_state *ts)
 		} while ((d & TLV_CONT) == TLV_CONT);
 	}
 
-	VERIFY(!tlv_at_end(ts));
+	if (tlv_at_end(ts)) {
+		error = errf("LengthError", NULL, "TLV tag length continued "
+		    "past end of buffer");
+		return (error);
+	}
 	d = buf[ts->ts_offset++];
 	ts->ts_len--;
 	if ((d & TLV_CONT) == TLV_CONT) {
 		octs = d & (~TLV_CONT);
-		VERIFY(octs > 0 && octs <= 4);
+		if (octs < 1 || octs > 4) {
+			error = errf("LengthError", NULL, "TLV tag had invalid "
+			    "length indicator: %d octets", octs);
+			return (error);
+		}
 		len = 0;
-		VERIFY3U(tlv_buf_rem(ts), >=, octs);
+		if (tlv_buf_rem(ts) < octs) {
+			error = errf("LengthError", NULL, "TLV tag length "
+			    "bytes continued past end of buffer");
+			return (error);
+		}
 		for (; octs > 0; --octs) {
 			d = buf[ts->ts_offset++];
 			ts->ts_len--;
@@ -175,11 +196,20 @@ tlv_read_tag(struct tlv_state *ts)
 	} else {
 		len = d;
 	}
-	VERIFY3U(tlv_buf_rem(ts), >=, len);
-	VERIFY3U(tlv_rem(ts), >=, len);
+	if (tlv_buf_rem(ts) < len) {
+		error = errf("LengthError", NULL, "TLV tag length is too "
+		    "long for buffer: %u", len);
+		return (error);
+	}
+	if (tlv_rem(ts) < len) {
+		error = errf("LengthError", NULL, "TLV tag length is too "
+		    "long for enclosing tag: %u", len);
+		return (error);
+	}
 
 	sf = calloc(1, sizeof (*sf));
-	VERIFY(sf != NULL);
+	if (sf == NULL)
+		return (ERRF_NOMEM);
 	sf->tsf_ptr = ts->ts_ptr;
 	sf->tsf_len = ts->ts_len - len;
 	sf->tsf_offset = ts->ts_offset + len;
@@ -195,10 +225,11 @@ tlv_read_tag(struct tlv_state *ts)
 	ts->ts_len = len;
 	ts->ts_ptr = origin;
 
-	return (tag);
+	*ptag = tag;
+	return (NULL);
 }
 
-void
+errf_t *
 tlv_end(struct tlv_state *ts)
 {
 	struct tlv_stack_frame *sf = ts->ts_stack;
@@ -206,7 +237,10 @@ tlv_end(struct tlv_state *ts)
 		fprintf(stderr, "%*send tag from +%lu (%lu bytes left)\n",
 		    ts->ts_stklvl + 1, "", ts->ts_ptr, ts->ts_len);
 	}
-	VERIFY3U(ts->ts_len, ==, 0);
+	if (ts->ts_len != 0) {
+		return (errf("LengthError", NULL, "tlv_end() called with %u "
+		    "bytes still remaining in tag", ts->ts_len));
+	}
 	if (sf != NULL) {
 		ts->ts_stack = sf->tsf_next;
 		ts->ts_len = sf->tsf_len;
@@ -215,6 +249,7 @@ tlv_end(struct tlv_state *ts)
 		free(sf);
 		--ts->ts_stklvl;
 	}
+	return (NULL);
 }
 
 void
@@ -237,49 +272,83 @@ tlv_skip(struct tlv_state *ts)
 	}
 }
 
-uint8_t
-tlv_read_byte(struct tlv_state *ts)
+void
+tlv_abort(struct tlv_state *ts)
 {
-	VERIFY(!tlv_at_end(ts));
+	struct tlv_stack_frame *sf, *sfn = ts->ts_stack;
+	while ((sf = sfn) != NULL) {
+		sfn = sf->tsf_next;
+		free(sf);
+		--ts->ts_stklvl;
+	}
+	ts->ts_stack = NULL;
+	ts->ts_offset = ts->ts_end;
+	ts->ts_len = 0;
+}
+
+
+errf_t *
+tlv_read_byte(struct tlv_state *ts, uint8_t *out)
+{
+	if (tlv_at_end(ts)) {
+		return (errf("LengthError", NULL, "tlv_read_byte() called "
+		    "with no bytes remaining"));
+	}
 	ts->ts_len--;
-	return (ts->ts_buf[ts->ts_offset++]);
+	*out = ts->ts_buf[ts->ts_offset++];
+	return (NULL);
 }
 
-uint16_t
-tlv_read_short(struct tlv_state *ts)
+errf_t *
+tlv_read_short(struct tlv_state *ts, uint16_t *out)
 {
-	uint16_t rv;
-	VERIFY3U(tlv_rem(ts), >=, 2);
+	if (tlv_rem(ts) < 2) {
+		return (errf("LengthError", NULL, "tlv_read_short() called "
+		    "with only %u bytes remaining", tlv_rem(ts)));
+	}
 	ts->ts_len -= 2;
-	rv = ts->ts_buf[ts->ts_offset++] << 8;
-	rv |= ts->ts_buf[ts->ts_offset++];
-	return (rv);
+	*out = ts->ts_buf[ts->ts_offset++] << 8;
+	*out |= ts->ts_buf[ts->ts_offset++];
+	return (NULL);
 }
 
-uint
-tlv_read_uint(struct tlv_state *ts)
+errf_t *
+tlv_read_uint(struct tlv_state *ts, uint *out)
 {
-	uint val = 0;
+	*out = 0;
 	const uint8_t *buf = ts->ts_buf;
-	VERIFY3U(tlv_rem(ts), <=, 4);
+	if (tlv_rem(ts) < 1) {
+		return (errf("LengthError", NULL, "tlv_read_uint() called "
+		    "with no bytes remaining"));
+	}
+	if (tlv_rem(ts) > 4) {
+		return (errf("LengthError", NULL, "tlv_read_uint() called "
+		    "with %u bytes remaining (supports max 4)", tlv_rem(ts)));
+	}
 	while (!tlv_at_end(ts)) {
-		val <<= 8;
-		val |= buf[ts->ts_offset++];
+		*out <<= 8;
+		*out |= buf[ts->ts_offset++];
 		ts->ts_len--;
 	}
-	return (val);
+	return (NULL);
 }
 
-size_t
-tlv_read(struct tlv_state *ts, uint8_t *dest, size_t offset, size_t maxLen)
+errf_t *
+tlv_read(struct tlv_state *ts, uint8_t *dest, size_t offset, size_t maxLen,
+    size_t *plen)
 {
 	size_t len = maxLen;
 	if (len > tlv_rem(ts))
 		len = tlv_rem(ts);
+	if (len == 0) {
+		return (errf("LengthError", NULL, "tlv_read() called "
+		    "with no bytes remaining"));
+	}
 	bcopy(&ts->ts_buf[ts->ts_offset], &dest[offset], len);
 	ts->ts_offset += len;
 	ts->ts_len -= len;
-	return (len);
+	*plen = len;
+	return (NULL);
 }
 
 void

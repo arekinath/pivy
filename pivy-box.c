@@ -2495,8 +2495,8 @@ cmd_key_lock(int argc, char *argv[])
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
 	kbuf = read_stdin_b64(EBOX_MAX_SIZE);
-	key = sshbuf_ptr(buf);
-	keylen = sshbuf_len(buf);
+	key = sshbuf_ptr(kbuf);
+	keylen = sshbuf_len(kbuf);
 
 #if defined(MADV_DONTDUMP)
 	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
