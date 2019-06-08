@@ -1721,6 +1721,8 @@ cmd_auth(uint slotid)
 	case 0x9E:
 		break;
 	default:
+		if (slotid >= 0x82 && slotid <= 0x95)
+			break;
 		err = funcerrf(NULL, "PIV slot %02X cannot be "
 		    "used for signing", slotid);
 		return (err);
