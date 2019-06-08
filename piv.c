@@ -1505,8 +1505,12 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 		VERIFY(d->b_len < 256 && d->b_len > 0);
 		buf[4] = d->b_len;
 		bcopy(d->b_data + d->b_offset, buf + 5, d->b_len);
-		buf[d->b_len + 5] = apdu->a_le;
-		*outlen = d->b_len + 6;
+		if (apdu->a_cls & CLA_CHAIN) {
+			*outlen = d->b_len + 5;
+		} else {
+			buf[d->b_len + 5] = apdu->a_le;
+			*outlen = d->b_len + 6;
+		}
 		return (buf);
 	}
 }
