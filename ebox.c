@@ -2402,6 +2402,16 @@ ebox_key(const struct ebox *box, size_t *len)
 	return (box->e_key);
 }
 
+const uint8_t *
+ebox_recovery_token(const struct ebox *box, size_t *len)
+{
+	*len = 0;
+	if (box->e_token == NULL || box->e_tokenlen == 0)
+		return (NULL);
+	*len = box->e_tokenlen;
+	return (box->e_token);
+}
+
 static errf_t *
 ebox_decrypt_recovery(struct ebox *box)
 {
