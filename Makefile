@@ -18,6 +18,10 @@ bindir		?= $(prefix)/bin
 
 VERSION		= 0.1.6
 
+SECURITY_CFLAGS	= \
+	-fstack-protector-all -fwrapv -pedantic -fPIC \
+	-D_FORTIFY_SOURCE=2 -Wall
+
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
@@ -109,29 +113,41 @@ _SSS_SOURCES=			\
 	randombytes.c
 SSS_SOURCES=$(_SSS_SOURCES:%=sss/%)
 
-PIVTOOL_SOURCES=		\
-	pivy-tool.c		\
-	tlv.c			\
+PIV_COMMON_SOURCES=		\
 	piv.c			\
+	tlv.c			\
 	debug.c			\
 	bunyan.c		\
-	errf.c			\
+	errf.c
+PIV_COMMON_HEADERS=		\
+	piv.h			\
+	tlv.h			\
+	bunyan.h		\
+	errf.h			\
+	piv-internal.h		\
+	debug.h
+
+EBOX_COMMON_SOURCES=		\
+	ebox.c			\
+	ebox-cmd.c
+EBOX_COMMON_HEADERS=		\
+	ebox.h			\
+	ebox-cmd.h
+
+PIVTOOL_SOURCES=		\
+	pivy-tool.c		\
+	$(PIV_COMMON_SOURCES)	\
 	$(LIBSSH_SOURCES)
 PIVTOOL_HEADERS=		\
-	tlv.h			\
-	piv.h			\
-	bunyan.h		\
-	debug.h			\
-	errf.h
+	$(PIV_COMMON_HEADERS)
+
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)
 PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
-			-fstack-protector-all \
-			-O2 -g -m64 -fwrapv \
-			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall -D_GNU_SOURCE
+			$(SECURITY_CFLAGS) \
+			-O2 -g -m64 -D_GNU_SOURCE
 PIVTOOL_LDFLAGS=	-m64
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
@@ -146,65 +162,49 @@ pivy-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 pivy-tool: $(PIVTOOL_OBJS) $(LIBCRYPTO)
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
 
-EBOX_SOURCES=			\
+PIVYBOX_SOURCES=		\
 	pivy-box.c		\
-	ebox.c			\
-	tlv.c			\
-	piv.c			\
-	debug.c			\
-	bunyan.c		\
-	errf.c			\
+	$(EBOX_COMMON_SOURCES)	\
+	$(PIV_COMMON_SOURCES)	\
 	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
-EBOX_HEADERS=			\
-	ebox.h			\
-	tlv.h			\
-	piv.h			\
-	bunyan.h		\
-	errf.h			\
-	debug.h
+PIVYBOX_HEADERS=		\
+	$(EBOX_COMMON_HEADERS)	\
+	$(PIV_COMMON_HEADERS)
 
-EBOX_OBJS=		$(EBOX_SOURCES:%.c=%.o)
-EBOX_CFLAGS=		$(PCSC_CFLAGS) \
+PIVYBOX_OBJS=		$(PIVYBOX_SOURCES:%.c=%.o)
+PIVYBOX_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
-			-fstack-protector-all \
-			-O2 -g -m64 -fwrapv \
-			-fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall -D_GNU_SOURCE -std=gnu99
-EBOX_LDFLAGS=		-m64
-EBOX_LIBS=		$(PCSC_LIBS) \
+			$(SECURITY_CFLAGS) \
+			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
+PIVYBOX_LDFLAGS=	-m64
+PIVYBOX_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
 			$(RDLINE_LIBS) \
 			$(SYSTEM_LIBS)
 
-pivy-box :		CFLAGS=		$(EBOX_CFLAGS)
-pivy-box :		LIBS+=		$(EBOX_LIBS)
-pivy-box :		LDFLAGS+=	$(EBOX_LDFLAGS)
-pivy-box :		HEADERS=	$(EBOX_HEADERS)
+pivy-box :		CFLAGS=		$(PIVYBOX_CFLAGS)
+pivy-box :		LIBS+=		$(PIVYBOX_LIBS)
+pivy-box :		LDFLAGS+=	$(PIVYBOX_LDFLAGS)
+pivy-box :		HEADERS=	$(PIVYBOX_HEADERS)
 
-pivy-box: $(EBOX_OBJS) $(LIBCRYPTO)
-	$(CC) $(LDFLAGS) -o $@ $(EBOX_OBJS) $(LIBS)
+pivy-box: $(PIVYBOX_OBJS) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(PIVYBOX_OBJS) $(LIBS)
 
 
 PIVZFS_SOURCES=			\
 	pivy-zfs.c		\
-	tlv.c			\
-	piv.c			\
-	debug.c			\
-	bunyan.c		\
-	errf.c			\
+	$(EBOX_COMMON_SOURCES)	\
+	$(PIV_COMMON_SOURCES)	\
 	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
 PIVZFS_HEADERS=			\
-	tlv.h			\
-	piv.h			\
-	bunyan.h		\
-	errf.h			\
-	debug.h
+	$(PIV_COMMON_HEADERS)	\
+	$(EBOX_COMMON_HEADERS)
 
 ifeq (yes, $(HAVE_ZFS))
 
@@ -215,10 +215,8 @@ PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
 			$(LIBZFS_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
-			-fstack-protector-all \
-			-O2 -g -m64 -fwrapv \
-			-fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall -D_GNU_SOURCE -std=gnu99
+			$(SECURITY_CFLAGS) \
+			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
 PIVZFS_LDFLAGS=		-m64
 PIVZFS_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
@@ -246,27 +244,18 @@ endif
 
 AGENT_SOURCES=			\
 	pivy-agent.c		\
-	tlv.c			\
-	piv.c			\
-	debug.c			\
-	bunyan.c		\
-	errf.c			\
+	$(PIV_COMMON_SOURCES)	\
 	$(LIBSSH_SOURCES)
-AGENT_HEADERS=		\
-	tlv.h			\
-	piv.h			\
-	bunyan.h		\
-	errf.h			\
-	debug.h
+AGENT_HEADERS=			\
+	$(PIV_COMMON_HEADERS)
+
 AGENT_OBJS=		$(AGENT_SOURCES:%.c=%.o)
 AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
-			-fstack-protector-all \
-			-O2 -g -m64 -fwrapv \
-			-pedantic -fPIC -D_FORTIFY_SOURCE=2 \
-			-Wall -D_GNU_SOURCE
+			$(SECURITY_CFLAGS) \
+			-O2 -g -m64 -D_GNU_SOURCE
 AGENT_LDFLAGS=		-m64
 AGENT_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
