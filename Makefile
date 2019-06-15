@@ -9,6 +9,8 @@ LIBCRYPTO	= $(LIBRESSL_LIB)/libcrypto.a
 
 HAVE_ZFS	:= no
 USE_ZFS		?= no
+HAVE_LUKS	:= no
+USE_LUKS	?= no
 
 TAR		= tar
 CURL		= curl -k
@@ -41,6 +43,16 @@ ifeq ($(SYSTEM), Linux)
 		LIBZFS_LIBS	= $(shell pkg-config --libs libzfs) -lnvpair
 	else
 		HAVE_ZFS	:= no
+	endif
+	CRYPTSETUP_VER	= $(shell pkg-config --modversion libcryptsetup --silence-errors || true)
+	ifneq (,$(CRYPTSETUP_VER))
+		HAVE_LUKS	:= $(USE_LUKS)
+		CRYPTSETUP_CFLAGS = $(shell pkg-config --cflags libcryptsetup)
+		CRYPTSETUP_LIBS	= $(shell pkg-config --libs libcryptsetup)
+		JSONC_CFLAGS	= $(shell pkg-config --cflags json-c)
+		JSONC_LIBS	= $(shell pkg-config --libs json-c)
+	else
+		HAVE_LUKS	:= no
 	endif
 	SYSTEMDDIR	?= /usr/lib/systemd/user
 endif
@@ -242,6 +254,54 @@ install: install_pivyzfs
 
 endif
 
+PIVYLUKS_SOURCES=		\
+	pivy-luks.c		\
+	$(EBOX_COMMON_SOURCES)	\
+	$(PIV_COMMON_SOURCES)	\
+	$(LIBSSH_SOURCES)	\
+	$(SSS_SOURCES)
+PIVYLUKS_HEADERS=		\
+	$(PIV_COMMON_HEADERS)	\
+	$(EBOX_COMMON_HEADERS)
+
+ifeq (yes, $(HAVE_LUKS))
+
+PIVYLUKS_OBJS=		$(PIVYLUKS_SOURCES:%.c=%.o)
+PIVYLUKS_CFLAGS=	$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(CRYPTSETUP_CFLAGS) \
+			$(JSONC_CFLAGS) \
+			$(RDLINE_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			$(SECURITY_CFLAGS) \
+			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
+PIVYLUKS_LDFLAGS=	-m64
+PIVYLUKS_LIBS=		$(PCSC_LIBS) \
+			$(CRYPTO_LIBS) \
+			$(ZLIB_LIBS) \
+			$(CRYPTSETUP_LIBS) \
+			$(JSONC_LIBS) \
+			$(RDLINE_LIBS) \
+			$(SYSTEM_LIBS)
+
+pivy-luks :		CFLAGS=		$(PIVYLUKS_CFLAGS)
+pivy-luks :		LIBS+=		$(PIVYLUKS_LIBS)
+pivy-luks :		LDFLAGS+=	$(PIVYLUKS_LDFLAGS)
+pivy-luks :		HEADERS=	$(PIVYLUKS_HEADERS)
+
+pivy-luks: $(PIVYLUKS_OBJS) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(PIVYLUKS_OBJS) $(LIBS)
+
+all: pivy-luks
+
+install_pivyluks: pivy-luks install_common
+	install -o root -g wheel -m 0755 pivy-luks $(DESTDIR)$(bindir)
+install: install_pivyluks
+.PHONY: install_pivyluks
+
+endif
+
 AGENT_SOURCES=			\
 	pivy-agent.c		\
 	$(PIV_COMMON_SOURCES)	\
@@ -278,6 +338,7 @@ clean:
 	rm -f pivy-agent $(AGENT_OBJS)
 	rm -f pivy-box $(PIVYBOX_OBJS)
 	rm -f pivy-zfs $(PIVZFS_OBJS)
+	rm -f pivy-luks $(PIVYLUKS_OBJS)
 	rm -fr .dist
 	rm -fr macosx/root macosx/*.pkg
 
