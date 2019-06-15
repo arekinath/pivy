@@ -19,7 +19,7 @@ bindir		?= $(prefix)/bin
 VERSION		= 0.1.6
 
 SECURITY_CFLAGS	= \
-	-fstack-protector-all -fwrapv -pedantic -fPIC \
+	-fstack-protector-all -fwrapv -fPIC \
 	-D_FORTIFY_SOURCE=2 -Wall
 
 SYSTEM		:= $(shell uname -s)
@@ -276,7 +276,7 @@ pivy-agent: $(AGENT_OBJS) $(LIBCRYPTO)
 clean:
 	rm -f pivy-tool $(PIVTOOL_OBJS)
 	rm -f pivy-agent $(AGENT_OBJS)
-	rm -f pivy-box $(EBOX_OBJS)
+	rm -f pivy-box $(PIVYBOX_OBJS)
 	rm -f pivy-zfs $(PIVZFS_OBJS)
 	rm -fr .dist
 	rm -fr macosx/root macosx/*.pkg

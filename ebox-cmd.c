@@ -579,13 +579,18 @@ question_free(struct question *q)
 {
 	struct answer *a, *na;
 
+	if (q == NULL)
+		return;
+
 	for (a = q->q_ans; a != NULL; a = na) {
 		na = a->a_next;
-		free(a);
+		if (a->a_priv == NULL)
+			free(a);
 	}
 	for (a = q->q_coms; a != NULL; a = na) {
 		na = a->a_next;
-		free(a);
+		if (a->a_priv == NULL)
+			free(a);
 	}
 
 	free(q);
@@ -809,7 +814,7 @@ read_b64_box(struct piv_ecdh_box **outbox)
 }
 
 errf_t *
-interactive_recovery(struct ebox_config *config)
+interactive_recovery(struct ebox_config *config, const char *what)
 {
 	struct ebox_part *part;
 	struct ebox_tpl_config *tconfig;
@@ -935,8 +940,7 @@ partagain:
 		make_answer_text_for_pstate(state);
 		state->ps_intent = INTENT_CHAL_RESP;
 		error = ebox_gen_challenge(config, part,
-		    "Recovering pivy-box data for part %s",
-		    state->ps_ans->a_text);
+		    "Recovering %s with part %s", what, state->ps_ans->a_text);
 		if (error) {
 			sshbuf_free(buf);
 			return (error);
@@ -1010,9 +1014,24 @@ read_tpl_file(const char *tpl)
 	size_t len;
 	int rc;
 	struct ebox_tpl *stpl;
+	char pathTpl[PATH_MAX] = { 0 };
 
+again:
 	tplf = fopen(tpl, "r");
-	if (tplf == NULL) {
+	rc = errno;
+	if (tplf == NULL && tpl != pathTpl && errno == ENOENT) {
+		const char *home;
+		home = getenv("HOME");
+		if (home == NULL) {
+			errno = rc;
+			err(EXIT_ERROR, "failed to open template file '%s' "
+			    "for reading", tpl);
+		}
+		snprintf(pathTpl, sizeof (pathTpl), TPL_DEFAULT_PATH,
+		    home, tpl);
+		tpl = pathTpl;
+		goto again;
+	} else if (tplf == NULL) {
 		err(EXIT_ERROR, "failed to open template file '%s' for reading",
 		    tpl);
 	}
@@ -1056,4 +1075,208 @@ read_tpl_file(const char *tpl)
 	free(buf);
 
 	return (stpl);
+}
+
+void
+interactive_select_local_token(struct ebox_tpl_part **ppart)
+{
+	int rc;
+	errf_t *error;
+	struct piv_token *tokens = NULL, *token;
+	struct piv_slot *slot;
+	struct ebox_tpl_part *part;
+	struct question *q;
+	struct answer *a;
+	char *shortid;
+	enum piv_slotid slotid = PIV_SLOT_KEY_MGMT;
+	char k = '0';
+	char *line, *p;
+	unsigned long parsed;
+
+	if (!ebox_ctx_init) {
+		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
+		    &ebox_ctx);
+		if (rc != SCARD_S_SUCCESS) {
+			errfx(EXIT_ERROR, pcscerrf("SCardEstablishContext", rc),
+			    "failed to initialise libpcsc");
+		}
+	}
+
+reenum:
+	error = piv_enumerate(ebox_ctx, &tokens);
+	if (error) {
+		warnfx(error, "failed to enumerate PIV tokens on the system");
+		*ppart = NULL;
+		erfree(error);
+		return;
+	}
+
+	q = calloc(1, sizeof (struct question));
+	question_printf(q, "-- Selecting local PIV token --\n");
+	question_printf(q, "Select a token to use:");
+
+	for (token = tokens; token != NULL; token = piv_token_next(token)) {
+		shortid = piv_token_shortid(token);
+		if (piv_token_is_ykpiv(token) &&
+		    ykpiv_token_has_serial(token)) {
+			a = make_answer(++k, "%s (in %s) [serial# %u]",
+			    shortid, piv_token_rdrname(token),
+			    ykpiv_token_serial(token));
+		} else {
+			a = make_answer(++k, "%s (in %s)",
+			    shortid, piv_token_rdrname(token));
+		}
+		free(shortid);
+		a->a_priv = token;
+		add_answer(q, a);
+	}
+
+	a = make_answer('s', "change key slot (%02X)", slotid);
+	add_command(q, a);
+
+	a = make_answer('r', "re-scan");
+	add_command(q, a);
+
+	a = make_answer('x', "cancel");
+	add_command(q, a);
+
+again:
+	question_prompt(q, &a);
+	if (a->a_key == 'x') {
+		*ppart = NULL;
+		question_free(q);
+		piv_release(tokens);
+		return;
+	} else if (a->a_key == 'r') {
+		*ppart = NULL;
+		k = '0';
+		question_free(q);
+		piv_release(tokens);
+		goto reenum;
+	} else if (a->a_key == 's') {
+		line = readline("Slot ID (hex)? ");
+		if (line == NULL)
+			exit(EXIT_ERROR);
+		errno = 0;
+		parsed = strtoul(line, &p, 16);
+		if (errno != 0 || *p != '\0') {
+			error = errfno("strtoul", errno, NULL);
+			warnfx(error, "error parsing '%s' as hex number",
+			    line);
+			erfree(error);
+			free(line);
+			goto again;
+		}
+		if (parsed > 0xFF) {
+			warnx("slot '%02X' is not a valid PIV slot id",
+			    (uint)parsed);
+			free(line);
+			goto again;
+		}
+		slotid = parsed;
+		a->a_used = 0;
+		answer_printf(a, "change key slot (%02X)", slotid);
+		free(line);
+		goto again;
+	}
+	token = (struct piv_token *)a->a_priv;
+
+	if ((error = piv_txn_begin(token)))
+		errfx(EXIT_ERROR, error, "failed to open token");
+	if ((error = piv_select(token)))
+		errfx(EXIT_ERROR, error, "failed to select PIV applet");
+	if ((error = piv_read_cert(token, slotid))) {
+		warnfx(error, "failed to read key management (9d) slot");
+		erfree(error);
+		piv_txn_end(token);
+		goto again;
+	}
+	slot = piv_get_slot(token, slotid);
+	VERIFY(slot != NULL);
+	part = ebox_tpl_part_alloc(piv_token_guid(token), GUID_LEN,
+	    piv_slot_id(slot), piv_slot_pubkey(slot));
+	VERIFY(part != NULL);
+	error = piv_read_cert(token, PIV_SLOT_CARD_AUTH);
+	if (error == NULL) {
+		slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
+		ebox_tpl_part_set_cak(part, piv_slot_pubkey(slot));
+	} else {
+		erfree(error);
+	}
+	piv_txn_end(token);
+
+	*ppart = part;
+	piv_release(tokens);
+}
+
+void
+make_answer_text_for_part(struct ebox_tpl_part *part, struct answer *a)
+{
+	const char *name;
+	char *guidhex = NULL;
+
+	a->a_text[0] = '\0';
+	a->a_used = 0;
+
+	guidhex = buf_to_hex(ebox_tpl_part_guid(part),
+	    4, B_FALSE);
+	answer_printf(a, "%s", guidhex);
+	name = ebox_tpl_part_name(part);
+	if (name != NULL) {
+		answer_printf(a, " (%s)", name);
+	}
+
+	free(guidhex);
+}
+
+void
+make_answer_text_for_config(struct ebox_tpl_config *config, struct answer *a)
+{
+	struct ebox_tpl_part *part, *npart;
+	const char *name;
+	char *guidhex = NULL;
+
+	a->a_text[0] = '\0';
+	a->a_used = 0;
+
+	switch (ebox_tpl_config_type(config)) {
+	case EBOX_PRIMARY:
+		part = ebox_tpl_config_next_part(config, NULL);
+		if (part == NULL) {
+			answer_printf(a, "primary: none");
+			break;
+		}
+		free(guidhex);
+		guidhex = buf_to_hex(ebox_tpl_part_guid(part),
+		    4, B_FALSE);
+		answer_printf(a, "primary: %s", guidhex);
+		name = ebox_tpl_part_name(part);
+		if (name != NULL) {
+			answer_printf(a, " (%s)", name);
+		}
+		break;
+	case EBOX_RECOVERY:
+		answer_printf(a, "recovery: any %u of: ",
+		    ebox_tpl_config_n(config));
+		part = ebox_tpl_config_next_part(config, NULL);
+		while (part != NULL) {
+			npart = ebox_tpl_config_next_part(
+			    config, part);
+			free(guidhex);
+			guidhex = buf_to_hex(
+			    ebox_tpl_part_guid(part), 4,
+			    B_FALSE);
+			answer_printf(a, "%s", guidhex);
+			name = ebox_tpl_part_name(part);
+			if (name != NULL) {
+				answer_printf(a, " (%s)", name);
+			}
+			if (npart != NULL) {
+				answer_printf(a, ", ");
+			}
+			part = npart;
+		}
+		break;
+	}
+	free(guidhex);
 }

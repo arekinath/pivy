@@ -46,6 +46,7 @@ enum ebox_exit_status {
 	EXIT_INTERACTIVE = 3,
 	EXIT_PIN = 4,
 	EXIT_PIN_LOCKED = 5,
+	EXIT_ALREADY_UNLOCKED = 6,
 };
 
 #define	TPL_DEFAULT_PATH	"%s/.ebox/tpl/%s"
@@ -64,7 +65,9 @@ struct ebox_tpl *read_tpl_file(const char *tpl);
 errf_t *local_unlock_agent(struct piv_ecdh_box *box);
 errf_t *local_unlock(struct piv_ecdh_box *box, struct sshkey *cak,
     const char *name);
-errf_t *interactive_recovery(struct ebox_config *config);
+errf_t *interactive_recovery(struct ebox_config *config, const char *what);
+
+void interactive_select_local_token(struct ebox_tpl_part **ppart);
 
 #define	Q_MAX_LEN	2048
 #define	ANS_MAX_LEN	512
@@ -98,6 +101,10 @@ void question_printf(struct question *q, const char *fmt, ...);
 void question_free(struct question *q);
 void question_prompt(struct question *q, struct answer **ansp);
 void qa_term_setup(void);
+
+void make_answer_text_for_part(struct ebox_tpl_part *part, struct answer *a);
+void make_answer_text_for_config(struct ebox_tpl_config *config,
+    struct answer *a);
 
 void printwrap(FILE *stream, const char *data, size_t col);
 
