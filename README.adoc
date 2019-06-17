@@ -342,24 +342,58 @@ $ zfs get -Ho value local:ebox pool/filesystem | \
     zfs load-key pool/filesystem
 ----
 
-Or with LUKS (frustratingly, you have to put the raw key material into a file
-somewhere temporarily during LUKS setup as it is today -- in this example I
-put it in `/dev/shm` so it's hopefully only in RAM and shred it afterwards):
+The `pivy-zfs` tool wraps these steps up into single commands:
 
 ----
 $ pivy-box tpl create foobar ...
-$ pivy-box key generate foobar -l 32 > /tmp/newkey.ebox
-$ pivy-box key unlock -R < /tmp/newkey.ebox > /dev/shm/tempkey
-$ cryptsetup luksFormat /dev/sdX /dev/shm/tempkey
-$ shred tempkey
-$ echo '{"type":"ebox","keyslots":["0"],"ebox":"'"$(cat /tmp/newkey.ebox | tr -d '\n')"'"}' > /tmp/token.json
-$ cryptsetup token import /dev/sdX --json-file /tmp/token.json
-$ rm /tmp/newkey.ebox /tmp/token.json
+$ pivy-zfs -t foobar zfs-create pool/filesystem
 
-$ cryptsetup token export /dev/sdX --token-id 0 | \
-    json ebox | \
-    pivy-box key unlock -R | \
-    cryptsetup open /dev/sdX mapper_name --key-file -
+$ pivy-zfs unlock pool/filesystem
+----
+
+With LUKS/cryptsetup we can store the ebox data in a LUKS2 JSON token slot. The
+`pivy-luks` tool handles formatting and unlocking LUKS2 partitions with the
+raw volume key encoded directly in the ebox and no passphrase keyslot:
+
+----
+$ pivy-box tpl create foobar ...
+$ pivy-luks format -t foobar /dev/sdx2
+
+$ pivy-luks unlock /dev/sdx2
+----
+
+Other `cryptsetup` commands work on a `pivy-luks` partition as normal:
+
+----
+$ cryptsetup luksDump /dev/sdx2
+LUKS header information
+Version:        2
+Epoch:          3
+Metadata area:  16384 [bytes]
+Keyslots area:  16744448 [bytes]
+UUID:           c0b8d772-5418-4460-81c5-a5abe20b85fa
+Label:          (no label)
+Subsystem:      (no subsystem)
+Flags:          (no flags)
+
+Data segments:
+  0: crypt
+  offset: 16777216 [bytes]
+  length: (whole device)
+  cipher: aes-xts-plain64
+  sector: 4096 [bytes]
+
+Keyslots:
+Tokens:
+  1: ebox
+Digests:
+  0: pbkdf2
+  Hash:       sha256
+  Iterations: 226376
+  Salt:       fe 5a 67 a7 05 95 e5 06 61 be c5 aa 06 48 ca 97
+              2a fb c5 eb 0d 42 a1 83 bd 39 61 fb a8 2f 0b bb
+  Digest:     8a 45 6b d0 2c cb 5d b2 51 25 db 3e fd 3a 6f fb
+              e2 db 7a de c4 66 85 46 30 05 41 0e e8 eb 8d 3e
 ----
 
 ### Recovery and challenge-response
