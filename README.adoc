@@ -367,7 +367,7 @@ raw volume key encoded directly in the ebox and no passphrase keyslot:
 $ pivy-box tpl create foobar ...
 $ pivy-luks format -t foobar /dev/sdx2
 
-$ pivy-luks unlock /dev/sdx2
+$ pivy-luks unlock /dev/sdx2 volname
 ----
 
 Other `cryptsetup` commands work on a `pivy-luks` partition as normal:
