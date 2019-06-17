@@ -325,6 +325,8 @@ In both types, no data is ever output by the `pivy-box` command from decryption
 unless it has passed MAC validation (i.e. all forms available are authenticated
 encryption).
 
+### ZFS encryption
+
 An example of using a "key" ebox with ZFS encryption:
 
 ----
@@ -350,6 +352,12 @@ $ pivy-zfs -t foobar zfs-create pool/filesystem
 
 $ pivy-zfs unlock pool/filesystem
 ----
+
+The `pivy-zfs unlock` command also will prompt you to add a new primary token
+if you finish recovery successfully, which also makes it preferable to scripting
+the `zfs load-key` command yourself.
+
+### LUKS/cryptsetup
 
 With LUKS/cryptsetup we can store the ebox data in a LUKS2 JSON token slot. The
 `pivy-luks` tool handles formatting and unlocking LUKS2 partitions with the
@@ -395,6 +403,9 @@ Digests:
   Digest:     8a 45 6b d0 2c cb 5d b2 51 25 db 3e fd 3a 6f fb
               e2 db 7a de c4 66 85 46 30 05 41 0e e8 eb 8d 3e
 ----
+
+Note that the resulting LUKS header has no keyslots (so there is no passphrase
+that will unlock the volume key for this partition, only the ebox).
 
 ### Recovery and challenge-response
 
