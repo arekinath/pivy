@@ -69,6 +69,7 @@
 #include "ebox-cmd.h"
 
 static struct ebox_tpl *lukstpl;
+static size_t luks_sectorsz;
 
 #define	lukserrf(func, rc)	\
     errfno(func, (-1*rc), NULL)
@@ -464,7 +465,7 @@ cmd_format(const char *devname)
 	}
 
 	bzero(&params, sizeof (params));
-	params.sector_size = 4096;
+	params.sector_size = luks_sectorsz;
 
 	key = calloc(1, 32);
 	keylen = 32;
@@ -518,6 +519,7 @@ usage(void)
 	    "Options:\n"
 	    "  -d                                    Debug mode\n"
 	    "  -t tplname                            Template name or path\n"
+	    "  -s bytes                              Set LUKS sector size (for format)\n"
 	    "\n"
 	    "Available operations:\n"
 	    "  unlock <device> <mapper name>         Unlock/activate a LUKS device\n"
@@ -534,8 +536,10 @@ main(int argc, char *argv[])
 	extern char *optarg;
 	extern int optind;
 	int c;
-	const char *optstring = "t:d";
+	const char *optstring = "t:ds:";
 	const char *tpl = NULL;
+	unsigned long int parsed;
+	char *p;
 
 	qa_term_setup();
 	bunyan_init();
@@ -549,6 +553,17 @@ main(int argc, char *argv[])
 		case 't':
 			tpl = optarg;
 			break;
+		case 's':
+			errno = 0;
+			parsed = strtoul(optarg, &p, 0);
+			if (errno != 0 || *p != '\0') {
+				errx(EXIT_USAGE,
+				    "invalid argument for -s: '%s'", optarg);
+			}
+			luks_sectorsz = parsed;
+			break;
+		default:
+			usage();
 		}
 	}
 
