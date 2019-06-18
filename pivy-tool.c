@@ -569,7 +569,7 @@ cmd_init(void)
 
 	/* Our card ID */
 	tlv_push(ccc, 0xF0);
-	tlv_write(ccc, cardId, 0, sizeof (cardId));
+	tlv_write(ccc, cardId, sizeof (cardId));
 	tlv_pop(ccc);
 
 	/* Container version numbers */
@@ -609,15 +609,15 @@ cmd_init(void)
 	chuid = tlv_init_write();
 
 	tlv_push(chuid, 0x30);
-	tlv_write(chuid, fascn, 0, sizeof (fascn));
+	tlv_write(chuid, fascn, sizeof (fascn));
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x34);
-	tlv_write(chuid, nguid, 0, sizeof (nguid));
+	tlv_write(chuid, nguid, sizeof (nguid));
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x35);
-	tlv_write(chuid, expiry, 0, sizeof (expiry));
+	tlv_write(chuid, expiry, sizeof (expiry));
 	tlv_pop(chuid);
 
 	tlv_push(chuid, 0x3E);

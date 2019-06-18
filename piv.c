@@ -651,7 +651,7 @@ piv_read_discov(struct piv_token *pk)
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x5C);
-	tlv_write_uint(tlv, PIV_TAG_DISCOV);
+	tlv_write_u8to32(tlv, PIV_TAG_DISCOV);
 	tlv_pop(tlv);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
@@ -697,7 +697,7 @@ piv_read_discov(struct piv_token *pk)
 				tlv_skip(tlv);
 				break;
 			case 0x5F2F:	/* PIN and OCC policy */
-				if ((err = tlv_read_uint(tlv, &policy)))
+				if ((err = tlv_read_u8to32(tlv, &policy)))
 					goto invdata;
 				bunyan_log(TRACE, "policy in discov",
 				    "policy", BNY_UINT, policy, NULL);
@@ -772,13 +772,12 @@ piv_read_keyhist(struct piv_token *pk)
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag, uval;
-	size_t used;
 
 	VERIFY(pk->pt_intxn == B_TRUE);
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x5C);
-	tlv_write_uint(tlv, PIV_TAG_KEYHIST);
+	tlv_write_u8to32(tlv, PIV_TAG_KEYHIST);
 	tlv_pop(tlv);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
@@ -820,26 +819,22 @@ piv_read_keyhist(struct piv_token *pk)
 			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0xC1:	/* # keys with on-card certs */
-				if ((rv = tlv_read_uint(tlv, &uval)))
+				if ((rv = tlv_read_u8to32(tlv, &uval)))
 					goto invdata;
 				pk->pt_hist_oncard = uval;
 				if ((rv = tlv_end(tlv)))
 					goto invdata;
 				break;
 			case 0xC2:	/* # keys with off-card certs */
-				if ((rv = tlv_read_uint(tlv, &uval)))
+				if ((rv = tlv_read_u8to32(tlv, &uval)))
 					goto invdata;
 				pk->pt_hist_offcard = uval;
 				tlv_end(tlv);
 				break;
 			case 0xF3:	/* URL for off-card certs */
-				pk->pt_hist_url = malloc(tlv_rem(tlv) + 1);
-				VERIFY(pk->pt_hist_url != NULL);
-				rv = tlv_read(tlv, (uint8_t *)pk->pt_hist_url,
-				    0, tlv_rem(tlv), &used);
+				rv = tlv_read_string(tlv, &pk->pt_hist_url);
 				if (rv != NULL)
 					goto invdata;
-				pk->pt_hist_url[used] = 0;
 				if ((rv = tlv_end(tlv)))
 					goto invdata;
 				break;
@@ -892,13 +887,12 @@ piv_read_chuid(struct piv_token *pk)
 	struct apdu *apdu;
 	struct tlv_state *tlv;
 	uint tag, i;
-	size_t used;
 
 	VERIFY(pk->pt_intxn == B_TRUE);
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x5C);
-	tlv_write_uint(tlv, PIV_TAG_CHUID);
+	tlv_write_u8to32(tlv, PIV_TAG_CHUID);
 	tlv_pop(tlv);
 
 	bunyan_log(DEBUG, "reading CHUID file", NULL);
@@ -936,7 +930,7 @@ piv_read_chuid(struct piv_token *pk)
 			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0x30:	/* FASC-N */
-				err = tlv_read(tlv, pk->pt_fascn, 0,
+				err = tlv_read_upto(tlv, pk->pt_fascn,
 				    sizeof (pk->pt_fascn), &pk->pt_fascn_len);
 				if (err)
 					goto invdata;
@@ -950,30 +944,19 @@ piv_read_chuid(struct piv_token *pk)
 				tlv_skip(tlv);
 				break;
 			case 0x35:	/* Expiration date */
-				err = tlv_read(tlv, pk->pt_expiry, 0,
-				    sizeof (pk->pt_expiry), &used);
+				err = tlv_read(tlv, pk->pt_expiry,
+				    sizeof (pk->pt_expiry));
 				if (err)
 					goto invdata;
-				if (used < sizeof (pk->pt_expiry)) {
-					bunyan_log(DEBUG, "card expiry date "
-					    "is short", "len", BNY_UINT, used,
-					    NULL);
-				}
 				if ((err = tlv_end(tlv)))
 					goto invdata;
 				break;
 			case 0x36:	/* Cardholder UUID */
 				pk->pt_haschuuid = B_TRUE;
-				if ((err = tlv_read(tlv, pk->pt_chuuid, 0,
-				    sizeof (pk->pt_chuuid), &used))) {
+				err = tlv_read(tlv, pk->pt_chuuid,
+				    sizeof (pk->pt_chuuid));
+				if (err)
 					goto invdata;
-				}
-				if (used != sizeof (pk->pt_chuuid)) {
-					err = errf("LengthError", NULL,
-					    "invalid length for UUID: %u bytes",
-					    used);
-					goto invdata;
-				}
 				if ((err = tlv_end(tlv)))
 					goto invdata;
 				break;
@@ -983,16 +966,10 @@ piv_read_chuid(struct piv_token *pk)
 				tlv_skip(tlv);
 				break;
 			case 0x34:	/* Card GUID */
-				err = tlv_read(tlv, pk->pt_guid, 0,
-				    sizeof (pk->pt_guid), &used);
+				err = tlv_read(tlv, pk->pt_guid,
+				    sizeof (pk->pt_guid));
 				if (err)
 					goto invdata;
-				if (used != sizeof (pk->pt_guid)) {
-					err = errf("LengthError", NULL,
-					    "invalid length for GUID: %u bytes",
-					    used);
-					goto invdata;
-				}
 				bunyan_log(TRACE, "read guid",
 				    "guid", BNY_BIN_HEX, pk->pt_guid,
 				    sizeof (pk->pt_guid), NULL);
@@ -1827,7 +1804,7 @@ piv_select(struct piv_token *tk)
 						goto invdata;
 					if (tag == 0x80) {
 						idx = tk->pt_alg_count++;
-						rv = tlv_read_uint(tlv, &uval);
+						rv = tlv_read_u8to32(tlv, &uval);
 						if (rv)
 							goto invdata;
 						tk->pt_algs[idx] = uval;
@@ -1953,10 +1930,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 		if ((err = tlv_read_tag(tlv, &tag)))
 			goto invdata;
 		if (tag == GA_TAG_CHALLENGE) {
-			challen = tlv_rem(tlv);
-			chal = calloc(1, challen);
-			VERIFY(chal != NULL);
-			err = tlv_read(tlv, chal, 0, challen, &challen);
+			err = tlv_read_alloc(tlv, &chal, &challen);
 			if (err)
 				goto invdata;
 			if ((err = tlv_end(tlv)))
@@ -1999,7 +1973,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x7C);
 	tlv_push(tlv, GA_TAG_RESPONSE);
-	tlv_write(tlv, resp, 0, resplen);
+	tlv_write(tlv, resp, resplen);
 	tlv_pop(tlv);
 	tlv_pop(tlv);
 
@@ -2072,10 +2046,10 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x5C);
-	tlv_write_uint(tlv, tag);
+	tlv_write_u8to32(tlv, tag);
 	tlv_pop(tlv);
 	tlv_pushl(tlv, 0x53, len + 8);
-	tlv_write(tlv, (uint8_t *)data, 0, len);
+	tlv_write(tlv, (uint8_t *)data, len);
 	tlv_pop(tlv);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_PUT_DATA, 0x3F, 0xFF);
@@ -2266,7 +2240,7 @@ piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0xAC);
 	tlv_push(tlv, 0x80);
-	tlv_write_uint(tlv, alg);
+	tlv_write_u8to32(tlv, alg);
 	tlv_pop(tlv);
 	tlv_pop(tlv);
 
@@ -2302,16 +2276,16 @@ ykpiv_generate(struct piv_token *pt, enum piv_slotid slotid,
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0xAC);
 	tlv_push(tlv, 0x80);
-	tlv_write_uint(tlv, alg);
+	tlv_write_u8to32(tlv, alg);
 	tlv_pop(tlv);
 	if (pinpolicy != YKPIV_PIN_DEFAULT) {
 		tlv_push(tlv, 0xAA);
-		tlv_write_uint(tlv, pinpolicy);
+		tlv_write_u8to32(tlv, pinpolicy);
 		tlv_pop(tlv);
 	}
 	if (touchpolicy != YKPIV_TOUCH_DEFAULT) {
 		tlv_push(tlv, 0xAB);
-		tlv_write_uint(tlv, touchpolicy);
+		tlv_write_u8to32(tlv, touchpolicy);
 		tlv_pop(tlv);
 	}
 	tlv_pop(tlv);
@@ -2342,7 +2316,7 @@ tlv_write_bignum(struct tlv_state *tlv, uint tag, const BIGNUM *v)
 		goto out;
 	}
 	tlv_pushl(tlv, tag, len);
-	tlv_write(tlv, d, 0, len);
+	tlv_write(tlv, d, len);
 	tlv_pop(tlv);
 
 out:
@@ -2465,17 +2439,16 @@ piv_write_keyhistory(struct piv_token *pt, uint oncard, uint offcard,
 	tlv = tlv_init_write();
 
 	tlv_push(tlv, 0xC1);
-	tlv_write_uint(tlv, oncard);
+	tlv_write_u8to32(tlv, oncard);
 	tlv_pop(tlv);
 
 	tlv_push(tlv, 0xC2);
-	tlv_write_uint(tlv, offcard);
+	tlv_write_u8to32(tlv, offcard);
 	tlv_pop(tlv);
 
 	if (offcard_url != NULL) {
 		tlv_push(tlv, 0xF3);
-		tlv_write(tlv, (uint8_t *)offcard_url, 0,
-		    strlen(offcard_url));
+		tlv_write(tlv, (uint8_t *)offcard_url, strlen(offcard_url));
 		tlv_pop(tlv);
 	}
 
@@ -2527,7 +2500,7 @@ piv_write_cert(struct piv_token *pk, enum piv_slotid slotid,
 
 	tlv = tlv_init_write();
 	tlv_pushl(tlv, 0x70, datalen + 3);
-	tlv_write(tlv, data, 0, datalen);
+	tlv_write(tlv, data, datalen);
 	tlv_pop(tlv);
 	tlv_push(tlv, 0x71);
 	tlv_write_byte(tlv, (uint8_t)flags);
@@ -2613,7 +2586,7 @@ piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 
 	tlv = tlv_init_write();
 	tlv_push(tlv, 0x5C);
-	tlv_write_uint(tlv, tag);
+	tlv_write_u8to32(tlv, tag);
 	tlv_pop(tlv);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
@@ -2650,9 +2623,7 @@ piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 			err = tagerrf("INS_GET_DATA(%x)", rtag, tag);
 			goto invdata;
 		}
-		*data = malloc(tlv_rem(tlv));
-		VERIFY(*data != NULL);
-		err = tlv_read(tlv, *data, 0, tlv_rem(tlv), len);
+		err = tlv_read_alloc(tlv, data, len);
 		if (err)
 			goto invdata;
 		if ((err = tlv_end(tlv)))
@@ -2714,21 +2685,21 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	tlv_push(tlv, 0x5C);
 	switch (slotid) {
 	case PIV_SLOT_9A:
-		tlv_write_uint(tlv, PIV_TAG_CERT_9A);
+		tlv_write_u8to32(tlv, PIV_TAG_CERT_9A);
 		break;
 	case PIV_SLOT_9C:
-		tlv_write_uint(tlv, PIV_TAG_CERT_9C);
+		tlv_write_u8to32(tlv, PIV_TAG_CERT_9C);
 		break;
 	case PIV_SLOT_9D:
-		tlv_write_uint(tlv, PIV_TAG_CERT_9D);
+		tlv_write_u8to32(tlv, PIV_TAG_CERT_9D);
 		break;
 	case PIV_SLOT_9E:
-		tlv_write_uint(tlv, PIV_TAG_CERT_9E);
+		tlv_write_u8to32(tlv, PIV_TAG_CERT_9E);
 		break;
 	default:
 		if (slotid >= PIV_SLOT_RETIRED_1 &&
 		    slotid <= PIV_SLOT_RETIRED_20) {
-			tlv_write_uint(tlv, PIV_TAG_CERT_82 +
+			tlv_write_u8to32(tlv, PIV_TAG_CERT_82 +
 			    (slotid - PIV_SLOT_82));
 			break;
 		}
@@ -2780,7 +2751,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			if ((err = tlv_read_tag(tlv, &tag)))
 				goto invdata;
 			if (tag == 0x71) {
-				if ((err = tlv_read_byte(tlv, &certinfo)) ||
+				if ((err = tlv_read_u8(tlv, &certinfo)) ||
 				    (err = tlv_end(tlv))) {
 					goto invdata;
 				}
@@ -3705,7 +3676,7 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 	tlv_pop(tlv);
 	/* And now push the data we're providing (the CHALLENGE). */
 	tlv_pushl(tlv, GA_TAG_CHALLENGE, hashlen);
-	tlv_write(tlv, hash, 0, hashlen);
+	tlv_write(tlv, hash, hashlen);
 	tlv_pop(tlv);
 	tlv_pop(tlv);
 
@@ -3742,12 +3713,9 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 			goto invdata;
 		}
 
-		*siglen = tlv_rem(tlv);
-		buf = calloc(1, *siglen);
-		VERIFY(buf != NULL);
-		if ((err = tlv_read(tlv, buf, 0, *siglen, siglen))) {
+		err = tlv_read_alloc(tlv, &buf, siglen);
+		if (err)
 			goto invdata;
-		}
 		if ((err = tlv_end(tlv)) ||
 		    (err = tlv_end(tlv))) {
 			goto invdata;
@@ -3816,7 +3784,7 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 	tlv_push(tlv, GA_TAG_RESPONSE);
 	tlv_pop(tlv);
 	tlv_pushl(tlv, GA_TAG_EXP, len);
-	tlv_write(tlv, buf, 0, len);
+	tlv_write(tlv, buf, len);
 	sshbuf_free(sbuf);
 	tlv_pop(tlv);
 	tlv_pop(tlv);
@@ -3857,10 +3825,7 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 			goto invdata;
 		}
 
-		*seclen = tlv_rem(tlv);
-		buf = calloc(1, *seclen);
-		VERIFY(buf != NULL);
-		if ((err = tlv_read(tlv, buf, 0, *seclen, seclen)) ||
+		if ((err = tlv_read_alloc(tlv, &buf, seclen)) ||
 		    (err = tlv_end(tlv)) ||
 		    (err = tlv_end(tlv))) {
 			goto invdata;
