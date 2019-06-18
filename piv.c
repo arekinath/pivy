@@ -829,7 +829,8 @@ piv_read_keyhist(struct piv_token *pk)
 				if ((rv = tlv_read_u8to32(tlv, &uval)))
 					goto invdata;
 				pk->pt_hist_offcard = uval;
-				tlv_end(tlv);
+				if ((rv = tlv_end(tlv)))
+					goto invdata;
 				break;
 			case 0xF3:	/* URL for off-card certs */
 				rv = tlv_read_string(tlv, &pk->pt_hist_url);
@@ -1084,7 +1085,12 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			VERIFY(0);
 		}
 
-		piv_txn_begin(key);
+		if ((err = piv_txn_begin(key))) {
+			bunyan_log(DEBUG, "piv_txn_begin failed",
+			    "error", BNY_ERF, err, NULL);
+			errf_free(err);
+			continue;
+		}
 		err = piv_select(key);
 		if (err == ERRF_OK) {
 			err = piv_read_chuid(key);
@@ -1200,7 +1206,10 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			VERIFY(0);
 		}
 
-		piv_txn_begin(key);
+		if ((err = piv_txn_begin(key))) {
+			errf_free(err);
+			goto nopenotxn;
+		}
 		err = piv_select(key);
 		if (err) {
 			errf_free(err);
@@ -1258,6 +1267,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 
 nope:
 		piv_txn_end(key);
+nopenotxn:
 		(void) SCardDisconnect(card, SCARD_RESET_CARD);
 		free((char *)key->pt_rdrname);
 		bzero(key, sizeof (struct piv_token));
@@ -1827,7 +1837,8 @@ piv_select(struct piv_token *tk)
 				goto invdata;
 			}
 		}
-		tlv_end(tlv);
+		if ((rv = tlv_end(tlv)))
+			goto invdata;
 		rv = NULL;
 	} else {
 		rv = errf("NotFoundError", swerrf("INS_SELECT", apdu->a_sw),
