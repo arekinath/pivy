@@ -138,13 +138,16 @@ void *ebox_tpl_part_alloc_private(struct ebox_tpl_part *part, size_t sz);
 void ebox_tpl_part_free_private(struct ebox_tpl_part *part);
 
 /* Serialise and de-serialise an ebox structure. */
+MUST_CHECK
 errf_t *sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **tpl);
+MUST_CHECK
 errf_t *sshbuf_put_ebox_tpl(struct sshbuf *buf, struct ebox_tpl *tpl);
 
 /*
  * Creates a new ebox based on a given template, sealing up the provided key
  * and (optional) recovery token.
  */
+MUST_CHECK
 errf_t *ebox_create(const struct ebox_tpl *tpl, const uint8_t *key,
     size_t keylen, const uint8_t *rtoken, size_t rtokenlen,
     struct ebox **pebox);
@@ -192,7 +195,9 @@ struct ebox_part *ebox_config_next_part(const struct ebox_config *config,
 struct piv_ecdh_box *ebox_part_box(const struct ebox_part *part);
 
 /* Serialise/de-serialise an ebox */
+MUST_CHECK
 errf_t *sshbuf_get_ebox(struct sshbuf *buf, struct ebox **box);
+MUST_CHECK
 errf_t *sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
 
 /*
@@ -204,6 +209,7 @@ errf_t *sshbuf_put_ebox(struct sshbuf *buf, struct ebox *box);
  * Errors:
  *  - InsufficientParts: none of the part boxes were unsealed
  */
+MUST_CHECK
 errf_t *ebox_unlock(struct ebox *ebox, struct ebox_config *config);
 
 /*
@@ -218,6 +224,7 @@ errf_t *ebox_unlock(struct ebox *ebox, struct ebox_config *config);
  *  - AlreadyUnlocked: the ebox is already unlocked or recovered
  *  - RecoveryFailed: the recovery box data was invalid or corrupt
  */
+MUST_CHECK
 errf_t *ebox_recover(struct ebox *ebox, struct ebox_config *config);
 
 /*
@@ -245,6 +252,7 @@ void *ebox_part_alloc_private(struct ebox_part *part, size_t sz);
  * Errors:
  *  - LengthError: description was too long for available space
  */
+MUST_CHECK
 errf_t *ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
     const char *descfmt, ...);
 const struct ebox_challenge *ebox_part_challenge(const struct ebox_part *part);
@@ -256,6 +264,7 @@ void ebox_challenge_free(struct ebox_challenge *chal);
  *
  * The data written in the buf is ready to be transported to a remote machine.
  */
+MUST_CHECK
 errf_t *sshbuf_put_ebox_challenge(struct sshbuf *buf,
     const struct ebox_challenge *chal);
 
@@ -263,6 +272,7 @@ errf_t *sshbuf_put_ebox_challenge(struct sshbuf *buf,
  * De-serializes an ebox challenge from inside a piv_ecdh_box. The piv_ecdh_box
  * must be already unsealed.
  */
+MUST_CHECK
 errf_t *sshbuf_get_ebox_challenge(struct piv_ecdh_box *box,
     struct ebox_challenge **chal);
 
@@ -292,6 +302,7 @@ struct piv_ecdh_box *ebox_challenge_box(const struct ebox_challenge *chal);
  * The data written in the buf is ready to be transported to the original
  * requesting machine.
  */
+MUST_CHECK
 errf_t *sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
     const struct ebox_challenge *chal);
 
@@ -304,14 +315,18 @@ errf_t *sshbuf_put_ebox_challenge_response(struct sshbuf *buf,
  * Errors:
  *  - EAGAIN: this challenge matched a part that is already unlocked
  */
+MUST_CHECK
 errf_t *ebox_challenge_response(struct ebox_config *config,
     struct piv_ecdh_box *respbox, struct ebox_part **ppart);
 
-
+MUST_CHECK
 errf_t *sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **str);
+MUST_CHECK
 errf_t *sshbuf_put_ebox_stream(struct sshbuf *buf, struct ebox_stream *str);
+MUST_CHECK
 errf_t *sshbuf_get_ebox_stream_chunk(struct sshbuf *buf,
     const struct ebox_stream *stream, struct ebox_stream_chunk **chunk);
+MUST_CHECK
 errf_t *sshbuf_put_ebox_stream_chunk(struct sshbuf *buf,
     struct ebox_stream_chunk *chunk);
 
@@ -321,11 +336,15 @@ const char *ebox_stream_mac(const struct ebox_stream *str);
 size_t ebox_stream_chunk_size(const struct ebox_stream *str);
 size_t ebox_stream_seek_offset(const struct ebox_stream *str, size_t offset);
 
+MUST_CHECK
 errf_t *ebox_stream_new(const struct ebox_tpl *tpl, struct ebox_stream **str);
+MUST_CHECK
 errf_t *ebox_stream_chunk_new(const struct ebox_stream *str, const void *data,
     size_t size, size_t seqnr, struct ebox_stream_chunk **chunk);
 
+MUST_CHECK
 errf_t *ebox_stream_decrypt_chunk(struct ebox_stream_chunk *chunk);
+MUST_CHECK
 errf_t *ebox_stream_encrypt_chunk(struct ebox_stream_chunk *chunk);
 const uint8_t *ebox_stream_chunk_data(const struct ebox_stream_chunk *chunk,
     size_t *size);

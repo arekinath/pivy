@@ -67,12 +67,14 @@ void tlv_enable_debug(struct tlv_state *ts);
  * Begins reading a BER-TLV tag. This will perform length validation before
  * returning.
  */
+MUST_CHECK
 errf_t *tlv_read_tag(struct tlv_state *ts, uint *tag);
 
 /*
  * Ends the parsing of the current tag, asserting that all bytes in the tag
  * have been consumed. Error will be returned if there are outstanding bytes.
  */
+MUST_CHECK
 errf_t *tlv_end(struct tlv_state *ts);
 
 /*
@@ -87,33 +89,40 @@ void tlv_skip(struct tlv_state *ts);
 void tlv_abort(struct tlv_state *ts);
 
 /* Read an integer from the current tag. */
+MUST_CHECK
 errf_t *tlv_read_u8(struct tlv_state *ts, uint8_t *out);
+MUST_CHECK
 errf_t *tlv_read_u16(struct tlv_state *ts, uint16_t *out);
 /*
  * Reads the remainder of the current tag as a single number, from 1-4 bytes
  * in length.
  */
+MUST_CHECK
 errf_t *tlv_read_u8to32(struct tlv_state *ts, uint32_t *out);
 
 /*
  * Read the remaining contents of the current tag as a fixed-length buffer. If
  * the length doesn't match exactly, returns error.
  */
+MUST_CHECK
 errf_t *tlv_read(struct tlv_state *ts, uint8_t *dest, size_t len);
 /*
  * Read the remaining contents of the current tag as a newly allocated buffer.
  * Writes the length of the buffer into *len. Caller has to free the buffer
  * with free().
  */
+MUST_CHECK
 errf_t *tlv_read_alloc(struct tlv_state *ts, uint8_t **data, size_t *len);
 /*
  * Reads up to maxLen bytes into dest. If the end of the tag is encountered
  * before maxLen bytes are read, will read to the end of the tag. Length
  * actually written is placed in *len.
  */
+MUST_CHECK
 errf_t *tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
     size_t *len);
 
+MUST_CHECK
 errf_t *tlv_read_string(struct tlv_state *ts, char **dest);
 
 static inline boolean_t

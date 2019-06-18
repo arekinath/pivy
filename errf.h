@@ -51,6 +51,9 @@
 struct errf;
 typedef struct errf errf_t;
 
+/* Define this here since it's pretty useful for things that return errf_t */
+#define MUST_CHECK  __attribute__((warn_unused_result))
+
 #define ERRF_OK     NULL
 extern struct errf *ERRF_NOMEM;
 

@@ -223,6 +223,7 @@ struct piv_token;
  * Errors:
  *  - PCSCError: a PCSC call failed in a way that is not retryable
  */
+MUST_CHECK
 errf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
 
 /*
@@ -239,6 +240,7 @@ errf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
  *  - DuplicateError: a GUID prefix was given and it is not unique on the system
  *  - NotFoundError: token matching the guid was not found
  */
+MUST_CHECK
 errf_t *piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
     struct piv_token **token);
 
@@ -393,6 +395,7 @@ struct sshkey *piv_slot_pubkey(const struct piv_slot *slot);
  * Errors:
  *  - IOError: general communication failure
  */
+MUST_CHECK
 errf_t *piv_txn_begin(struct piv_token *key);
 
 /*
@@ -413,6 +416,7 @@ boolean_t piv_token_in_txn(const struct piv_token *token);
  *                      select command
  *  - NotFoundError: PIV applet not found on card
  */
+MUST_CHECK
 errf_t *piv_select(struct piv_token *tk);
 
 /*
@@ -433,12 +437,14 @@ errf_t *piv_select(struct piv_token *tk);
  *                      certificate
  *  - APDUError: card rejected the request (e.g because applet not selected)
  */
+MUST_CHECK
 errf_t *piv_read_cert(struct piv_token *tk, enum piv_slotid slotid);
 /*
  * Attempts to read certificates in all supported PIV slots on the card, by
  * calling piv_read_cert repeatedly. Ignores ENOENT and ENOTSUP errors. Any
  * other error will return early and may not try all slots.
  */
+MUST_CHECK
 errf_t *piv_read_all_certs(struct piv_token *tk);
 
 /*
@@ -453,6 +459,7 @@ errf_t *piv_read_all_certs(struct piv_token *tk);
  *                     this interface (e.g. contactless)
  *  - APDUError: the card rejected the command
  */
+MUST_CHECK
 errf_t *piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
 
 /*
@@ -465,6 +472,7 @@ errf_t *piv_auth_admin(struct piv_token *tk, const uint8_t *key, size_t keylen);
  *  - PermissionError: must call piv_auth_admin() first
  *  - APDUError: the card rejected the command
  */
+MUST_CHECK
 errf_t *ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
     enum ykpiv_touch_policy touchpolicy);
 
@@ -483,6 +491,7 @@ errf_t *ykpiv_set_admin(struct piv_token *tk, const uint8_t *key, size_t keylen,
  *                      or unsafe to use (e.g. bad EC public point)
  *  - APDUError: the card rejected the command
  */
+MUST_CHECK
 errf_t *piv_generate(struct piv_token *tk, enum piv_slotid slotid,
     enum piv_alg alg, struct sshkey **pubkey);
 
@@ -499,6 +508,7 @@ errf_t *piv_generate(struct piv_token *tk, enum piv_slotid slotid,
  *  - PermissionError: the card requires admin authentication before writing
  *  - APDUError: the card rejected the command
  */
+MUST_CHECK
 errf_t *piv_write_keyhistory(struct piv_token *tk, uint oncard, uint offcard,
     const char *offcard_url);
 
@@ -518,6 +528,7 @@ errf_t *piv_write_keyhistory(struct piv_token *tk, uint oncard, uint offcard,
  *                      or unsafe to use (e.g. bad EC public point)
  *  - APDUError: the card rejected the command
  */
+MUST_CHECK
 errf_t *ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
     enum piv_alg alg, enum ykpiv_pin_policy pinpolicy,
     enum ykpiv_touch_policy touchpolicy, struct sshkey **pubkey);
@@ -533,6 +544,7 @@ errf_t *ykpiv_generate(struct piv_token *tk, enum piv_slotid slotid,
  *                     keys
  *  - APDUError: the card rejected the command
  */
+MUST_CHECK
 errf_t *ykpiv_import(struct piv_token *tk, enum piv_slotid slotid,
     struct sshkey *privkey, enum ykpiv_pin_policy pinpolicy,
     enum ykpiv_touch_policy touchpolicy);
@@ -549,6 +561,7 @@ errf_t *ykpiv_import(struct piv_token *tk, enum piv_slotid slotid,
  *  - NotSupportedError: slot unsupported
  *  - APDUError: other card error
  */
+MUST_CHECK
 errf_t *piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
     const uint8_t *data, size_t datalen, uint flags);
 
@@ -565,6 +578,7 @@ errf_t *piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
  *  - NotSupportedError: file object tag unsupported
  *  - APDUError: other card error
  */
+MUST_CHECK
 errf_t *piv_write_file(struct piv_token *pt, uint tag,
     const uint8_t *data, size_t len);
 
@@ -588,6 +602,7 @@ errf_t *piv_write_file(struct piv_token *pt, uint tag,
  *  - NotFoundError: no file found at the given tag
  *  - InvalidDataError: the tag structure returned by the card made no sense
  */
+MUST_CHECK
 errf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
     size_t *len);
 
@@ -634,6 +649,7 @@ void piv_file_data_free(uint8_t *data, size_t len);
  *                     remaining before the card locks itself (and potentially
  *                     erases keys)
  */
+MUST_CHECK
 errf_t *piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
     uint *retries, boolean_t canskip);
 
@@ -650,6 +666,7 @@ errf_t *piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  *               selected)
  *  - PermissionError: the old PIN code was incorrect.
  */
+MUST_CHECK
 errf_t *piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
     const char *newpin);
 
@@ -665,6 +682,7 @@ errf_t *piv_change_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
  *  - APDUError: the card rejected the command (e.g. because applet not selected)
  *  - PermissionError: the PUK was incorrect.
  */
+MUST_CHECK
 errf_t *piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
     const char *newpin);
 
@@ -682,6 +700,7 @@ errf_t *piv_reset_pin(struct piv_token *tk, enum piv_pin type, const char *puk,
  *  - ResetConditionsError: conditions to allow a factory reset were not met
  *                          (need to have PIN and PUK blocked)
  */
+MUST_CHECK
 errf_t *ykpiv_reset(struct piv_token *tk);
 
 /*
@@ -697,6 +716,7 @@ errf_t *ykpiv_reset(struct piv_token *tk);
  *  - PermissionError: the necessary auth has not been done before calling
  *                     (piv_auth_admin() and piv_verify_pin()).
  */
+MUST_CHECK
 errf_t *ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
 
 /*
@@ -714,6 +734,7 @@ errf_t *ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries
  *                  the provided pubkey, or because the signature did not
  *                  validate)
  */
+MUST_CHECK
 errf_t *piv_auth_key(struct piv_token *tk, struct piv_slot *slot,
     struct sshkey *pubkey);
 
@@ -725,6 +746,7 @@ errf_t *piv_auth_key(struct piv_token *tk, struct piv_slot *slot,
  *  - NotSupportedError: the card does not support YubicoPIV extensions
  *  - APDUError: the card rejected the command (e.g. because applet not selected)
  */
+MUST_CHECK
 errf_t *ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
     uint8_t **data, size_t *len);
 
@@ -756,9 +778,11 @@ errf_t *ykpiv_attest(struct piv_token *tk, struct piv_slot *slot,
  *                    the card
  *   - NotSupportedError: algorithm or slot is not supported
  */
+MUST_CHECK
 errf_t *piv_sign(struct piv_token *tk, struct piv_slot *slot,
     const uint8_t *data, size_t datalen, enum sshdigest_types *hashalgo,
     uint8_t **signature, size_t *siglen);
+MUST_CHECK
 errf_t *piv_sign_prehash(struct piv_token *tk, struct piv_slot *slot,
     const uint8_t *hash, size_t hashlen, uint8_t **signature, size_t *siglen);
 
@@ -779,6 +803,7 @@ errf_t *piv_sign_prehash(struct piv_token *tk, struct piv_slot *slot,
  *   - InvalidDataError: the card returned a GEN_AUTH payload type that isn't
  *                       supported or was invalid
  */
+MUST_CHECK
 errf_t *piv_ecdh(struct piv_token *tk, struct piv_slot *slot,
     struct sshkey *pubkey, uint8_t **secret, size_t *seclen);
 
@@ -789,11 +814,16 @@ struct piv_ecdh_box *piv_box_new(void);
 struct piv_ecdh_box *piv_box_clone(const struct piv_ecdh_box *box);
 void piv_box_free(struct piv_ecdh_box *box);
 
+MUST_CHECK
 errf_t *piv_box_set_data(struct piv_ecdh_box *box, const uint8_t *data, size_t len);
+MUST_CHECK
 errf_t *piv_box_set_datab(struct piv_ecdh_box *box, struct sshbuf *buf);
+MUST_CHECK
 errf_t *piv_box_seal(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box);
+MUST_CHECK
 errf_t *piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box);
+MUST_CHECK
 errf_t *piv_box_to_binary(struct piv_ecdh_box *box, uint8_t **output, size_t *len);
 
 boolean_t piv_box_has_guidslot(const struct piv_ecdh_box *box);
@@ -802,6 +832,7 @@ const char *piv_box_guid_hex(const struct piv_ecdh_box *box);
 enum piv_slotid piv_box_slot(const struct piv_ecdh_box *box);
 struct sshkey *piv_box_pubkey(const struct piv_ecdh_box *box);
 struct sshkey *piv_box_ephem_pubkey(const struct piv_ecdh_box *box);
+MUST_CHECK
 errf_t *piv_box_copy_pubkey(const struct piv_ecdh_box *box, struct sshkey **tgt);
 const char *piv_box_cipher(const struct piv_ecdh_box *box);
 const char *piv_box_kdf(const struct piv_ecdh_box *box);
@@ -814,17 +845,25 @@ void piv_box_set_guid(struct piv_ecdh_box *box, const uint8_t *guid,
     size_t len);
 void piv_box_set_slot(struct piv_ecdh_box *box, enum piv_slotid slot);
 
+MUST_CHECK
 errf_t *piv_box_from_binary(const uint8_t *input, size_t len,
     struct piv_ecdh_box **box);
+MUST_CHECK
 errf_t *piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
     struct piv_token **tk, struct piv_slot **slot);
+MUST_CHECK
 errf_t *piv_box_open(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box);
+MUST_CHECK
 errf_t *piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box);
+MUST_CHECK
 errf_t *piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
+MUST_CHECK
 errf_t *piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **buf);
 
+MUST_CHECK
 errf_t *sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
+MUST_CHECK
 errf_t *sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **box);
 
 /* Low-level APDU access */
@@ -916,12 +955,14 @@ void piv_apdu_free(struct apdu *pdu);
  * receiving a response. If ERRF_OK is returned, the APDU is then completed
  * and piv_apdu_sw() and piv_apdu_get_reply() can be used on it.
  */
+MUST_CHECK
 errf_t *piv_apdu_transceive(struct piv_token *pk, struct apdu *pdu);
 /*
  * Transceives a chain of APDUs, allowing both the command data and reply data
  * to span multiple APDUs. The struct apdu will be used and filled out as if
  * one single large APDU had been transceived.
  */
+MUST_CHECK
 errf_t *piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
 
 /*
