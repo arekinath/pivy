@@ -299,7 +299,7 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 					goto out;
 				}
 			}
-			erfree(error);
+			errf_free(error);
 			if ((error = piv_read_cert(token, slotid)))
 				goto out;
 			slot = piv_get_slot(token, slotid);
@@ -535,7 +535,7 @@ again:
 		if (rc) {
 			error = ssherrf("sshkey_read", rc);
 			warnfx(error, "Invalid card auth key");
-			erfree(error);
+			errf_free(error);
 			free(line);
 			goto again;
 		}
@@ -641,7 +641,7 @@ again:
 		error = parse_hex(line, &guid, &guidlen);
 		if (error) {
 			warnfx(error, "Invalid GUID");
-			erfree(error);
+			errf_free(error);
 			free(line);
 			goto again;
 		}
@@ -662,7 +662,7 @@ again:
 				error = errfno("strtoul", errno, NULL);
 				warnfx(error, "error parsing '%s' as hex "
 				    "number", line);
-				erfree(error);
+				errf_free(error);
 				free(line);
 				goto again;
 			}
@@ -686,7 +686,7 @@ again:
 		if (rc) {
 			error = ssherrf("sshkey_read", rc);
 			warnfx(error, "Invalid public key");
-			erfree(error);
+			errf_free(error);
 			free(line);
 			goto again;
 		}
@@ -744,7 +744,7 @@ again:
 		error = ebox_tpl_config_set_n(config, parsed);
 		if (error) {
 			warnfx(error, "Invalid value for N");
-			erfree(error);
+			errf_free(error);
 		}
 		free(line);
 		a->a_used = 0;
@@ -888,7 +888,7 @@ interactive_unlock_ebox(struct ebox *ebox)
 			if (error && !errf_caused_by(error, "NotFoundError"))
 				return (error);
 			if (error) {
-				erfree(error);
+				errf_free(error);
 				continue;
 			}
 			error = ebox_unlock(ebox, config);
@@ -933,7 +933,7 @@ again:
 		    ebox_tpl_part_name(tpart));
 		if (error) {
 			warnfx(error, "failed to activate config %c", a->a_key);
-			erfree(error);
+			errf_free(error);
 			goto again;
 		}
 		error = ebox_unlock(ebox, config);
@@ -944,7 +944,7 @@ again:
 	error = interactive_recovery(config, "pivy-box data");
 	if (error) {
 		warnfx(error, "failed to activate config %c", a->a_key);
-		erfree(error);
+		errf_free(error);
 		goto again;
 	}
 	error = ebox_recover(ebox, config);
@@ -1584,7 +1584,7 @@ cmd_stream_decrypt(int argc, char *argv[])
 			if (feof(stdin))
 				errfx(EXIT_ERROR, error, "input too short");
 			ibuf->off = poff;
-			erfree(error);
+			errf_free(error);
 			continue;
 		} else if (error) {
 			return (error);
@@ -1617,7 +1617,7 @@ cmd_stream_decrypt(int argc, char *argv[])
 			if (feof(stdin))
 				errfx(EXIT_ERROR, error, "input too short");
 			ibuf->off = poff;
-			erfree(error);
+			errf_free(error);
 			continue;
 		} else if (error) {
 			return (error);

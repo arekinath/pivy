@@ -200,7 +200,7 @@ again:
 		warnx("invalid PIN (%d attempts remaining)", retries);
 		free(ebox_pin);
 		ebox_pin = NULL;
-		erfree(er);
+		errf_free(er);
 		goto again;
 	} else if (errf_caused_by(er, "MinRetriesError")) {
 		piv_txn_end(pk);
@@ -392,7 +392,7 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 
 	err = piv_find(ebox_ctx, piv_box_guid(box), GUID_LEN, &tokens);
 	if (errf_caused_by(err, "NotFoundError")) {
-		erfree(err);
+		errf_free(err);
 		err = piv_enumerate(ebox_ctx, &tokens);
 		if (err && agerr) {
 			err = errf("AgentError", agerr, "ssh-agent unlock "
@@ -400,7 +400,7 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 			    "the local system");
 		}
 	}
-	erfree(agerr);
+	errf_free(agerr);
 	if (err)
 		goto out;
 
@@ -448,7 +448,7 @@ pin:
 	assert_pin(token, name, prompt);
 	err = piv_box_open(token, slot, box);
 	if (errf_caused_by(err, "PermissionError") && !prompt && !ebox_batch) {
-		erfree(err);
+		errf_free(err);
 		prompt = B_TRUE;
 		goto pin;
 	} else if (err) {
@@ -1107,7 +1107,7 @@ reenum:
 	if (error) {
 		warnfx(error, "failed to enumerate PIV tokens on the system");
 		*ppart = NULL;
-		erfree(error);
+		errf_free(error);
 		return;
 	}
 
@@ -1163,7 +1163,7 @@ again:
 			error = errfno("strtoul", errno, NULL);
 			warnfx(error, "error parsing '%s' as hex number",
 			    line);
-			erfree(error);
+			errf_free(error);
 			free(line);
 			goto again;
 		}
@@ -1187,7 +1187,7 @@ again:
 		errfx(EXIT_ERROR, error, "failed to select PIV applet");
 	if ((error = piv_read_cert(token, slotid))) {
 		warnfx(error, "failed to read key management (9d) slot");
-		erfree(error);
+		errf_free(error);
 		piv_txn_end(token);
 		goto again;
 	}
@@ -1201,7 +1201,7 @@ again:
 		slot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
 		ebox_tpl_part_set_cak(part, piv_slot_pubkey(slot));
 	} else {
-		erfree(error);
+		errf_free(error);
 	}
 	piv_txn_end(token);
 

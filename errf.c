@@ -25,6 +25,12 @@ struct errf {
 	uint errf_line;
 };
 
+/*
+ * Note that this is not intended to be an exhaustive list of errno macros.
+ *
+ * Sticking mostly to portable ones and ones where the strerror() might be
+ * confusing is fine.
+ */
 const char *
 errno_to_macro(int eno)
 {
@@ -73,8 +79,6 @@ struct errf errf_ok = {
     .errf_file = "erf.c",
     .errf_line = __LINE__
 };
-
-struct errf *ERRF_OK = NULL;
 
 struct errf errf_nomem = {
     .errf_errno = ENOMEM,
@@ -178,8 +182,12 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 	e->errf_function = func;
 
 	wrote = snprintf(e->errf_message, sizeof (e->errf_message),
-	    "%s returned error %d (%s): %s%s", enofunc, eno, macro,
+	    "%s returned errno %d (%s): %s%s", enofunc, eno, macro,
 	    strerror(eno), fmt ? ": " : "");
+	if (wrote >= sizeof (e->errf_message)) {
+		e->errf_message[sizeof (e->errf_message) - 1] = '\0';
+		return (e);
+	}
 	if (fmt != NULL) {
 		p = &e->errf_message[wrote];
 		va_start(ap, fmt);
@@ -242,13 +250,12 @@ errf_caused_by(const struct errf *e, const char *name)
 }
 
 void
-erfree(struct errf *ep)
+errf_free(struct errf *ep)
 {
-	struct errf *e;
 	while (ep != NULL) {
-		e = ep->errf_cause;
-		if (ep != ERRF_NOMEM)
-			free(ep);
-		ep = e;
+		struct errf *tofree = ep;
+		ep = ep->errf_cause;
+		if (tofree != ERRF_NOMEM)
+			free(tofree);
 	}
 }

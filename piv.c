@@ -1087,7 +1087,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			err = pcscrerrf("SCardConnect", thisrdr, rv);
 			bunyan_log(DEBUG, "SCardConnect failed",
 			    "error", BNY_ERF, err, NULL);
-			erfree(err);
+			errf_free(err);
 			continue;
 		}
 
@@ -1112,7 +1112,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		if (err == ERRF_OK) {
 			err = piv_read_chuid(key);
 			if (errf_caused_by(err, "NotFoundError")) {
-				erfree(err);
+				errf_free(err);
 				err = ERRF_OK;
 				key->pt_nochuid = B_TRUE;
 			}
@@ -1121,7 +1121,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			err = piv_read_discov(key);
 			if (errf_caused_by(err, "NotFoundError") ||
 			    errf_caused_by(err, "NotSupportedError")) {
-				erfree(err);
+				errf_free(err);
 				err = ERRF_OK;
 				/*
 				 * Default to preferring the application PIN if
@@ -1135,7 +1135,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			err = piv_read_keyhist(key);
 			if (errf_caused_by(err, "NotFoundError") ||
 			    errf_caused_by(err, "NotSupportedError")) {
-				erfree(err);
+				errf_free(err);
 				err = ERRF_OK;
 			}
 		}
@@ -1145,7 +1145,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 				err = ykpiv_read_serial(key);
 			}
 			if (errf_caused_by(err, "NotSupportedError")) {
-				erfree(err);
+				errf_free(err);
 				err = ERRF_OK;
 			}
 		}
@@ -1158,7 +1158,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			bunyan_log(DEBUG, "piv_enumerate() eliminated reader "
 			    "due to error", "reader", BNY_STRING, thisrdr,
 			    "error", BNY_ERF, err, NULL);
-			erfree(err);
+			errf_free(err);
 			(void) SCardDisconnect(card, SCARD_RESET_CARD);
 		}
 	}
@@ -1203,7 +1203,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			err = pcscrerrf("SCardConnect", thisrdr, rv);
 			bunyan_log(DEBUG, "SCardConnect failed",
 			    "error", BNY_ERF, err, NULL);
-			erfree(err);
+			errf_free(err);
 			continue;
 		}
 
@@ -1226,12 +1226,12 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 		piv_txn_begin(key);
 		err = piv_select(key);
 		if (err) {
-			erfree(err);
+			errf_free(err);
 			goto nope;
 		}
 		err = piv_read_chuid(key);
 		if (errf_caused_by(err, "NotFoundError") && guidlen == 0) {
-			erfree(err);
+			errf_free(err);
 			err = ERRF_OK;
 			key->pt_nochuid = B_TRUE;
 			if (found != NULL) {
@@ -1255,7 +1255,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			bunyan_log(DEBUG, "piv_find() eliminated reader "
 			    "due to error", "reader", BNY_STRING, thisrdr,
 			    "error", BNY_ERF, err, NULL);
-			erfree(err);
+			errf_free(err);
 			goto nope;
 		}
 		if (guidlen == 0 || bcmp(guid, key->pt_guid, guidlen) != 0)
@@ -1301,7 +1301,7 @@ nope:
 		err = piv_read_discov(key);
 		if (errf_caused_by(err, "NotFoundError") ||
 		    errf_caused_by(err, "NotSupportedError")) {
-			erfree(err);
+			errf_free(err);
 			err = ERRF_OK;
 			/*
 			 * Default to preferring the application PIN if
@@ -1315,7 +1315,7 @@ nope:
 		err = piv_read_keyhist(key);
 		if (errf_caused_by(err, "NotFoundError") ||
 		    errf_caused_by(err, "NotSupportedError")) {
-			erfree(err);
+			errf_free(err);
 			err = ERRF_OK;
 		}
 	}
@@ -1325,7 +1325,7 @@ nope:
 			err = ykpiv_read_serial(key);
 		}
 		if (errf_caused_by(err, "NotSupportedError")) {
-			erfree(err);
+			errf_free(err);
 			err = ERRF_OK;
 		}
 	}
@@ -1335,7 +1335,7 @@ nope:
 		bunyan_log(DEBUG, "piv_find() eliminated reader "
 		    "due to error", "reader", BNY_STRING, thisrdr,
 		    "error", BNY_ERF, err, NULL);
-		erfree(err);
+		errf_free(err);
 		(void) SCardDisconnect(key->pt_cardhdl, SCARD_RESET_CARD);
 		free((char *)key->pt_rdrname);
 		free(key);
@@ -2987,29 +2987,29 @@ piv_read_all_certs(struct piv_token *tk)
 	if (read_all_aborts_on(err))
 		return (err);
 	else if (err)
-		erfree(err);
+		errf_free(err);
 	err = piv_read_cert(tk, PIV_SLOT_9A);
 	if (read_all_aborts_on(err))
 		return (err);
 	else if (err)
-		erfree(err);
+		errf_free(err);
 	err = piv_read_cert(tk, PIV_SLOT_9C);
 	if (read_all_aborts_on(err))
 		return (err);
 	else if (err)
-		erfree(err);
+		errf_free(err);
 	err = piv_read_cert(tk, PIV_SLOT_9D);
 	if (read_all_aborts_on(err))
 		return (err);
 	else if (err)
-		erfree(err);
+		errf_free(err);
 
 	for (i = 0; i < tk->pt_hist_oncard; ++i) {
 		err = piv_read_cert(tk, PIV_SLOT_RETIRED_1 + i);
 		if (read_all_aborts_on(err) && !errf_caused_by(err, "APDUError"))
 			return (err);
 		else if (err)
-			erfree(err);
+			errf_free(err);
 	}
 
 	return (ERRF_OK);

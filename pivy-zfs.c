@@ -100,7 +100,7 @@ unlock_or_recover(struct ebox *ebox, const char *descr, boolean_t *recovered)
 			if (error && !errf_caused_by(error, "NotFoundError"))
 				return (error);
 			if (error) {
-				erfree(error);
+				errf_free(error);
 				continue;
 			}
 			error = ebox_unlock(ebox, config);
@@ -139,7 +139,7 @@ again:
 		    ebox_tpl_part_name(tpart));
 		if (error) {
 			warnfx(error, "failed to activate config %c", a->a_key);
-			erfree(error);
+			errf_free(error);
 			goto again;
 		}
 		error = ebox_unlock(ebox, config);
@@ -151,7 +151,7 @@ again:
 	error = interactive_recovery(config, descr);
 	if (error) {
 		warnfx(error, "failed to activate config %c", a->a_key);
-		erfree(error);
+		errf_free(error);
 		goto again;
 	}
 	error = ebox_recover(ebox, config);
@@ -242,7 +242,7 @@ cmd_unlock(const char *fsname)
 
 	key = ebox_key(ebox, &keylen);
 #if defined(MADV_DONTDUMP)
-	(void) madvise(key, keylen, MADV_DONTDUMP);
+	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
 #endif
 #if !defined(DMU_OT_ENCRYPTED)
 	errx(EXIT_ERROR, "this ZFS implementation does not support encryption");
@@ -373,7 +373,7 @@ cmd_rekey(const char *fsname)
 
 	key = ebox_key(ebox, &keylen);
 #if defined(MADV_DONTDUMP)
-	(void) madvise(key, keylen, MADV_DONTDUMP);
+	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
 #endif
 
 	error = ebox_create(zfsebtpl, key, keylen, NULL, 0, &nebox);

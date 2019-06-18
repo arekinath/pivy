@@ -334,7 +334,7 @@ agent_piv_open(void)
 	}
 
 	if (selk == NULL || (err = piv_txn_begin(selk))) {
-		erfree(err);
+		errf_free(err);
 
 		selk = NULL;
 		if (ks != NULL)
@@ -409,7 +409,7 @@ probe_card(void)
 	if ((err = agent_piv_open())) {
 		bunyan_log(TRACE, "error opening for idle probe",
 		    "error", BNY_ERF, err, NULL);
-		erfree(err);
+		errf_free(err);
 		/*
 		 * Allow one failure due to connectivity issues before we
 		 * drop the PIN (so that transient glitches aren't so
@@ -573,7 +573,7 @@ process_request_identities(SocketEntry *e)
 	if ((now - last_update) >= card_probe_interval * 1000) {
 		last_update = now;
 		err = piv_read_all_certs(selk);
-		erfree(err);
+		errf_free(err);
 		if (cak != NULL && (err = auth_cak())) {
 			agent_piv_close(B_TRUE);
 			drop_pin();
@@ -1173,7 +1173,7 @@ process_extension(SocketEntry *e)
 		    "error", BNY_ERF, err, NULL);
 		if (errf_caused_by(err, "NoPINError") && bunyan_get_level() > WARN)
 			warnfx(err, "denied command due to lack of PIN");
-		erfree(err);
+		errf_free(err);
 		err = ERRF_OK;
 	}
 
@@ -1348,7 +1348,7 @@ process_message(u_int socknum)
 			warnfx(err, "denied command due to lack of PIN");
 		sshbuf_reset(e->request);
 		send_status(e, 0);
-		erfree(err);
+		errf_free(err);
 	} else {
 		bunyan_log(INFO, "processed ssh-agent message", NULL);
 	}
@@ -2167,7 +2167,7 @@ skip:
 
 	err = agent_piv_open();
 	if (err) {
-		erfree(err);
+		errf_free(err);
 	} else {
 		agent_piv_close(B_TRUE);
 	}

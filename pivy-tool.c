@@ -1982,7 +1982,7 @@ cmd_setup(SCARDCONTEXT ctx)
 	piv_txn_end(selk);
 
 	if (err) {
-		erfree(err);
+		errf_free(err);
 		override = piv_force_slot(selk, 0x9E, PIV_ALG_ECCP256);
 		err = cmd_generate(piv_slot_id(override),
 		    piv_slot_alg(override));

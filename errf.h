@@ -51,7 +51,7 @@
 struct errf;
 typedef struct errf errf_t;
 
-extern struct errf *ERRF_OK;
+#define ERRF_OK     NULL
 extern struct errf *ERRF_NOMEM;
 
 /* Print an errf_t and message to stderr, like warnx/warn */
@@ -60,7 +60,7 @@ void warnfx(const struct errf *e, const char *fmt, ...);
 void errfx(int status, const struct errf *e, const char *fmt, ...);
 
 /* Frees an errf_t and its cause chain. */
-void erfree(struct errf *e);
+void errf_free(struct errf *e);
 
 /*
  * Returns B_TRUE if there is an error in the cause chain of "e" which is

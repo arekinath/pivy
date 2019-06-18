@@ -99,7 +99,7 @@ unlock_or_recover(struct ebox *ebox, const char *descr, boolean_t *recovered)
 			if (error && !errf_caused_by(error, "NotFoundError"))
 				return (error);
 			if (error) {
-				erfree(error);
+				errf_free(error);
 				continue;
 			}
 			error = ebox_unlock(ebox, config);
@@ -138,7 +138,7 @@ again:
 		    ebox_tpl_part_name(tpart));
 		if (error) {
 			warnfx(error, "failed to activate config %c", a->a_key);
-			erfree(error);
+			errf_free(error);
 			goto again;
 		}
 		error = ebox_unlock(ebox, config);
@@ -150,7 +150,7 @@ again:
 	error = interactive_recovery(config, descr);
 	if (error) {
 		warnfx(error, "failed to activate config %c", a->a_key);
-		erfree(error);
+		errf_free(error);
 		goto again;
 	}
 	error = ebox_recover(ebox, config);
