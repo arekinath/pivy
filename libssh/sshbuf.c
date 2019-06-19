@@ -24,10 +24,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#if defined(__linux)
+#if defined(__linux) || defined(__APPLE__) || defined(__sun)
 #include <ctype.h>
 #endif
 
+#include "../compat.h"
 #include "ssherr.h"
 #include "sshbuf.h"
 #include "../utils.h"

@@ -49,6 +49,7 @@ int PEM_write_X509(FILE *fp, X509 *x);
 
 #include "ed25519/crypto_api.h"
 
+#include "compat.h"
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"

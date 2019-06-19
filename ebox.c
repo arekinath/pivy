@@ -27,6 +27,7 @@
 
 #include "sss/hazmat.h"
 
+#include "compat.h"
 #include "debug.h"
 #include "tlv.h"
 #include "ebox.h"

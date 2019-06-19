@@ -15,4 +15,9 @@
 #define __bounded(_what, ...)
 #endif
 
+#if defined(__APPLE__)
+void *reallocarray(void *, size_t, size_t);
+void explicit_bzero(void *, size_t);
+#endif
+
 #endif /* _PIVY_COMPAT_H */
