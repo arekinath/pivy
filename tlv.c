@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "compat.h"
+#include "utils.h"
 #include "tlv.h"
 #include "debug.h"
 #include "libssh/sshbuf.h"

@@ -45,7 +45,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
-#include "compat.h"
+#include "utils.h"
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"

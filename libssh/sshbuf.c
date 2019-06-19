@@ -28,7 +28,7 @@
 #include <ctype.h>
 #endif
 
-#include "../compat.h"
+#include "../utils.h"
 #include "ssherr.h"
 #include "sshbuf.h"
 #include "../utils.h"

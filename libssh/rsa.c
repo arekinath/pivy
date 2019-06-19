@@ -65,7 +65,7 @@
 #include <stdarg.h>
 #include <string.h>
 
-#include "../compat.h"
+#include "../utils.h"
 #include "rsa.h"
 /*#include "log.h"*/
 #include "ssherr.h"

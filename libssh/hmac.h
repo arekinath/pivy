@@ -18,7 +18,7 @@
 #ifndef _HMAC_H
 #define _HMAC_H
 
-#include "../compat.h"
+#include "../utils.h"
 
 /* Returns the algorithm's digest length in bytes or 0 for invalid algorithm */
 size_t ssh_hmac_bytes(int alg);

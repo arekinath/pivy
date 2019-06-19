@@ -40,7 +40,7 @@
 #include <sys/types.h>
 #include <openssl/evp.h>
 
-#include "../compat.h"
+#include "../utils.h"
 
 /*#include "cipher-chachapoly.h"*/
 #include "../chapoly/chacha.h"

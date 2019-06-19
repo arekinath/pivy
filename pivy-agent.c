@@ -92,7 +92,7 @@
 #include "libssh/authfd.h"
 #include "libssh/ssherr.h"
 
-#include "compat.h"
+#include "utils.h"
 #include "bunyan.h"
 #include "debug.h"
 #include "tlv.h"

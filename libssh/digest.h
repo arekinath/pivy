@@ -18,7 +18,7 @@
 #ifndef _DIGEST_H
 #define _DIGEST_H
 
-#include "../compat.h"
+#include "../utils.h"
 
 /* Maximum digest output length */
 #define SSH_DIGEST_MAX_LENGTH	64

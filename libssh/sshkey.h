@@ -33,7 +33,7 @@
 #include <openssl/dsa.h>
 #include <openssl/ec.h>
 
-#include "../compat.h"
+#include "../utils.h"
 #include "digest.h"
 #include "../utils.h"
 

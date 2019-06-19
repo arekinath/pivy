@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../compat.h"
+#include "../utils.h"
 
 #include "blf.h"
 
