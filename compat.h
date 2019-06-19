@@ -16,6 +16,8 @@
 #endif
 
 #if defined(__APPLE__)
+#pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+
 void *reallocarray(void *, size_t, size_t);
 void explicit_bzero(void *, size_t);
 #endif
