@@ -206,19 +206,23 @@ bunyan_set_name(const char *name)
 	bunyan_name = name;
 }
 
+#define	MAX_TS_LEN	128
+
 void
 bunyan_timestamp(char *buffer, size_t len)
 {
 	struct timespec ts;
 	struct tm *info;
+	int w;
 
 	VERIFY0(clock_gettime(CLOCK_REALTIME, &ts));
 	info = gmtime(&ts.tv_sec);
 	VERIFY(info != NULL);
 
-	snprintf(buffer, len, "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
+	w = snprintf(buffer, len, "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
 	    info->tm_year + 1900, info->tm_mon + 1, info->tm_mday,
 	    info->tm_hour, info->tm_min, info->tm_sec, ts.tv_nsec / 1000000);
+	VERIFY(w < MAX_TS_LEN);
 }
 
 static void
@@ -405,7 +409,7 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 	reset_buf();
 
 	if (!bunyan_omit_timestamp) {
-		char time[128];
+		char time[MAX_TS_LEN];
 
 		bunyan_timestamp(time, sizeof (time));
 		printf_buf("[%s] ", time);

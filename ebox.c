@@ -2853,7 +2853,7 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 	char *hostname = NULL;
 	char desc[255] = {0};
 	va_list ap;
-	size_t wrote;
+	int wrote;
 	errf_t *err = NULL;
 
 #if defined(HOST_NAME_MAX)
@@ -2915,6 +2915,10 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 
 	va_start(ap, descfmt);
 	wrote = vsnprintf(desc, sizeof (desc), descfmt, ap);
+	if (wrote < 0) {
+		err = errfno("vsnprintf", errno, NULL);
+		goto out;
+	}
 	if (wrote >= sizeof (desc)) {
 		err = errf("LengthError", NULL, "description field is too "
 		    "long to fit in challenge");

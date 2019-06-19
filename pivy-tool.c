@@ -222,10 +222,10 @@ read_stdin(size_t limit, size_t *outlen)
 
 	n = fread(buf, 1, limit * 3 - 1, stdin);
 	if (!feof(stdin))
-		errx(EXIT_BAD_ARGS, "input too long (max %lu bytes)", limit);
+		errx(EXIT_BAD_ARGS, "input too long (max %zu bytes)", limit);
 
 	if (n > limit)
-		errx(EXIT_BAD_ARGS, "input too long (max %lu bytes)", limit);
+		errx(EXIT_BAD_ARGS, "input too long (max %zu bytes)", limit);
 
 	*outlen = n;
 	return (buf);
@@ -1696,8 +1696,8 @@ cmd_box_info(void)
 
 	printf("cipher:       %s\n", piv_box_cipher(box));
 	printf("kdf:          %s\n", piv_box_kdf(box));
-	printf("encsize:      %lu bytes\n", piv_box_encsize(box));
-	printf("nonce:        %lu bytes\n", piv_box_nonce_size(box));
+	printf("encsize:      %zu bytes\n", piv_box_encsize(box));
+	printf("nonce:        %zu bytes\n", piv_box_nonce_size(box));
 
 	return (ERRF_OK);
 }

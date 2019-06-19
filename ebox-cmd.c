@@ -513,11 +513,12 @@ void
 answer_printf(struct answer *ans, const char *fmt, ...)
 {
 	va_list ap;
-	size_t wrote;
+	int wrote;
 
 	va_start(ap, fmt);
 	wrote = vsnprintf(&ans->a_text[ans->a_used],
 	    sizeof (ans->a_text) - ans->a_used, fmt, ap);
+	VERIFY(wrote >= 0);
 	va_end(ap);
 	ans->a_used += wrote;
 	if (ans->a_used >= sizeof (ans->a_text))
@@ -528,7 +529,7 @@ struct answer *
 make_answer(char key, const char *fmt, ...)
 {
 	va_list ap;
-	size_t wrote;
+	int wrote;
 	struct answer *ans;
 
 	ans = calloc(1, sizeof (struct answer));
@@ -539,6 +540,7 @@ make_answer(char key, const char *fmt, ...)
 	va_start(ap, fmt);
 	wrote = vsnprintf(&ans->a_text[ans->a_used],
 	    sizeof (ans->a_text) - ans->a_used, fmt, ap);
+	VERIFY(wrote >= 0);
 	va_end(ap);
 	ans->a_used += wrote;
 	if (ans->a_used >= sizeof (ans->a_text))
@@ -563,11 +565,12 @@ void
 question_printf(struct question *q, const char *fmt, ...)
 {
 	va_list ap;
-	size_t wrote;
+	int wrote;
 
 	va_start(ap, fmt);
 	wrote = vsnprintf(&q->q_prompt[q->q_used],
 	    sizeof (q->q_prompt) - q->q_used, fmt, ap);
+	VERIFY(wrote >= 0);
 	va_end(ap);
 	q->q_used += wrote;
 	if (q->q_used >= sizeof (q->q_prompt))

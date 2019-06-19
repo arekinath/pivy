@@ -1051,9 +1051,9 @@ read_stdin_b64(size_t limit)
 	if (ferror(stdin))
 		err(EXIT_USAGE, "error reading input");
 	if (!feof(stdin))
-		errx(EXIT_USAGE, "input too long (max %lu bytes)", limit);
+		errx(EXIT_USAGE, "input too long (max %zu bytes)", limit);
 	if (n > limit)
-		errx(EXIT_USAGE, "input too long (max %lu bytes)", limit);
+		errx(EXIT_USAGE, "input too long (max %zu bytes)", limit);
 
 	sbuf = sshbuf_new();
 	if (sbuf == NULL)
