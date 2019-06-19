@@ -34,6 +34,7 @@
 #include <openssl/ec.h>
 
 #include "digest.h"
+#include "../utils.h"
 
 #define SSH_RSA_MINIMUM_MODULUS_SIZE	768
 #define SSH_KEY_MAX_SIGN_DATA_SIZE	(1 << 20)
@@ -69,8 +70,6 @@ enum sshkey_fp_rep {
 
 /* key is stored in external hardware */
 #define SSHKEY_FLAG_EXT		0x0001
-
-typedef unsigned int u_int;
 
 #define SSHKEY_CERT_MAX_PRINCIPALS	256
 /* XXX opaquify? */

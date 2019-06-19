@@ -38,14 +38,6 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/ssherr.h"
-#include "libssh/authfd.h"
-
-#include "sss/hazmat.h"
-
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -62,6 +54,15 @@
 #include <sys/dmu.h>
 
 #define USING_SPL
+
+#include "libssh/sshkey.h"
+#include "libssh/sshbuf.h"
+#include "libssh/digest.h"
+#include "libssh/ssherr.h"
+#include "libssh/authfd.h"
+
+#include "sss/hazmat.h"
+
 #include "debug.h"
 #include "tlv.h"
 #include "errf.h"

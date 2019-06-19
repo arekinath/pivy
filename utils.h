@@ -18,9 +18,10 @@
 typedef uint64_t uintmax_t;
 #endif
 
-#if !defined(USING_SPL)
-typedef /*@concrete@*/ enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
-typedef /*@concrete@*/ unsigned int uint;
+#if !defined(USING_SPL) && !defined(__sun)
+typedef enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
+typedef unsigned int uint;
+typedef unsigned int u_int;
 #endif
 
 #if !defined(__OpenBSD__)
