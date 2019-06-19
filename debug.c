@@ -30,7 +30,10 @@
  * Copyright (c) 2012, 2014 by Delphix. All rights reserved.
  * Copyright 2015 Joyent, Inc.
  */
+
+#include "utils.h"
 #include "debug.h"
+
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdarg.h>

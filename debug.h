@@ -7,18 +7,11 @@ extern "C" {
 
 #include <stdint.h>
 
+#include "utils.h"
+
 #if defined(__sun)
 #include <sys/debug.h>
 #else
-
-#if !defined(__APPLE__)
-typedef uint64_t uintmax_t;
-#endif
-
-#if !defined(USING_SPL)
-typedef /*@concrete@*/ enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
-typedef /*@concrete@*/ unsigned int uint;
-#endif
 
 #undef VERIFY
 #undef ASSERT

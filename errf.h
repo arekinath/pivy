@@ -12,7 +12,8 @@
 
 #include <stdint.h>
 #include <sys/types.h>
-#include "debug.h"
+
+#include "utils.h"
 
 /*
  * ERF -- annotated chained error objects for C.

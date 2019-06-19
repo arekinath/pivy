@@ -31,7 +31,6 @@
 
 #include <sys/types.h>
 #include <sys/errno.h>
-#include "debug.h"
 #if defined(__sun)
 #include <sys/fork.h>
 #endif
@@ -53,6 +52,8 @@ int PEM_write_X509(FILE *fp, X509 *x);
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"
+#include "utils.h"
+#include "debug.h"
 
 /* We need the piv_cert_comp enum */
 #include "piv-internal.h"
@@ -96,8 +97,6 @@ SCARDCONTEXT ctx;
     errf("PCSCError", NULL, call " failed: %d (%s)", \
     rv, pcsc_stringify_error(rv))
 #endif
-
-extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 
 enum pivtool_exit_status {
 	EXIT_OK = 0,

@@ -130,14 +130,16 @@ PIV_COMMON_SOURCES=		\
 	tlv.c			\
 	debug.c			\
 	bunyan.c		\
-	errf.c
+	errf.c			\
+	utils.c
 PIV_COMMON_HEADERS=		\
 	piv.h			\
 	tlv.h			\
 	bunyan.h		\
 	errf.h			\
 	piv-internal.h		\
-	debug.h
+	debug.h			\
+	utils.h
 
 EBOX_COMMON_SOURCES=		\
 	ebox.c			\

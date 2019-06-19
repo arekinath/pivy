@@ -22,6 +22,7 @@
 #include "bunyan.h"
 #include "debug.h"
 #include "errf.h"
+#include "utils.h"
 
 static const char *bunyan_name = NULL;
 static char *bunyan_buf = NULL;
@@ -80,33 +81,6 @@ struct timer_block {
 };
 
 #define	NS_PER_S	1000000000ULL
-
-static inline char
-nybble_to_hex(uint8_t nybble)
-{
-	if (nybble >= 0xA)
-		return ('A' + (nybble - 0xA));
-	else
-		return ('0' + nybble);
-}
-
-char *
-buf_to_hex(const uint8_t *buf, size_t len, int spaces)
-{
-	size_t i, j = 0;
-	char *out = calloc(1, len * 3 + 1);
-	uint8_t nybble;
-	for (i = 0; i < len; ++i) {
-		nybble = (buf[i] & 0xF0) >> 4;
-		out[j++] = nybble_to_hex(nybble);
-		nybble = (buf[i] & 0x0F);
-		out[j++] = nybble_to_hex(nybble);
-		if (spaces && i + 1 < len)
-			out[j++] = ' ';
-	}
-	out[j] = 0;
-	return (out);
-}
 
 void
 tspec_subtract(struct timespec *result, const struct timespec *x,

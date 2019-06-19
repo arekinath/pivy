@@ -1292,15 +1292,11 @@ cmd_key_generate(int argc, char *argv[])
 	errf_t *error;
 	struct sshbuf *buf;
 
-	key = calloc(1, ebox_keylen);
+	key = calloc_conceal(1, ebox_keylen);
 	if (key == NULL)
 		errx(EXIT_ERROR, "failed to allocate memory");
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
-#if defined(MADV_DONTDUMP)
-	(void) madvise(key, ebox_keylen, MADV_DONTDUMP);
-#endif
-
 	arc4random_buf(key, ebox_keylen);
 
 	error = ebox_create(ebox_stpl, key, ebox_keylen, NULL, 0, &ebox);
@@ -1340,9 +1336,7 @@ cmd_key_lock(int argc, char *argv[])
 	key = sshbuf_ptr(kbuf);
 	keylen = sshbuf_len(kbuf);
 
-#if defined(MADV_DONTDUMP)
-	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
-#endif
+	set_no_dump(key, keylen);
 
 	error = ebox_create(ebox_stpl, key, keylen, NULL, 0, &ebox);
 	if (error)

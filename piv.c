@@ -30,7 +30,6 @@
 #include <sys/mman.h>
 #include <sys/errno.h>
 #include <sys/types.h>
-#include "debug.h"
 #include <sys/ipc.h>
 #include <sys/shm.h>
 
@@ -49,6 +48,8 @@
 #include "tlv.h"
 #include "piv.h"
 #include "bunyan.h"
+#include "utils.h"
+#include "debug.h"
 
 /* Contains structs apdubuf, piv_ecdh_box, and enum piv_box_version */
 #include "piv-internal.h"
@@ -326,9 +327,6 @@ piv_token_guid(const struct piv_token *token)
 	return (token->pt_guid);
 }
 
-/* from bunyan.c */
-extern char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
-
 const char *
 piv_token_guid_hex(const struct piv_token *token)
 {
@@ -550,13 +548,8 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 
 out:
 	sshbuf_free(b);
-	if (chal != NULL)
-		explicit_bzero(chal, challen);
-	free(chal);
-	if (sig != NULL)
-		explicit_bzero(sig, siglen);
-	free(sig);
-
+	freezero(chal, challen);
+	freezero(sig, siglen);
 	return (err);
 }
 
@@ -1446,8 +1439,7 @@ void
 piv_apdu_free(struct apdu *a)
 {
 	if (a->a_reply.b_data != NULL) {
-		explicit_bzero(a->a_reply.b_data, a->a_reply.b_size);
-		free(a->a_reply.b_data);
+		freezero(a->a_reply.b_data, a->a_reply.b_size);
 	}
 	free(a);
 }
@@ -1583,8 +1575,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 
 	rv = SCardTransmit(key->pt_cardhdl, &key->pt_sendpci, cmd,
 	    cmdLen, NULL, r->b_data + r->b_offset, &recvLength);
-	explicit_bzero(cmd, cmdLen);
-	free(cmd);
+	freezero(cmd, cmdLen);
 
 	if (piv_full_apdu_debug) {
 		bunyan_log(TRACE, "received APDU",
@@ -1868,7 +1859,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	struct tlv_state *tlv;
 	uint tag;
 	uint8_t *chal = NULL, *resp = NULL, *iv = NULL;
-	size_t challen = 0, ivlen, resplen;
+	size_t challen = 0, ivlen, resplen = 0;
 	const struct sshcipher *cipher;
 	struct sshcipher_ctx *cctx;
 
@@ -1960,7 +1951,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	apdu = NULL;
 
 	resplen = challen;
-	resp = calloc(1, resplen);
+	resp = calloc_conceal(1, resplen);
 	VERIFY(resp != NULL);
 
 	if (cipher_blocksize(cipher) != challen) {
@@ -1997,8 +1988,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 
 	free(chal);
 	chal = NULL;
-	explicit_bzero(resp, resplen);
-	free(resp);
+	freezero(resp, resplen);
 	resp = NULL;
 
 	err = piv_apdu_transceive_chain(pt, apdu);
@@ -2030,10 +2020,8 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	}
 
 out:
-	if (resp != NULL)
-		explicit_bzero(resp, resplen);
+	freezero(resp, resplen);
 	free(chal);
-	free(resp);
 	free(iv);
 	tlv_free(tlv);
 	piv_apdu_free(apdu);
@@ -2671,8 +2659,7 @@ invdata:
 void
 piv_file_data_free(uint8_t *data, size_t len)
 {
-	explicit_bzero(data, len);
-	free(data);
+	freezero(data, len);
 }
 
 errf_t *
@@ -3263,8 +3250,7 @@ ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
 		return (err);
 	}
 
-	explicit_bzero(databuf, 3 + keylen);
-	free(databuf);
+	freezero(databuf, 3 + keylen);
 
 	if (apdu->a_sw == SW_NO_ERROR) {
 		err = ERRF_OK;
@@ -3967,8 +3953,7 @@ piv_box_free(struct piv_ecdh_box *box)
 	free(box->pdb_nonce.b_data);
 	free(box->pdb_guidhex);
 	if (box->pdb_plain.b_data != NULL) {
-		explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
-		free(box->pdb_plain.b_data);
+		freezero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 	}
 	free(box);
 }
@@ -4020,13 +4005,12 @@ piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len)
 		    "be taken (use piv_box_open first)"));
 	}
 
-	*data = calloc(1, box->pdb_plain.b_len);
+	*data = calloc_conceal(1, box->pdb_plain.b_len);
 	VERIFY(*data != NULL);
 	*len = box->pdb_plain.b_len;
 	bcopy(box->pdb_plain.b_data + box->pdb_plain.b_offset, *data, *len);
 
-	explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
-	free(box->pdb_plain.b_data);
+	freezero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 	box->pdb_plain.b_data = NULL;
 	box->pdb_plain.b_size = 0;
 	box->pdb_plain.b_len = 0;
@@ -4049,8 +4033,7 @@ piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **pbuf)
 	sshbuf_put(buf, box->pdb_plain.b_data + box->pdb_plain.b_offset,
 	    box->pdb_plain.b_len);
 
-	explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
-	free(box->pdb_plain.b_data);
+	freezero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 	box->pdb_plain.b_data = NULL;
 	box->pdb_plain.b_size = 0;
 	box->pdb_plain.b_len = 0;
@@ -4107,7 +4090,7 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 
 	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(privkey->ecdsa));
 	seclen = (fieldsz + 7) / 8;
-	sec = calloc(1, seclen);
+	sec = calloc_conceal(1, seclen);
 	VERIFY(sec != NULL);
 	seclen = ECDH_compute_key(sec, seclen,
 	    EC_KEY_get0_public_key(box->pdb_ephem_pub->ecdsa), privkey->ecdsa,
@@ -4137,13 +4120,12 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
 		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
 	}
-	key = calloc(1, dglen);
+	key = calloc_conceal(1, dglen);
 	VERIFY3P(key, !=, NULL);
 	VERIFY0(ssh_digest_final(dgctx, key, dglen));
 	ssh_digest_free(dgctx);
 
-	explicit_bzero(sec, seclen);
-	free(sec);
+	freezero(sec, seclen);
 
 	VERIFYB(box->pdb_iv);
 	iv = box->pdb_iv.b_data + box->pdb_iv.b_offset;
@@ -4164,7 +4146,7 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	}
 
 	plainlen = enclen - authlen;
-	plain = calloc(1, plainlen);
+	plain = calloc_conceal(1, plainlen);
 	VERIFY3P(plain, !=, NULL);
 
 	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
@@ -4172,8 +4154,7 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	    authlen);
 	cipher_free(cctx);
 
-	explicit_bzero(key, dglen);
-	free(key);
+	freezero(key, dglen);
 
 	if (rv != 0) {
 		err = boxderrf(ssherrf("cipher_crypt", rv));
@@ -4192,8 +4173,7 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	}
 
 	if (box->pdb_plain.b_data != NULL) {
-		explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
-		free(box->pdb_plain.b_data);
+		freezero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 	}
 	box->pdb_plain.b_data = plain;
 	box->pdb_plain.b_size = plainlen;
@@ -4204,8 +4184,7 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 
 paderr:
 	err = boxderrf(errf("PaddingError", NULL, "Padding failed validation"));
-	explicit_bzero(plain, plainlen);
-	free(plain);
+	freezero(plain, plainlen);
 	return (err);
 }
 
@@ -4273,13 +4252,12 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
 		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
 	}
-	key = calloc(1, dglen);
+	key = calloc_conceal(1, dglen);
 	VERIFY3P(key, !=, NULL);
 	VERIFY0(ssh_digest_final(dgctx, key, dglen));
 	ssh_digest_free(dgctx);
 
-	explicit_bzero(sec, seclen);
-	free(sec);
+	freezero(sec, seclen);
 
 	VERIFYB(box->pdb_iv);
 	iv = box->pdb_iv.b_data + box->pdb_iv.b_offset;
@@ -4300,7 +4278,7 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	}
 
 	plainlen = enclen - authlen;
-	plain = calloc(1, plainlen);
+	plain = calloc_conceal(1, plainlen);
 	VERIFY3P(plain, !=, NULL);
 
 	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
@@ -4308,8 +4286,7 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	    authlen);
 	cipher_free(cctx);
 
-	explicit_bzero(key, dglen);
-	free(key);
+	freezero(key, dglen);
 
 	if (rv != 0) {
 		err = boxderrf(ssherrf("cipher_crypt", rv));
@@ -4328,8 +4305,7 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 	}
 
 	if (box->pdb_plain.b_data != NULL) {
-		explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
-		free(box->pdb_plain.b_data);
+		freezero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 	}
 	box->pdb_plain.b_data = plain;
 	box->pdb_plain.b_offset = 0;
@@ -4340,8 +4316,7 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 
 paderr:
 	err = boxderrf(errf("PaddingError", NULL, "Padding failed validation"));
-	explicit_bzero(plain, plainlen);
-	free(plain);
+	freezero(plain, plainlen);
 	return (err);
 }
 
@@ -4451,8 +4426,7 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	VERIFY0(ssh_digest_final(dgctx, key, dglen));
 	ssh_digest_free(dgctx);
 
-	explicit_bzero(sec, seclen);
-	free(sec);
+	freezero(sec, seclen);
 
 	iv = calloc(1, ivlen);
 	VERIFY3P(iv, !=, NULL);
@@ -4484,8 +4458,7 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	for (i = box->pdb_plain.b_len; i < plainlen; ++i)
 		plain[i] = padding;
 
-	explicit_bzero(box->pdb_plain.b_data, box->pdb_plain.b_size);
-	free(box->pdb_plain.b_data);
+	freezero(box->pdb_plain.b_data, box->pdb_plain.b_size);
 	box->pdb_plain.b_data = NULL;
 	box->pdb_plain.b_size = 0;
 	box->pdb_plain.b_len = 0;
@@ -4497,10 +4470,8 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	VERIFY0(cipher_crypt(cctx, 0, enc, plain, plainlen, 0, authlen));
 	cipher_free(cctx);
 
-	explicit_bzero(plain, plainlen);
-	explicit_bzero(key, dglen);
-	free(key);
-	free(plain);
+	freezero(plain, plainlen);
+	freezero(key, dglen);
 
 	VERIFY0(sshkey_demote(pubk, &box->pdb_pub));
 

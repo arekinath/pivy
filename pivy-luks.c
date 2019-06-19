@@ -248,9 +248,6 @@ cmd_rekey(const char *devname)
 		errfx(EXIT_ERROR, error, "failed to unlock ebox");
 
 	key = ebox_key(ebox, &keylen);
-#if defined(MADV_DONTDUMP)
-	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
-#endif
 
 	error = ebox_create(lukstpl, key, keylen, NULL, 0, &nebox);
 	if (error)
@@ -364,9 +361,6 @@ cmd_unlock(const char *devname, const char *mapperdev)
 		errfx(EXIT_ERROR, error, "failed to unlock ebox");
 
 	key = ebox_key(ebox, &keylen);
-#if defined(MADV_DONTDUMP)
-	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
-#endif
 
 	rc = crypt_activate_by_volume_key(cd, mapperdev, (char *)key,
 	    keylen, 0);
@@ -467,13 +461,10 @@ cmd_format(const char *devname)
 	bzero(&params, sizeof (params));
 	params.sector_size = luks_sectorsz;
 
-	key = calloc(1, 32);
+	key = calloc_conceal(1, 32);
 	keylen = 32;
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
-#if defined(MADV_DONTDUMP)
-	(void) madvise(key, keylen, MADV_DONTDUMP);
-#endif
 	arc4random_buf(key, keylen);
 
 	error = ebox_create(lukstpl, key, keylen, NULL, 0, &ebox);

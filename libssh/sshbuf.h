@@ -189,6 +189,7 @@ int	sshbuf_put_u8(struct sshbuf *buf, uint8_t val);
  */
 int	sshbuf_get_string(struct sshbuf *buf, u_char **valp, size_t *lenp);
 int	sshbuf_get_string8(struct sshbuf *buf, u_char **valp, size_t *lenp);
+int	sshbuf_get_string8_conceal(struct sshbuf *buf, u_char **valp, size_t *lenp);
 int	sshbuf_get_cstring(struct sshbuf *buf, char **valp, size_t *lenp);
 int	sshbuf_get_cstring8(struct sshbuf *buf, char **valp, size_t *lenp);
 int	sshbuf_get_stringb(struct sshbuf *buf, struct sshbuf *v);

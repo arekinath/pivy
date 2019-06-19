@@ -241,9 +241,6 @@ cmd_unlock(const char *fsname)
 		errfx(EXIT_ERROR, error, "failed to unlock ebox");
 
 	key = ebox_key(ebox, &keylen);
-#if defined(MADV_DONTDUMP)
-	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
-#endif
 #if !defined(DMU_OT_ENCRYPTED)
 	errx(EXIT_ERROR, "this ZFS implementation does not support encryption");
 #else
@@ -372,9 +369,6 @@ cmd_rekey(const char *fsname)
 		errfx(EXIT_ERROR, error, "failed to unlock ebox");
 
 	key = ebox_key(ebox, &keylen);
-#if defined(MADV_DONTDUMP)
-	(void) madvise((void *)key, keylen, MADV_DONTDUMP);
-#endif
 
 	error = ebox_create(zfsebtpl, key, keylen, NULL, 0, &nebox);
 	if (error)
@@ -424,13 +418,10 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 		usage();
 	}
 
-	key = calloc(1, 32);
+	key = calloc_conceal(1, 32);
 	keylen = 32;
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
-#if defined(MADV_DONTDUMP)
-	(void) madvise(key, keylen, MADV_DONTDUMP);
-#endif
 	arc4random_buf(key, keylen);
 
 	maxargc = argc + 10;

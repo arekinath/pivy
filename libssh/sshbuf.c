@@ -30,6 +30,7 @@
 
 #include "ssherr.h"
 #include "sshbuf.h"
+#include "utils.h"
 
 /* #include "misc.h" */
 #define ROUNDUP(x, y)   ((((x)+((y)-1))/(y))*(y))
@@ -498,6 +499,33 @@ sshbuf_get_string(struct sshbuf *buf, u_char **valp, size_t *lenp)
 		return r;
 	if (valp != NULL) {
 		if ((*valp = malloc(len + 1)) == NULL) {
+			SSHBUF_DBG(("SSH_ERR_ALLOC_FAIL"));
+			return SSH_ERR_ALLOC_FAIL;
+		}
+		if (len != 0)
+			memcpy(*valp, val, len);
+		(*valp)[len] = '\0';
+	}
+	if (lenp != NULL)
+		*lenp = len;
+	return 0;
+}
+
+int
+sshbuf_get_string8_conceal(struct sshbuf *buf, u_char **valp, size_t *lenp)
+{
+	const u_char *val;
+	size_t len;
+	int r;
+
+	if (valp != NULL)
+		*valp = NULL;
+	if (lenp != NULL)
+		*lenp = 0;
+	if ((r = sshbuf_get_string8_direct(buf, &val, &len)) < 0)
+		return r;
+	if (valp != NULL) {
+		if ((*valp = malloc_conceal(len + 1)) == NULL) {
 			SSHBUF_DBG(("SSH_ERR_ALLOC_FAIL"));
 			return SSH_ERR_ALLOC_FAIL;
 		}

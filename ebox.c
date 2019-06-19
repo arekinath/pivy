@@ -1209,7 +1209,7 @@ ebox_stream_new(const struct ebox_tpl *tpl, struct ebox_stream **str)
 	VERIFY(cipher != NULL);
 	keylen = cipher_keylen(cipher);
 
-	key = malloc(keylen);
+	key = malloc_conceal(keylen);
 	VERIFY(key != NULL);
 	arc4random_buf(key, keylen);
 
@@ -2514,7 +2514,7 @@ out:
 	return (err);
 }
 
-static errf_t *
+static void
 ebox_encrypt_recovery(struct ebox *box)
 {
 	const struct sshcipher *cipher;
@@ -2539,13 +2539,12 @@ ebox_encrypt_recovery(struct ebox *box)
 	VERIFY3U(padding, <=, blocksz);
 	VERIFY3U(padding, >, 0);
 	plainlen += padding;
-	plain = malloc(plainlen);
+	plain = malloc_conceal(plainlen);
 	bcopy(box->e_rcv_plain.b_data, plain, box->e_rcv_plain.b_len);
 	for (i = box->e_rcv_plain.b_len; i < plainlen; ++i)
 		plain[i] = padding;
 
-	explicit_bzero(box->e_rcv_plain.b_data, box->e_rcv_plain.b_len);
-	free(box->e_rcv_plain.b_data);
+	freezero(box->e_rcv_plain.b_data, box->e_rcv_plain.b_len);
 	box->e_rcv_plain.b_data = NULL;
 	box->e_rcv_plain.b_len = 0;
 
@@ -2554,7 +2553,8 @@ ebox_encrypt_recovery(struct ebox *box)
 	VERIFY(iv != NULL);
 	arc4random_buf(iv, ivlen);
 
-	box->e_rcv_key.b_data = (key = malloc(keylen));
+	box->e_rcv_key.b_data = (key = malloc_conceal(keylen));
+	VERIFY(key != NULL);
 	box->e_rcv_key.b_len = keylen;
 	arc4random_buf(key, keylen);
 
@@ -2565,13 +2565,10 @@ ebox_encrypt_recovery(struct ebox *box)
 	VERIFY0(cipher_crypt(cctx, 0, enc, plain, plainlen, 0, authlen));
 	cipher_free(cctx);
 
-	explicit_bzero(plain, plainlen);
-	free(plain);
+	freezero(plain, plainlen);
 
 	box->e_rcv_enc.b_data = enc;
 	box->e_rcv_enc.b_len = enclen;
-
-	return (ERRF_OK);
 }
 
 errf_t *
@@ -2610,7 +2607,8 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 	VERIFY0(sshbuf_put_u8(buf, EBOX_RECOV_KEY));
 	VERIFY0(sshbuf_put_string8(buf, key, keylen));
 	plainlen = sshbuf_len(buf);
-	box->e_rcv_plain.b_data = (plain = malloc(plainlen));
+	box->e_rcv_plain.b_data = (plain = malloc_conceal(plainlen));
+	VERIFY(plain != NULL);
 	box->e_rcv_plain.b_len = plainlen;
 	VERIFY0(sshbuf_get(buf, plain, plainlen));
 	sshbuf_free(buf);
@@ -2638,7 +2636,7 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 			VERIFY3U(box->e_rcv_key.b_len, ==, 32);
 
 			shareslen = tconfig->etc_m * sizeof (sss_Keyshare);
-			shares = calloc(1, shareslen);
+			shares = calloc_conceal(1, shareslen);
 			sss_create_keyshares(shares, box->e_rcv_key.b_data,
 			    tconfig->etc_m, tconfig->etc_n);
 		}
@@ -2696,8 +2694,7 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 		}
 
 		if (shares != NULL) {
-			explicit_bzero(shares, shareslen);
-			free(shares);
+			freezero(shares, shareslen);
 			shares = NULL;
 			shareslen = 0;
 		}
@@ -2753,7 +2750,7 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 		    "ebox has already been recovered"));
 	}
 
-	shares = calloc(m, sizeof (sss_Keyshare));
+	shares = calloc_conceal(m, sizeof (sss_Keyshare));
 
 	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
 		if (part->ep_share != NULL && part->ep_sharelen >= 1) {
@@ -2782,7 +2779,7 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 		goto out;
 	}
 
-	ebox->e_rcv_key.b_data = calloc(1, sizeof (sss_Keyshare));
+	ebox->e_rcv_key.b_data = calloc_conceal(1, sizeof (sss_Keyshare));
 	ebox->e_rcv_key.b_len = sizeof (sss_Keyshare);
 	sss_combine_keyshares(ebox->e_rcv_key.b_data,
 	    (const sss_Keyshare *)shares, n);
@@ -2817,7 +2814,7 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 		    "ebox recovery failed");
 		goto out;
 	}
-	rc = sshbuf_get_string8(buf, &ebox->e_key, &ebox->e_keylen);
+	rc = sshbuf_get_string8_conceal(buf, &ebox->e_key, &ebox->e_keylen);
 	if (rc) {
 		err = ssherrf("sshbuf_get_string8", rc);
 		goto out;
@@ -2825,13 +2822,11 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 
 	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
 		if (part->ep_share != NULL) {
-			explicit_bzero(part->ep_share, part->ep_sharelen);
-			free(part->ep_share);
+			freezero(part->ep_share, part->ep_sharelen);
 		}
 		if (!piv_box_sealed(part->ep_box)) {
-			explicit_bzero(part->ep_box->pdb_plain.b_data,
+			freezero(part->ep_box->pdb_plain.b_data,
 			    part->ep_box->pdb_plain.b_size);
-			free(part->ep_box->pdb_plain.b_data);
 			part->ep_box->pdb_plain.b_data = NULL;
 			part->ep_box->pdb_plain.b_len = 0;
 			part->ep_box->pdb_plain.b_size = 0;
@@ -3289,7 +3284,8 @@ ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
 			gotid = B_TRUE;
 			break;
 		case RTAG_KEYPIECE:
-			if ((rc = sshbuf_get_string8(buf, &keypiece, &klen))) {
+			rc = sshbuf_get_string8_conceal(buf, &keypiece, &klen);
+			if (rc) {
 				err = ssherrf("sshbuf_get_string8", rc);
 				goto out;
 			}
@@ -3316,9 +3312,7 @@ ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
 		    "generated as part of this configuration");
 		goto out;
 	}
-	if (part->ep_share != NULL)
-		explicit_bzero(part->ep_share, part->ep_sharelen);
-	free(part->ep_share);
+	freezero(part->ep_share, part->ep_sharelen);
 	part->ep_sharelen = klen;
 	part->ep_share = keypiece;
 	*ppart = part;
@@ -3326,9 +3320,7 @@ ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
 	err = NULL;
 
 out:
-	if (keypiece != NULL)
-		explicit_bzero(keypiece, klen);
-	free(keypiece);
+	freezero(keypiece, klen);
 	piv_box_free(rbox);
 	sshbuf_free(buf);
 	return (err);
@@ -3368,8 +3360,7 @@ sshbuf_put_ebox_challenge_response(struct sshbuf *dbuf,
 		goto out;
 	}
 
-	explicit_bzero(keypiece, klen);
-	free(keypiece);
+	freezero(keypiece, klen);
 	keypiece = NULL;
 
 	box = piv_box_new();
@@ -3390,9 +3381,7 @@ sshbuf_put_ebox_challenge_response(struct sshbuf *dbuf,
 
 out:
 	sshbuf_free(buf);
-	if (keypiece != NULL)
-		explicit_bzero(keypiece, klen);
-	free(keypiece);
+	freezero(keypiece, klen);
 	piv_box_free(box);
 	return (err);
 }

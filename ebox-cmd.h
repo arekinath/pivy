@@ -20,6 +20,7 @@
 #include "errf.h"
 #include "piv.h"
 #include "ebox.h"
+#include "utils.h"
 #include "libssh/digest.h"
 
 #if defined(__APPLE__)
@@ -57,8 +58,6 @@ enum ebox_exit_status {
 char *piv_token_shortid(struct piv_token *pk);
 const char *pin_type_to_name(enum piv_pin type);
 void assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt);
-
-char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 
 struct ebox_tpl *read_tpl_file(const char *tpl);
 
