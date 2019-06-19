@@ -75,15 +75,22 @@ boolean_t ebox_batch = B_FALSE;
 
 #if defined(__sun)
 static GetLine *sungl = NULL;
-FILE *devterm = NULL;
+static FILE *devterm = NULL;
 
-static char *
+char *
 readline(const char *prompt)
 {
 	char *line;
+	size_t len;
+	if (sungl == NULL)
+		qa_term_setup();
 	line = gl_get_line(sungl, prompt, NULL, -1);
-	if (line != NULL)
+	if (line != NULL) {
 		line = strdup(line);
+		len = strlen(line);
+		while (line[len - 1] == '\n' || line[len - 1] == '\r')
+			line[--len] = '\0';
+	}
 	return (line);
 }
 #endif
@@ -96,6 +103,7 @@ qa_term_setup(void)
 	rl_outstream = rl_instream;
 #endif
 #if defined(__sun)
+	sungl = new_GetLine(1024, 2048);
 	devterm = fopen("/dev/tty", "w+");
 	gl_change_terminal(sungl, devterm, devterm, getenv("TERM"));
 #endif

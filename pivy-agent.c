@@ -192,7 +192,7 @@ const time_t card_probe_interval_nopin = 120;
 const time_t card_probe_interval_pin = 30;
 const uint card_probe_limit = 3;
 
-time_t card_probe_interval = card_probe_interval_nopin;
+time_t card_probe_interval = 120; /* card_probe_interval_nopin */
 uint card_probe_fails = 0;
 
 /* pid of shell == parent of agent */

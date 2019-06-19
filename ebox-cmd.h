@@ -113,4 +113,8 @@ void printwrap(FILE *stream, const char *data, size_t col);
     rv, pcsc_stringify_error(rv))
 #endif
 
+#if defined(__sun)
+char *readline(const char *prompt);
+#endif
+
 #endif
