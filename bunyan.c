@@ -528,5 +528,5 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 	if (level < bunyan_min_level) {
 		return;
 	}
-	fprintf(stderr, bunyan_buf);
+	fprintf(stderr, "%s", bunyan_buf);
 }
