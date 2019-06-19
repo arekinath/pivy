@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <limits.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <sys/errno.h>
 
 #include "libssh/sshkey.h"
@@ -1324,6 +1325,7 @@ sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **pes)
 	errf_t *err;
 	const struct sshcipher *cipher;
 	int dgalg;
+	uint64_t chunklen;
 
 	err = sshbuf_get_ebox(buf, &e);
 	if (err)
@@ -1343,10 +1345,16 @@ sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **pes)
 	es->es_ebox = e;
 	e = NULL;
 
-	if ((rc = sshbuf_get_u64(buf, &es->es_chunklen))) {
+	if ((rc = sshbuf_get_u64(buf, &chunklen))) {
 		err = boxderrf(ssherrf("sshbuf_get_u64", rc));
 		goto out;
 	}
+	if (chunklen > SIZE_MAX) {
+		err = boxderrf(errf("OverflowError", NULL,
+		    "stream chunk size (%" PRIu64 ") too large", chunklen));
+		goto out;
+	}
+	es->es_chunklen = chunklen;
 
 	if ((rc = sshbuf_get_cstring8(buf, &es->es_cipher, NULL)) ||
 	    (rc = sshbuf_get_cstring8(buf, &es->es_mac, NULL))) {
