@@ -1515,12 +1515,9 @@ ebox_stream_decrypt_chunk(struct ebox_stream_chunk *esc)
 		err = errf("LengthError", NULL, "Ciphertext length (%d) "
 		    "is smaller than minimum length (auth tag + 1 block = %d)",
 		    enclen, authlen + blocksz);
+		free(iv);
 		return (err);
 	}
-
-	plainlen = enclen - authlen - maclen;
-	plain = malloc(plainlen);
-	VERIFY(plain != NULL);
 
 	if (dgalg != -1) {
 		mac = malloc(maclen);
@@ -1534,12 +1531,17 @@ ebox_stream_decrypt_chunk(struct ebox_stream_chunk *esc)
 		if (timingsafe_bcmp(mac, &enc[enclen - maclen], maclen) != 0) {
 			explicit_bzero(mac, maclen);
 			free(mac);
+			free(iv);
 			return (errf("MACError", NULL, "Ciphertext MAC failed "
 			    "validation"));
 		}
 		explicit_bzero(mac, maclen);
 		free(mac);
 	}
+
+	plainlen = enclen - authlen - maclen;
+	plain = malloc(plainlen);
+	VERIFY(plain != NULL);
 
 	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
 	rc = cipher_crypt(cctx, esc->esc_seqnr, plain, enc,
@@ -1596,8 +1598,10 @@ ebox_stream_chunk_new(const struct ebox_stream *es, const void *data,
 	esc->esc_seqnr = seqnr;
 	esc->esc_plainlen = len;
 	esc->esc_plain = malloc(len);
-	if (esc->esc_plain == NULL)
+	if (esc->esc_plain == NULL) {
+		free(esc);
 		return (ERRF_NOMEM);
+	}
 
 	bcopy(data, esc->esc_plain, len);
 
@@ -2869,14 +2873,18 @@ ebox_gen_challenge(struct ebox_config *config, struct ebox_part *part,
 	hnamelen = HOST_NAME_MAX;
 #elif defined(_SC_HOST_NAME_MAX)
 	hnamelen = sysconf(_SC_HOST_NAME_MAX);
+#else
+	hnamelen = 1024;
 #endif
 	hostname = calloc(1, hnamelen);
 	if (hostname == NULL)
 		return (ERRF_NOMEM);
 
 	chal = calloc(1, sizeof (struct ebox_challenge));
-	if (chal == NULL)
-		return (ERRF_NOMEM);
+	if (chal == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
 
 	chal->c_version = 1;
 	chal->c_type = CHAL_RECOVERY;
