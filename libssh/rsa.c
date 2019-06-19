@@ -65,6 +65,7 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include "../utils.h"
 #include "rsa.h"
 /*#include "log.h"*/
 #include "ssherr.h"

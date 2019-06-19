@@ -28,6 +28,7 @@
 
 #include "sss/hazmat.h"
 
+#include "utils.h"
 #include "debug.h"
 #include "tlv.h"
 #include "ebox.h"

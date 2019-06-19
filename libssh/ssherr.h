@@ -18,6 +18,8 @@
 #ifndef _SSHERR_H
 #define _SSHERR_H
 
+#include "../utils.h"
+
 /* XXX are these too granular? not granular enough? I can't decide - djm */
 
 /* Error codes */

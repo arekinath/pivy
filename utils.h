@@ -37,4 +37,17 @@ void freezero(void *ptr, size_t size);
 
 char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 
+#if defined(HAVE_BOUNDED_ATTR)
+#define __bounded(_what, ...) __attribute__((__bounded__(_what, __VA_ARG__)))
+#else
+#define __bounded(_what, ...)
+#endif
+
+#if defined(__APPLE__)
+#pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+
+void *reallocarray(void *, size_t, size_t);
+void explicit_bzero(void *, size_t);
+#endif
+
 #endif

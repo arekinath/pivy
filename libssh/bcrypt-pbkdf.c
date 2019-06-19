@@ -21,6 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../utils.h"
+
 #include "blf.h"
 
 #include "../ed25519/crypto_api.h"

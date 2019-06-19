@@ -33,6 +33,7 @@
 #include <openssl/dsa.h>
 #include <openssl/ec.h>
 
+#include "../utils.h"
 #include "digest.h"
 #include "../utils.h"
 
@@ -132,7 +133,7 @@ int	 sshkey_cert_copy(const struct sshkey *, struct sshkey *);
 int	 sshkey_cert_check_authority(const struct sshkey *, int, int,
     const char *, const char **);
 size_t	 sshkey_format_cert_validity(const struct sshkey_cert *,
-    char *, size_t) __attribute__((__bounded__(__string__, 2, 3)));
+    char *, size_t) __bounded(__string__, 2, 3);
 
 int	 sshkey_certify(struct sshkey *, struct sshkey *, const char *);
 /* Variant allowing use of a custom signature function (e.g. for ssh-agent) */
