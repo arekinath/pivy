@@ -1872,7 +1872,7 @@ main(int ac, char **av)
 {
 	int c_flag = 0, d_flag = 0, D_flag = 0, k_flag = 0, s_flag = 0;
 	int i_flag = 0;
-	int sock, fd, ch, result, saved_errno;
+	int sock, ch, result, saved_errno;
 	char *shell, *format, *pidstr, *agentsocket = NULL;
 	extern int optind;
 	extern char *optarg;
@@ -1887,6 +1887,10 @@ main(int ac, char **av)
 	char *ptr;
 	int r;
 	errf_t *err;
+
+#if !defined(__APPLE__)
+	int fd;
+#endif
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
 	sanitise_stdfd();
