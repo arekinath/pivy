@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * Copyright (c) 2017, Joyent Inc
+ * Copyright (c) 2019, Joyent Inc
  * Author: Alex Wilson <alex.wilson@joyent.com>
  */
 
@@ -11,14 +11,15 @@
 #define _BUNYAN_H
 
 #include <sys/types.h>
+#include "errf.h"
 
 enum bunyan_log_level {
-	TRACE = 10,
-	DEBUG = 20,
-	INFO = 30,
-	WARN = 40,
-	ERROR = 50,
-	FATAL = 60
+	BNY_TRACE = 10,
+	BNY_DEBUG = 20,
+	BNY_INFO = 30,
+	BNY_WARN = 40,
+	BNY_ERROR = 50,
+	BNY_FATAL = 60
 };
 
 enum bunyan_arg_type {
@@ -27,8 +28,6 @@ enum bunyan_arg_type {
 	BNY_UINT,
 	BNY_UINT64,
 	BNY_SIZE_T,
-	BNY_NVLIST,
-	BNY_TIMERS,
 	BNY_BIN_HEX,
 	BNY_ERF,
 };
@@ -42,11 +41,6 @@ void bunyan_log(enum bunyan_log_level level, const char *msg, ...);
 struct bunyan_frame *_bunyan_push(const char *func, ...);
 void bunyan_add_vars(struct bunyan_frame *frame, ...);
 void bunyan_pop(struct bunyan_frame *frame);
-
-struct bunyan_timers *bny_timers_new(void);
-int bny_timer_begin(struct bunyan_timers *tms);
-int bny_timer_next(struct bunyan_timers *tms, const char *name);
-void bny_timers_free(struct bunyan_timers *tms);
 
 #define	bunyan_push(...)	_bunyan_push(__func__, __VA_ARGS__)
 

@@ -137,14 +137,14 @@ _errf(const char *name, struct errf *cause, const char *func, const char *file,
     uint line, const char *fmt, ...)
 {
 	struct errf *e;
-	size_t wrote;
+	int wrote;
 	va_list ap;
 
 	e = calloc(1, sizeof (struct errf));
 	if (e == NULL)
 		return (ERRF_NOMEM);
 
-	strcpy(e->errf_name, name);
+	strlcpy(e->errf_name, name, sizeof (e->errf_name));
 	e->errf_cause = cause;
 	e->errf_file = file;
 	e->errf_line = line;
@@ -152,6 +152,19 @@ _errf(const char *name, struct errf *cause, const char *func, const char *file,
 
 	va_start(ap, fmt);
 	wrote = vsnprintf(e->errf_message, sizeof (e->errf_message), fmt, ap);
+	if (wrote < 0) {
+		int eno = errno;
+		const char *macro = errno_to_macro(errno);
+		e->errf_message[0] = '\0';
+		wrote = snprintf(e->errf_message, sizeof (e->errf_message),
+		    "vsnprintf returned errno %d (%s): %s", eno, macro,
+		    strerror(eno));
+		if (wrote < 0) {
+			e->errf_message[0] = '\0';
+			strlcpy(e->errf_message, "<vsnprintf failed>",
+			    sizeof (e->errf_message));
+		}
+	}
 	va_end(ap);
 	if (wrote >= sizeof (e->errf_message))
 		e->errf_message[sizeof (e->errf_message) - 1] = '\0';
@@ -165,7 +178,7 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 {
 	struct errf *e;
 	char *p;
-	size_t wrote;
+	int wrote;
 	va_list ap;
 	const char *macro;
 
@@ -175,7 +188,8 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 	if (e == NULL)
 		return (ERRF_NOMEM);
 
-	strcpy(e->errf_name, macro ? macro : "SystemError");
+	strlcpy(e->errf_name, macro ? macro : "SystemError",
+	    sizeof (e->errf_name));
 	e->errf_file = file;
 	e->errf_line = line;
 	e->errf_errno = eno;
@@ -184,6 +198,11 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 	wrote = snprintf(e->errf_message, sizeof (e->errf_message),
 	    "%s returned errno %d (%s): %s%s", enofunc, eno, macro,
 	    strerror(eno), fmt ? ": " : "");
+	if (wrote < 0) {
+		e->errf_message[0] = '\0';
+		strlcpy(e->errf_message, "<vsnprintf failed>",
+		    sizeof (e->errf_message));
+	}
 	if (wrote >= sizeof (e->errf_message)) {
 		e->errf_message[sizeof (e->errf_message) - 1] = '\0';
 		return (e);

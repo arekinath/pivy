@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * Copyright (c) 2017, Joyent Inc
+ * Copyright (c) 2019, Joyent Inc
  * Author: Alex Wilson <alex.wilson@joyent.com>
  */
 
@@ -18,6 +18,7 @@
 #include <stdarg.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <inttypes.h>
 
 #include "bunyan.h"
 #include "debug.h"
@@ -25,9 +26,33 @@
 #include "utils.h"
 
 static const char *bunyan_name = NULL;
+
+/*
+ * This bunyan code was taken from the humboldt repo, where it used to run in
+ * a multithreaded context and used thread-locals here for bunyan_buf etc.
+ *
+ * Unfortunately, pivy would like to be portable to platforms that don't support
+ * thread-local annotations on variables (looking at you OpenBSD), so we've
+ * removed those annotations here (and the mutexes) but left the remainder of
+ * the code as-is.
+ *
+ * As a result this version of bunyan.c is completely unsafe to use in the
+ * face of multi-threading. This is fine within the pivy repo where all we have
+ * is a couple of single-threaded commandline tools, but if you re-use this
+ * code elsewhere, beware!
+ */
+
+/*
+ * This is called "bunyan.c" because it used to produce bunyan-compatible JSON
+ * log lines as output. Now it just produces text loosely modelled after the
+ * bunyan cmdline tool's output. C'est la vie in the land of wanting to be
+ * portable to lots of other operating systems.
+ */
+
 static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
-static enum bunyan_log_level bunyan_min_level = WARN;
+
+static enum bunyan_log_level bunyan_min_level = BNY_WARN;
 static boolean_t bunyan_omit_timestamp = B_FALSE;
 
 struct bunyan_var {
@@ -59,42 +84,8 @@ struct bunyan_stack {
 	struct bunyan_frame *bs_top;
 };
 
-static __thread struct bunyan_stack *thstack;
+static struct bunyan_stack *thstack;
 static struct bunyan_stack *bunyan_stacks;
-
-#if defined(__APPLE__)
-typedef unsigned int uint;
-#endif
-
-struct bunyan_timers {
-	struct timer_block *bt_first;
-	struct timer_block *bt_last;
-	struct timespec bt_current;
-};
-
-#define	TBLOCK_N	16
-struct timer_block {
-	struct timespec tb_timers[TBLOCK_N];
-	const char *tb_names[TBLOCK_N];
-	size_t tb_pos;
-	struct timer_block *tb_next;
-};
-
-#define	NS_PER_S	1000000000ULL
-
-void
-tspec_subtract(struct timespec *result, const struct timespec *x,
-    const struct timespec *y)
-{
-	struct timespec xcarry;
-	bcopy(x, &xcarry, sizeof (xcarry));
-	if (xcarry.tv_nsec < y->tv_nsec) {
-		xcarry.tv_sec -= 1;
-		xcarry.tv_nsec += NS_PER_S;
-	}
-	result->tv_sec = xcarry.tv_sec - y->tv_sec;
-	result->tv_nsec = xcarry.tv_nsec - y->tv_nsec;
-}
 
 void
 bunyan_set_level(enum bunyan_log_level level)
@@ -108,73 +99,11 @@ bunyan_get_level(void)
 	return (bunyan_min_level);
 }
 
-struct bunyan_timers *
-bny_timers_new(void)
-{
-	struct bunyan_timers *tms;
-	tms = calloc(1, sizeof (struct bunyan_timers));
-	if (tms == NULL)
-		return (NULL);
-	tms->bt_first = calloc(1, sizeof (struct timer_block));
-	if (tms->bt_first == NULL) {
-		free(tms);
-		return (NULL);
-	}
-	tms->bt_last = tms->bt_first;
-	return (tms);
-}
-
-
-int
-bny_timer_begin(struct bunyan_timers *tms)
-{
-	if (clock_gettime(CLOCK_MONOTONIC, &tms->bt_current))
-		return (errno);
-	return (0);
-}
-
-int
-bny_timer_next(struct bunyan_timers *tms, const char *name)
-{
-	struct timespec now;
-	struct timer_block *b;
-
-	if (clock_gettime(CLOCK_MONOTONIC, &now))
-		return (errno);
-	b = tms->bt_last;
-	b->tb_names[b->tb_pos] = name;
-	tspec_subtract(&b->tb_timers[b->tb_pos], &now, &tms->bt_current);
-	if (++b->tb_pos >= TBLOCK_N) {
-		b = calloc(1, sizeof (struct timer_block));
-		if (b == NULL) {
-			tms->bt_last->tb_pos--;
-			return (ENOMEM);
-		}
-		tms->bt_last->tb_next = b;
-		tms->bt_last = b;
-		if (clock_gettime(CLOCK_MONOTONIC, &tms->bt_current))
-			return (errno);
-	} else {
-		bcopy(&now, &tms->bt_current, sizeof (struct timespec));
-	}
-	return (0);
-}
-
-void
-bny_timers_free(struct bunyan_timers *tms)
-{
-	struct timer_block *b, *nb;
-	for (b = tms->bt_first; b != NULL; b = nb) {
-		nb = b->tb_next;
-		free(b);
-	}
-	free(tms);
-}
-
 static void
 printf_buf(const char *fmt, ...)
 {
-	size_t wrote, orig, avail;
+	size_t orig, avail;
+	int wrote;
 	char *nbuf;
 	va_list ap, ap2;
 
@@ -193,8 +122,10 @@ printf_buf(const char *fmt, ...)
 	avail = bunyan_buf_sz - orig;
 again:
 	wrote = vsnprintf(bunyan_buf + orig, avail, fmt, ap);
+	VERIFY(wrote >= 0);
 	if (wrote >= avail) {
-		bunyan_buf_sz *= 2;
+		while (bunyan_buf_sz < orig + wrote)
+			bunyan_buf_sz *= 2;
 		nbuf = calloc(bunyan_buf_sz, 1);
 		VERIFY(nbuf != NULL);
 		bcopy(bunyan_buf, nbuf, orig);
@@ -218,23 +149,6 @@ reset_buf(void)
 		bunyan_buf[0] = 0;
 }
 
-static int
-bny_timer_print(struct bunyan_timers *tms)
-{
-	struct timer_block *b;
-	size_t idx;
-	uint64_t usec;
-
-	for (b = tms->bt_first; b != NULL; b = b->tb_next) {
-		for (idx = 0; idx < b->tb_pos; ++idx) {
-			usec = b->tb_timers[idx].tv_nsec / 1000;
-			usec += b->tb_timers[idx].tv_sec * 1000000;
-			printf_buf("[%s: %llu usec]", b->tb_names[idx], usec);
-		}
-	}
-	return (0);
-}
-
 #if defined(__linux__)
 static boolean_t
 bunyan_detect_journald(void)
@@ -247,31 +161,27 @@ bunyan_detect_journald(void)
 	 * inode of the socket attached to stderr and stdout.
 	 */
 	if ((envp = getenv("JOURNAL_STREAM")) != NULL) {
-		char *devp, *inop;
-		unsigned long device = ULONG_MAX, inode = ULONG_MAX;
+		char *p;
+		unsigned long device, inode;
+		struct stat info;
 
-		if ((devp = strdup(envp)) != NULL) {
-			inop = strstr(devp, ":");
-			if (inop != NULL) {
-				*inop = '\0';
-				inop++;
-				device = strtoul(devp, NULL, 10);
-				inode = strtoul(inop, NULL, 10);
-			}
-			free(devp);
-		}
+		errno = 0;
+		device = strtoul(envp, &p, 10);
+		if (errno != 0 || *p != ':')
+			return (B_FALSE);
+		errno = 0;
+		inode = strtoul(++p, &p, 10);
+		if (errno != 0 || *p != '\0')
+			return (B_FALSE);
 
-		if (device != ULONG_MAX && inode != ULONG_MAX) {
-			struct stat info;
-
-			if (fstat(STDERR_FILENO, &info) == 0) {
-				if (info.st_dev == device &&
-				    info.st_ino == inode) {
-					return (B_TRUE);
-				}
+		if (fstat(STDERR_FILENO, &info) == 0) {
+			if (info.st_dev == device &&
+			    info.st_ino == inode) {
+				return (B_TRUE);
 			}
 		}
 	}
+
 	return (B_FALSE);
 }
 #endif /* defined (__linux__) */
@@ -352,13 +262,6 @@ bunyan_add_vars_p(struct bunyan_frame *frame, va_list ap)
 		case BNY_SIZE_T:
 			var->bv_value.bvv_size_t = va_arg(ap, size_t);
 			break;
-		case BNY_NVLIST:
-			abort();
-			break;
-		case BNY_TIMERS:
-			var->bv_value.bvv_timers = va_arg(ap,
-			    struct bunyan_timers *);
-			break;
 		case BNY_BIN_HEX:
 			var->bv_value.bvv_bin_hex.bvvbh_data =
 			    va_arg(ap, const uint8_t *);
@@ -392,6 +295,7 @@ _bunyan_push(const char *func, ...)
 	struct bunyan_frame *frame;
 
 	frame = calloc(1, sizeof (struct bunyan_frame));
+	VERIFY(frame != NULL);
 	frame->bf_func = func;
 
 	va_start(ap, func);
@@ -400,6 +304,7 @@ _bunyan_push(const char *func, ...)
 
 	if (thstack == NULL) {
 		thstack = calloc(1, sizeof (struct bunyan_stack));
+		VERIFY(thstack != NULL);
 		thstack->bs_next = bunyan_stacks;
 		bunyan_stacks = thstack;
 	}
@@ -455,18 +360,12 @@ print_frame(struct bunyan_frame *frame, uint *pn, struct bunyan_var **evars)
 			    var->bv_value.bvv_uint);
 			break;
 		case BNY_UINT64:
-			printf_buf("%s = 0x%llx", var->bv_name,
+			printf_buf("%s = 0x%" PRIx64, var->bv_name,
 			    var->bv_value.bvv_uint64);
 			break;
 		case BNY_SIZE_T:
-			printf_buf("%s = %llu", var->bv_name,
+			printf_buf("%s = %zu", var->bv_name,
 			    var->bv_value.bvv_size_t);
-			break;
-		case BNY_NVLIST:
-			abort();
-			break;
-		case BNY_TIMERS:
-			VERIFY0(bny_timer_print(var->bv_value.bvv_timers));
 			break;
 		case BNY_BIN_HEX:
 			wstrval = buf_to_hex(
@@ -477,6 +376,7 @@ print_frame(struct bunyan_frame *frame, uint *pn, struct bunyan_var **evars)
 			break;
 		case BNY_ERF:
 			evar = calloc(1, sizeof (struct bunyan_var));
+			VERIFY(evar != NULL);
 			bcopy(var, evar, sizeof (struct bunyan_var));
 			evar->bv_next = *evars;
 			*evars = evar;
@@ -512,22 +412,22 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 	}
 
 	switch (level) {
-	case TRACE:
+	case BNY_TRACE:
 		printf_buf("TRACE: ");
 		break;
-	case DEBUG:
+	case BNY_DEBUG:
 		printf_buf("DEBUG: ");
 		break;
-	case INFO:
+	case BNY_INFO:
 		printf_buf("INFO: ");
 		break;
-	case WARN:
+	case BNY_WARN:
 		printf_buf("WARN: ");
 		break;
-	case ERROR:
+	case BNY_ERROR:
 		printf_buf("ERROR: ");
 		break;
-	case FATAL:
+	case BNY_FATAL:
 		printf_buf("FATAL: ");
 		break;
 	}
@@ -550,7 +450,6 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 		uint uintval;
 		uint64_t uint64val;
 		size_t szval;
-		struct bunyan_timers *tsval;
 
 		propname = va_arg(ap, const char *);
 		if (propname == NULL)
@@ -580,18 +479,11 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 			break;
 		case BNY_UINT64:
 			uint64val = va_arg(ap, uint64_t);
-			printf_buf("%s = 0x%llx", propname, uint64val);
+			printf_buf("%s = 0x%" PRIx64, propname, uint64val);
 			break;
 		case BNY_SIZE_T:
 			szval = va_arg(ap, size_t);
-			printf_buf("%s = %llu", propname, szval);
-			break;
-		case BNY_NVLIST:
-			abort();
-			break;
-		case BNY_TIMERS:
-			tsval = va_arg(ap, struct bunyan_timers *);
-			VERIFY0(bny_timer_print(tsval));
+			printf_buf("%s = %zu", propname, szval);
 			break;
 		case BNY_BIN_HEX:
 			binval = va_arg(ap, const uint8_t *);
@@ -605,6 +497,7 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 			printf_buf("%s = %s...", propname, errf_name(err));
 
 			evar = calloc(1, sizeof (struct bunyan_var));
+			VERIFY(evar != NULL);
 			evar->bv_name = propname;
 			evar->bv_value.bvv_erf = err;
 

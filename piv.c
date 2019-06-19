@@ -245,7 +245,7 @@ struct piv_token {
 static inline void
 debug_dump(errf_t *err, struct apdu *apdu)
 {
-	bunyan_log(DEBUG, "APDU parsing error",
+	bunyan_log(BNY_DEBUG, "APDU parsing error",
 	    "data", BNY_BIN_HEX, apdu->a_reply.b_data + apdu->a_reply.b_offset,
 	    apdu->a_reply.b_len,
 	    "error", BNY_ERF, err, NULL);
@@ -566,7 +566,7 @@ piv_probe_ykpiv(struct piv_token *pk)
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_probe_ykpiv.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "piv_probe_ykpiv.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (err);
@@ -605,7 +605,7 @@ ykpiv_read_serial(struct piv_token *pt)
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(WARN, "ykpiv_read_serial.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "ykpiv_read_serial.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (err);
@@ -654,7 +654,7 @@ piv_read_discov(struct piv_token *pk)
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_read_chuid.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "piv_read_chuid.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		goto out;
 	}
@@ -676,7 +676,7 @@ piv_read_discov(struct piv_token *pk)
 		while (!tlv_at_end(tlv)) {
 			if ((err = tlv_read_tag(tlv, &tag)))
 				goto invdata;
-			bunyan_log(TRACE, "reading discov tlv tag",
+			bunyan_log(BNY_TRACE, "reading discov tlv tag",
 			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0x4F:	/* AID */
@@ -692,7 +692,7 @@ piv_read_discov(struct piv_token *pk)
 			case 0x5F2F:	/* PIN and OCC policy */
 				if ((err = tlv_read_u8to32(tlv, &policy)))
 					goto invdata;
-				bunyan_log(TRACE, "policy in discov",
+				bunyan_log(BNY_TRACE, "policy in discov",
 				    "policy", BNY_UINT, policy, NULL);
 				if ((policy & 0x4000))
 					pk->pt_pin_app = B_TRUE;
@@ -741,7 +741,7 @@ piv_read_discov(struct piv_token *pk)
 
 	} else {
 		err = swerrf("INS_GET_DATA", apdu->a_sw);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -780,7 +780,7 @@ piv_read_keyhist(struct piv_token *pk)
 	rv = piv_apdu_transceive_chain(pk, apdu);
 	if (rv) {
 		rv = ioerrf(rv, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_read_chuid.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "piv_read_chuid.transceive_apdu failed",
 		    "error", BNY_ERF, rv, NULL);
 		goto out;
 	}
@@ -808,7 +808,7 @@ piv_read_keyhist(struct piv_token *pk)
 		while (!tlv_at_end(tlv)) {
 			if ((rv = tlv_read_tag(tlv, &tag)))
 				goto invdata;
-			bunyan_log(TRACE, "reading keyhist tlv tag",
+			bunyan_log(BNY_TRACE, "reading keyhist tlv tag",
 			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0xC1:	/* # keys with on-card certs */
@@ -856,7 +856,7 @@ piv_read_keyhist(struct piv_token *pk)
 
 	} else {
 		rv = swerrf("INS_GET_DATA", apdu->a_sw);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, rv, NULL);
 	}
@@ -889,7 +889,7 @@ piv_read_chuid(struct piv_token *pk)
 	tlv_write_u8to32(tlv, PIV_TAG_CHUID);
 	tlv_pop(tlv);
 
-	bunyan_log(DEBUG, "reading CHUID file", NULL);
+	bunyan_log(BNY_DEBUG, "reading CHUID file", NULL);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
 	apdu->a_cmd.b_data = tlv_buf(tlv);
@@ -898,7 +898,7 @@ piv_read_chuid(struct piv_token *pk)
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "transceive_apdu failed",
+		bunyan_log(BNY_WARN, "transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		goto out;
 	}
@@ -920,7 +920,7 @@ piv_read_chuid(struct piv_token *pk)
 		while (!tlv_at_end(tlv)) {
 			if ((err = tlv_read_tag(tlv, &tag)))
 				goto invdata;
-			bunyan_log(TRACE, "reading chuid tlv tag",
+			bunyan_log(BNY_TRACE, "reading chuid tlv tag",
 			    "tag", BNY_UINT, (uint)tag, NULL);
 			switch (tag) {
 			case 0x30:	/* FASC-N */
@@ -964,7 +964,7 @@ piv_read_chuid(struct piv_token *pk)
 				    sizeof (pk->pt_guid));
 				if (err)
 					goto invdata;
-				bunyan_log(TRACE, "read guid",
+				bunyan_log(BNY_TRACE, "read guid",
 				    "guid", BNY_BIN_HEX, pk->pt_guid,
 				    sizeof (pk->pt_guid), NULL);
 				if ((err = tlv_end(tlv)))
@@ -1010,7 +1010,7 @@ piv_read_chuid(struct piv_token *pk)
 
 	} else {
 		err = swerrf("INS_GET_DATA(CHUID)", apdu->a_sw);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -1056,7 +1056,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		    &activeProtocol);
 		if (rv != SCARD_S_SUCCESS) {
 			err = pcscrerrf("SCardConnect", thisrdr, rv);
-			bunyan_log(DEBUG, "SCardConnect failed",
+			bunyan_log(BNY_DEBUG, "SCardConnect failed",
 			    "error", BNY_ERF, err, NULL);
 			errf_free(err);
 			continue;
@@ -1079,7 +1079,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		}
 
 		if ((err = piv_txn_begin(key))) {
-			bunyan_log(DEBUG, "piv_txn_begin failed",
+			bunyan_log(BNY_DEBUG, "piv_txn_begin failed",
 			    "error", BNY_ERF, err, NULL);
 			errf_free(err);
 			continue;
@@ -1131,7 +1131,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			key->pt_next = ks;
 			ks = key;
 		} else {
-			bunyan_log(DEBUG, "piv_enumerate() eliminated reader "
+			bunyan_log(BNY_DEBUG, "piv_enumerate() eliminated reader "
 			    "due to error", "reader", BNY_STRING, thisrdr,
 			    "error", BNY_ERF, err, NULL);
 			errf_free(err);
@@ -1177,7 +1177,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 		    &activeProtocol);
 		if (rv != SCARD_S_SUCCESS) {
 			err = pcscrerrf("SCardConnect", thisrdr, rv);
-			bunyan_log(DEBUG, "SCardConnect failed",
+			bunyan_log(BNY_DEBUG, "SCardConnect failed",
 			    "error", BNY_ERF, err, NULL);
 			errf_free(err);
 			continue;
@@ -1231,7 +1231,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			key = calloc(1, sizeof (struct piv_token));
 			continue;
 		} else if (err) {
-			bunyan_log(DEBUG, "piv_find() eliminated reader "
+			bunyan_log(BNY_DEBUG, "piv_find() eliminated reader "
 			    "due to error", "reader", BNY_STRING, thisrdr,
 			    "error", BNY_ERF, err, NULL);
 			errf_free(err);
@@ -1312,7 +1312,7 @@ nopenotxn:
 	piv_txn_end(key);
 
 	if (err) {
-		bunyan_log(DEBUG, "piv_find() eliminated reader "
+		bunyan_log(BNY_DEBUG, "piv_find() eliminated reader "
 		    "due to error", "reader", BNY_STRING, thisrdr,
 		    "error", BNY_ERF, err, NULL);
 		errf_free(err);
@@ -1568,7 +1568,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	VERIFY(r->b_data != NULL);
 
 	if (piv_full_apdu_debug) {
-		bunyan_log(TRACE, "sending APDU",
+		bunyan_log(BNY_TRACE, "sending APDU",
 		    "apdu", BNY_BIN_HEX, cmd, cmdLen,
 		    NULL);
 	}
@@ -1578,14 +1578,14 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	freezero(cmd, cmdLen);
 
 	if (piv_full_apdu_debug) {
-		bunyan_log(TRACE, "received APDU",
+		bunyan_log(BNY_TRACE, "received APDU",
 		    "apdu", BNY_BIN_HEX, r->b_data + r->b_offset,
 		    (size_t)recvLength, NULL);
 	}
 
 	if (rv != SCARD_S_SUCCESS) {
 		err = pcscrerrf("SCardTransmit", key->pt_rdrname, rv);
-		bunyan_log(DEBUG, "SCardTransmit failed",
+		bunyan_log(BNY_DEBUG, "SCardTransmit failed",
 		    "error", BNY_ERF, err, NULL);
 		if (freedata) {
 			free(r->b_data);
@@ -1599,7 +1599,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	apdu->a_sw = (r->b_data[r->b_offset + recvLength] << 8) |
 	    r->b_data[r->b_offset + recvLength + 1];
 
-	bunyan_log(DEBUG, "APDU exchanged",
+	bunyan_log(BNY_DEBUG, "APDU exchanged",
 	    "class", BNY_UINT, (uint)apdu->a_cls,
 	    "ins", BNY_UINT, (uint)apdu->a_ins,
 	    "ins_name", BNY_STRING, ins_to_name(apdu->a_ins),
@@ -1744,7 +1744,7 @@ piv_txn_end(struct piv_token *key)
 	rv = SCardEndTransaction(key->pt_cardhdl,
 	    key->pt_reset ? SCARD_RESET_CARD : SCARD_LEAVE_CARD);
 	if (rv != SCARD_S_SUCCESS) {
-		bunyan_log(ERROR, "SCardEndTransaction failed",
+		bunyan_log(BNY_ERROR, "SCardEndTransaction failed",
 		    "reader", BNY_STRING, key->pt_rdrname,
 		    "err", BNY_STRING, pcsc_stringify_error(rv),
 		    NULL);
@@ -1770,7 +1770,7 @@ piv_select(struct piv_token *tk)
 	rv = piv_apdu_transceive_chain(tk, apdu);
 	if (rv) {
 		rv = ioerrf(rv, tk->pt_rdrname);
-		bunyan_log(WARN, "piv_select.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "piv_select.transceive_apdu failed",
 		    "error", BNY_ERF, rv, NULL);
 		goto out;
 	}
@@ -1834,7 +1834,7 @@ piv_select(struct piv_token *tk)
 	} else {
 		rv = errf("NotFoundError", swerrf("INS_SELECT", apdu->a_sw),
 		    "PIV applet was not found on device '%s'", tk->pt_rdrname);
-		bunyan_log(DEBUG, "card did not accept INS_SELECT for PIV",
+		bunyan_log(BNY_DEBUG, "card did not accept INS_SELECT for PIV",
 		    "error", BNY_ERF, rv, NULL);
 	}
 
@@ -1891,7 +1891,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(DEBUG, "piv_auth_admin.transceive_chain failed",
+		bunyan_log(BNY_DEBUG, "piv_auth_admin.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
@@ -1994,7 +1994,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(DEBUG, "piv_auth_admin.transceive_chain failed",
+		bunyan_log(BNY_DEBUG, "piv_auth_admin.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		goto out;
 	}
@@ -2014,7 +2014,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 		    pt->pt_rdrname, "authenticating with 9B admin key");
 	} else {
 		err = swerrf("INS_GEN_AUTH(9B)", apdu->a_sw);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pt->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -2058,7 +2058,7 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(WARN, "piv_write_file.transceive_chain failed",
+		bunyan_log(BNY_WARN, "piv_write_file.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
@@ -2102,7 +2102,7 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(WARN, "piv_generate.transceive_chain failed",
+		bunyan_log(BNY_WARN, "piv_generate.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		goto out;
 	}
@@ -2528,7 +2528,7 @@ ykpiv_attest(struct piv_token *pt, struct piv_slot *slot, uint8_t **data,
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(WARN, "piv_read_file.transceive_chain failed",
+		bunyan_log(BNY_WARN, "piv_read_file.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (err);
@@ -2563,7 +2563,7 @@ ykpiv_attest(struct piv_token *pt, struct piv_slot *slot, uint8_t **data,
 
 	} else {
 		err = swerrf("INS_ATTEST(%x)", apdu->a_sw, slot->ps_slot);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pt->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -2595,7 +2595,7 @@ piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
 		err = ioerrf(err, pt->pt_rdrname);
-		bunyan_log(WARN, "piv_read_file.transceive_chain failed",
+		bunyan_log(BNY_WARN, "piv_read_file.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		tlv_free(tlv);
 		piv_apdu_free(apdu);
@@ -2639,7 +2639,7 @@ piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 
 	} else {
 		err = swerrf("INS_GET_DATA(%x)", apdu->a_sw, tag);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pt->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -2708,7 +2708,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	}
 	tlv_pop(tlv);
 
-	bunyan_log(DEBUG, "reading cert file",
+	bunyan_log(BNY_DEBUG, "reading cert file",
 	    "slot", BNY_UINT, (uint)slotid,
 	    "cdata", BNY_BIN_HEX, tlv_buf(tlv), tlv_len(tlv),
 	    NULL);
@@ -2720,7 +2720,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_read_cert.transceive_chain failed",
+		bunyan_log(BNY_WARN, "piv_read_cert.transceive_chain failed",
 		    "error", BNY_ERF, err, NULL);
 		goto out;
 	}
@@ -2800,7 +2800,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 				goto invdata;
 			}
 
-			bunyan_log(DEBUG, "decompressed cert",
+			bunyan_log(BNY_DEBUG, "decompressed cert",
 			    "compressed_len", BNY_UINT, len,
 			    "avail_out", BNY_UINT, strm.avail_out,
 			    "uncompressed_len", BNY_UINT, PIV_MAX_CERT_LEN -
@@ -2917,7 +2917,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 
 	} else {
 		err = swerrf("INS_GET_DATA", apdu->a_sw);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -3020,7 +3020,7 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_change_pin.transceive failed",
+		bunyan_log(BNY_WARN, "piv_change_pin.transceive failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (err);
@@ -3038,7 +3038,7 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 
 	} else {
 		err = swerrf("INS_CHANGE_PIN(%x)", apdu->a_sw, type);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -3085,7 +3085,7 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_change_pin.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "piv_change_pin.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (err);
@@ -3103,7 +3103,7 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 
 	} else {
 		err = swerrf("INS_RESET_PIN(%x)", apdu->a_sw, type);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -3173,7 +3173,7 @@ ykpiv_set_pin_retries(struct piv_token *pk, uint pintries, uint puktries)
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN,
+		bunyan_log(BNY_WARN,
 		    "ykpiv_set_pin_retries.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
@@ -3194,7 +3194,7 @@ ykpiv_set_pin_retries(struct piv_token *pk, uint pintries, uint puktries)
 
 	} else {
 		err = swerrf("INS_SET_PIN_RETRIES", apdu->a_sw);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -3243,7 +3243,7 @@ ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN,
+		bunyan_log(BNY_WARN,
 		    "ykpiv_set_admin.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
@@ -3266,7 +3266,7 @@ ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
 
 	} else {
 		err = swerrf("INS_SET_MGMT", apdu->a_sw);
-		bunyan_log(DEBUG, "card did not accept INS_SET_MGMT",
+		bunyan_log(BNY_DEBUG, "card did not accept INS_SET_MGMT",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -3319,7 +3319,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 		err = piv_apdu_transceive_chain(pk, apdu);
 		if (err) {
 			err = ioerrf(err, pk->pt_rdrname);
-			bunyan_log(WARN, "piv_verify_pin.transceive failed",
+			bunyan_log(BNY_WARN, "piv_verify_pin.transceive failed",
 			    "error", BNY_ERF, err, NULL);
 			piv_apdu_free(apdu);
 			return (err);
@@ -3394,7 +3394,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 			}
 		} else {
 			err = swerrf("INS_VERIFY(%x)", apdu->a_sw, type);
-			bunyan_log(DEBUG, "card did not accept INS_VERIFY"
+			bunyan_log(BNY_DEBUG, "card did not accept INS_VERIFY"
 			    "reader", BNY_STRING, pk->pt_rdrname,
 			    "error", BNY_ERF, err, NULL);
 		}
@@ -3427,7 +3427,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_verify_pin.transceive failed",
+		bunyan_log(BNY_WARN, "piv_verify_pin.transceive failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (err);
@@ -3454,7 +3454,7 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 
 	} else {
 		err = swerrf("INS_VERIFY(%x)", apdu->a_sw, type);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -3570,7 +3570,7 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		VERIFY0(ssh_digest_final(hctx, buf, dglen));
 		ssh_digest_free(hctx);
 	} else {
-		bunyan_log(TRACE, "doing hash on card", NULL);
+		bunyan_log(BNY_TRACE, "doing hash on card", NULL);
 		buf = (uint8_t *)data;
 		inplen = datalen;
 	}
@@ -3684,7 +3684,7 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_sign_prehash.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "piv_sign_prehash.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		goto out;
 	}
@@ -3736,7 +3736,7 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 
 	} else {
 		err = swerrf("INS_GEN_AUTH(%x)", apdu->a_sw, pc->ps_slot);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -3796,7 +3796,7 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(WARN, "piv_ecdh.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "piv_ecdh.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		goto out;
 	}
@@ -3839,7 +3839,7 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 
 	} else {
 		err = swerrf("INS_GEN_AUTH(%x)", apdu->a_sw, slot->ps_slot);
-		bunyan_log(DEBUG, "unexpected card error",
+		bunyan_log(BNY_DEBUG, "unexpected card error",
 		    "reader", BNY_STRING, pk->pt_rdrname,
 		    "error", BNY_ERF, err, NULL);
 	}
@@ -4963,24 +4963,24 @@ piv_box_read_old_v1(struct sshbuf *buf, struct piv_ecdh_box **pbox)
 	VERIFY3P(kbuf, !=, NULL);
 
 	if (sshbuf_get_u8(buf, &ver)) {
-		bunyan_log(TRACE, "failed to read box version", NULL);
+		bunyan_log(BNY_TRACE, "failed to read box version", NULL);
 		rv = EINVAL;
 		goto out;
 	}
 	if (ver != 1) {
-		bunyan_log(TRACE, "bad piv box version",
+		bunyan_log(BNY_TRACE, "bad piv box version",
 		    "version", BNY_UINT, (uint)ver, NULL);
 		rv = ENOTSUP;
 		goto out;
 	}
 
 	if (sshbuf_get_string(buf, &tmp, &len)) {
-		bunyan_log(TRACE, "failed to read box guid", NULL);
+		bunyan_log(BNY_TRACE, "failed to read box guid", NULL);
 		rv = EINVAL;
 		goto out;
 	}
 	if (len != sizeof (box->pdb_guid)) {
-		bunyan_log(TRACE, "bad piv box guid: short",
+		bunyan_log(BNY_TRACE, "bad piv box guid: short",
 		    "len", BNY_UINT, (uint)len, NULL);
 		free(tmp);
 		rv = EINVAL;
@@ -4990,30 +4990,30 @@ piv_box_read_old_v1(struct sshbuf *buf, struct piv_ecdh_box **pbox)
 	free(tmp);
 
 	if (sshbuf_get_u8(buf, &ver)) {
-		bunyan_log(TRACE, "failed to read box slot", NULL);
+		bunyan_log(BNY_TRACE, "failed to read box slot", NULL);
 		rv = EINVAL;
 		goto out;
 	}
 	box->pdb_slot = ver;
 
 	if (sshbuf_get_stringb(buf, kbuf)) {
-		bunyan_log(TRACE, "failed to read ephem_pub buf", NULL);
+		bunyan_log(BNY_TRACE, "failed to read ephem_pub buf", NULL);
 		rv = EINVAL;
 		goto out;
 	}
 	if (sshkey_fromb(kbuf, &box->pdb_ephem_pub)) {
-		bunyan_log(TRACE, "failed to read ephem_pub", NULL);
+		bunyan_log(BNY_TRACE, "failed to read ephem_pub", NULL);
 		rv = EINVAL;
 		goto out;
 	}
 	sshbuf_reset(kbuf);
 	if (sshbuf_get_stringb(buf, kbuf)) {
-		bunyan_log(TRACE, "failed to read pub buf", NULL);
+		bunyan_log(BNY_TRACE, "failed to read pub buf", NULL);
 		rv = EINVAL;
 		goto out;
 	}
 	if (sshkey_fromb(kbuf, &box->pdb_pub)) {
-		bunyan_log(TRACE, "failed to read pub", NULL);
+		bunyan_log(BNY_TRACE, "failed to read pub", NULL);
 		rv = EINVAL;
 		goto out;
 	}
@@ -5024,7 +5024,7 @@ piv_box_read_old_v1(struct sshbuf *buf, struct piv_ecdh_box **pbox)
 	    sshbuf_get_string(buf, &box->pdb_iv.b_data, &box->pdb_iv.b_size) ||
 	    sshbuf_get_string(buf, &box->pdb_enc.b_data,
 	    &box->pdb_enc.b_size)) {
-		bunyan_log(TRACE, "failed to read box other fields", NULL);
+		bunyan_log(BNY_TRACE, "failed to read box other fields", NULL);
 		rv = EINVAL;
 		goto out;
 	}
