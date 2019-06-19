@@ -70,7 +70,9 @@ enum sshkey_fp_rep {
 /* key is stored in external hardware */
 #define SSHKEY_FLAG_EXT		0x0001
 
+#if !defined(__sun)
 typedef unsigned int u_int;
+#endif
 
 #define SSHKEY_CERT_MAX_PRINCIPALS	256
 /* XXX opaquify? */
