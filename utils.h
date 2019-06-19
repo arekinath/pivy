@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(__sun)
 typedef uint64_t uintmax_t;
 #endif
 
