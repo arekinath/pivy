@@ -3262,7 +3262,7 @@ ebox_challenge_response(struct ebox_config *config, struct piv_ecdh_box *rbox,
 	uint8_t tag, id;
 	errf_t *err;
 	uint8_t *keypiece = NULL;
-	size_t klen;
+	size_t klen = 0;
 
 	VERIFY(config->ec_chalkey != NULL);
 	if ((err = piv_box_open_offline(config->ec_chalkey, rbox)))
@@ -3334,7 +3334,7 @@ sshbuf_put_ebox_challenge_response(struct sshbuf *dbuf,
 	errf_t *err;
 	int rc;
 	uint8_t *keypiece = NULL;
-	size_t klen;
+	size_t klen = 0;
 	struct piv_ecdh_box *box = NULL;
 
 	buf = sshbuf_new();

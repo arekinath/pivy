@@ -1336,7 +1336,7 @@ cmd_key_lock(int argc, char *argv[])
 	key = sshbuf_ptr(kbuf);
 	keylen = sshbuf_len(kbuf);
 
-	set_no_dump(key, keylen);
+	set_no_dump((void *)key, keylen);
 
 	error = ebox_create(ebox_stpl, key, keylen, NULL, 0, &ebox);
 	if (error)

@@ -30,7 +30,7 @@
 
 #include "ssherr.h"
 #include "sshbuf.h"
-#include "utils.h"
+#include "../utils.h"
 
 /* #include "misc.h" */
 #define ROUNDUP(x, y)   ((((x)+((y)-1))/(y))*(y))
