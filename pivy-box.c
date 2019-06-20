@@ -2043,28 +2043,6 @@ usage(const char *type, const char *op)
 	} else {
 		usage_types();
 	}
-	return;
-	fprintf(stderr,
-	    "\n"
-	    "- pivy-box stream <op>\n"
-	    "\n"
-	    "  - pivy-box stream encrypt <tpl>\n"
-	    "      Encrypt streaming data on stdin to the given ebox template\n"
-	    "      Outputs the encrypted stream on stdout in chunks.\n"
-	    "\n"
-	    "  - pivy-box stream decrypt\n"
-	    "      Decrypt a stream from `stream encrypt' on stdin, outputting\n"
-	    "      the decrypted data on stdout in chunks.\n"
-	    "\n"
-	    "- pivy-box challenge <op>\n"
-	    "\n"
-	    "  - pivy-box challenge info\n"
-	    "      Print info about a recovery challenge provided on stdin,\n"
-	    "      without generating a response.\n"
-	    "\n"
-	    "  - pivy-box challenge respond\n"
-	    "      Generate a response to a recovery challenge provided on stdin.\n"
-	    "\n");
 	exit(EXIT_USAGE);
 }
 

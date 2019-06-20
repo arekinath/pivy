@@ -65,7 +65,6 @@ struct bunyan_var {
 		uint bvv_uint;
 		uint64_t bvv_uint64;
 		size_t bvv_size_t;
-		struct bunyan_timers *bvv_timers;
 		struct {
 			const uint8_t *bvvbh_data;
 			size_t bvvbh_len;

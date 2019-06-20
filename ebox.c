@@ -259,9 +259,9 @@ ebox_tpl_alloc(void)
 {
 	struct ebox_tpl *tpl;
 	tpl = calloc(1, sizeof (struct ebox_tpl));
-	tpl->et_version = EBOX_TPL_VNEXT - 1;
 	if (tpl == NULL)
 		return (NULL);
+	tpl->et_version = EBOX_TPL_VNEXT - 1;
 	return (tpl);
 }
 
@@ -2499,7 +2499,7 @@ ebox_decrypt_recovery(struct ebox *box)
 
 	/* Strip off the pkcs#7 padding and verify it. */
 	padding = plain[plainlen - 1];
-	if (padding > blocksz || padding <= 0) {
+	if (padding > blocksz || padding == 0) {
 		err = errf("InvalidPadding", NULL,
 		    "recovery box padding was invalid");
 		goto out;

@@ -897,7 +897,7 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err;
-	struct sshbuf *msg, *boxbuf = NULL, *guid = NULL;
+	struct sshbuf *msg, *boxbuf = NULL, *guidb = NULL;
 	struct sshkey *partner = NULL;
 	struct piv_ecdh_box *box = NULL, *newbox = NULL;
 	uint8_t slotid;
@@ -910,7 +910,7 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
 	if ((r = sshbuf_froms(buf, &boxbuf)) != 0 ||
-	    (r = sshbuf_froms(buf, &guid)) != 0) {
+	    (r = sshbuf_froms(buf, &guidb)) != 0) {
 		err = parserrf("sshbuf_froms", r);
 		goto out;
 	}
@@ -961,8 +961,8 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	newbox = piv_box_new();
 	VERIFY(newbox != NULL);
 
-	if (sshbuf_len(guid) > 0) {
-		piv_box_set_guid(newbox, sshbuf_ptr(guid), GUID_LEN);
+	if (sshbuf_len(guidb) > 0) {
+		piv_box_set_guid(newbox, sshbuf_ptr(guidb), GUID_LEN);
 		piv_box_set_slot(newbox, slotid);
 	}
 	VERIFY0(piv_box_set_data(newbox, secret, seclen));
@@ -992,7 +992,7 @@ out:
 	sshbuf_free(msg);
 	sshkey_free(partner);
 	sshbuf_free(boxbuf);
-	sshbuf_free(guid);
+	sshbuf_free(guidb);
 	return (err);
 }
 
@@ -1014,7 +1014,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	struct sshkey *key = NULL;
 	struct piv_slot *slot = NULL;
 	uint8_t *cert = NULL, *chain = NULL, *ptr;
-	size_t certlen, chainlen, len;
+	size_t certlen, chainlen = 0, len;
 	uint flags;
 	int found = 0;
 	uint tag;
@@ -1089,7 +1089,7 @@ out:
 	if (tlv != NULL)
 		tlv_free(tlv);
 	free(cert);
-	free(chain);
+	piv_file_data_free(chain, chainlen);
 	sshbuf_free(msg);
 	sshkey_free(key);
 	return (err);
@@ -1913,7 +1913,7 @@ main(int ac, char **av)
 			guid_len = len;
 			if (len > 16) {
 				fprintf(stderr, "error: GUID must be <=16 bytes"
-				    " in length (you gave %d)\n", len);
+				    " in length (you gave %u)\n", len);
 				exit(3);
 			}
 			break;

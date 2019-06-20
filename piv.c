@@ -4093,15 +4093,16 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 	seclen = (fieldsz + 7) / 8;
 	sec = calloc_conceal(1, seclen);
 	VERIFY(sec != NULL);
-	seclen = ECDH_compute_key(sec, seclen,
+	rv = ECDH_compute_key(sec, seclen,
 	    EC_KEY_get0_public_key(box->pdb_ephem_pub->ecdsa), privkey->ecdsa,
 	    NULL);
-	if (seclen <= 0) {
+	if (rv <= 0) {
 		free(sec);
 		make_sslerrf(err, "ECDH_compute_key", "performing ECDH");
 		err = boxderrf(err);
 		return (err);
 	}
+	seclen = (size_t)rv;
 
 	dgctx = ssh_digest_start(dgalg);
 	VERIFY3P(dgctx, !=, NULL);
@@ -4402,14 +4403,15 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	seclen = (fieldsz + 7) / 8;
 	sec = calloc(1, seclen);
 	VERIFY(sec != NULL);
-	seclen = ECDH_compute_key(sec, seclen,
+	rv = ECDH_compute_key(sec, seclen,
 	    EC_KEY_get0_public_key(pubk->ecdsa), pkey->ecdsa, NULL);
-	if (seclen <= 0) {
+	if (rv <= 0) {
 		free(sec);
 		make_sslerrf(err, "ECDH_compute_key", "performing ECDH");
 		err = boxaerrf(err);
 		return (err);
 	}
+	seclen = (size_t)rv;
 
 	if (box->pdb_ephem == NULL)
 		sshkey_free(pkey);

@@ -203,7 +203,7 @@ read_key_file(const char *fname, uint *outlen)
 	VERIFY(buf != NULL);
 
 	len = fread(buf, 1, MAX_KEYFILE_LEN, f);
-	if (len <= 0)
+	if (len == 0)
 		errx(EXIT_BAD_ARGS, "keyfile '%s' is too short", fname);
 	if (!feof(f))
 		errx(EXIT_BAD_ARGS, "keyfile '%s' is too long", fname);
@@ -430,7 +430,7 @@ cmd_list(void)
 				} else {
 					struct sshkey *key =
 					    piv_slot_pubkey(slot);
-					printf(":%02X;%s;%s;%d",
+					printf(":%02X;%s;%s;%u",
 					    i, piv_slot_subject(slot),
 					    sshkey_type(key),
 					    sshkey_size(key));
@@ -532,7 +532,7 @@ cmd_list(void)
 		    "BITS", "CERTIFICATE");
 		while ((slot = piv_slot_next(pk, slot)) != NULL) {
 			struct sshkey *pubkey = piv_slot_pubkey(slot);
-			printf("%10s %-3x  %-6s  %-4d  %-30s\n", "",
+			printf("%10s %-3x  %-6s  %-4u  %-30s\n", "",
 			    piv_slot_id(slot), sshkey_type(pubkey),
 			    sshkey_size(pubkey), piv_slot_subject(slot));
 		}
@@ -1064,12 +1064,13 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	}
 
 	cert->cert_info->enc.modified = 1;
-	tbslen = i2d_X509_CINF(cert->cert_info, &tbs);
-	if (tbs == NULL || tbslen <= 0) {
+	rv = i2d_X509_CINF(cert->cert_info, &tbs);
+	if (tbs == NULL || rv <= 0) {
 		make_sslerrf(err, "i2d_X509_CINF", "generating cert");
 		err = funcerrf(err, "failed to generate new cert");
 		return (err);
 	}
+	tbslen = (size_t)rv;
 
 	hashalg = wantalg;
 
@@ -1095,12 +1096,13 @@ signagain:
 	M_ASN1_BIT_STRING_set(cert->signature, sig, siglen);
 	cert->signature->flags = ASN1_STRING_FLAG_BITS_LEFT;
 
-	cdlen = i2d_X509(cert, &cdata);
-	if (cdata == NULL || cdlen <= 0) {
+	rv = i2d_X509(cert, &cdata);
+	if (cdata == NULL || rv <= 0) {
 		make_sslerrf(err, "i2d_X509", "generating cert");
 		err = errf("generate", err, "failed to generate signed cert");
 		return (err);
 	}
+	cdlen = (size_t)rv;
 
 	flags = PIV_COMP_NONE;
 	err = piv_write_cert(selk, slotid, cdata, cdlen, flags);
@@ -1341,7 +1343,7 @@ cmd_attest(uint slotid)
 	tlv_free(tlv);
 
 	free(cert);
-	free(chain);
+	piv_file_data_free(chain, chainlen);
 	return (ERRF_OK);
 error:
 	err = funcerrf(err, "attestation failed");
@@ -2045,11 +2047,13 @@ again9d:
 	return (ERRF_OK);
 }
 
+#if defined(__sun)
 const char *
 _umem_debug_init()
 {
 	return ("guards");
 }
+#endif
 
 void
 usage(void)

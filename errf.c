@@ -234,7 +234,7 @@ vperrf(const struct errf *etop, const char *type, const char *fmt, va_list args)
 	for (e = etop; e != NULL; e = e->errf_cause) {
 		fprintf(stderr, "  Caused by %s: %s\n", e->errf_name,
 		    e->errf_message);
-		fprintf(stderr, "    in %s() at %s:%d\n", e->errf_function,
+		fprintf(stderr, "    in %s() at %s:%u\n", e->errf_function,
 		    e->errf_file, e->errf_line);
 	}
 }
