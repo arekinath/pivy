@@ -7,6 +7,13 @@
  * Author: Alex Wilson <alex.wilson@joyent.com>
  */
 
+/*
+ * Documentation references used below:
+ * [piv]: https://csrc.nist.gov/publications/detail/sp/800-73/4/final
+ * [yubico-piv]: https://developers.yubico.com/PIV/Introduction/Yubico_extensions.html
+ * [iso7816]: (you'll need an ISO membership, or try a university library)
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -554,8 +561,19 @@ out:
 	return (err);
 }
 
+/*
+ * Reads the PIV applet version from a YubiKey, or YubiKey-compatible device
+ * (like one running PivApplet).
+ *
+ * We use the fact that a device responds to this version command to indicate
+ * whether we should bother trying to use any other Yubico extensions to the
+ * PIV interface. If the device doesn't respond to "GET VERSION" we assume it
+ * supports no other extensions.
+ *
+ * This command is documented in [yubico-piv]
+ */
 static errf_t *
-piv_probe_ykpiv(struct piv_token *pk)
+ykpiv_get_version(struct piv_token *pk)
 {
 	errf_t *err;
 	struct apdu *apdu;
@@ -567,7 +585,7 @@ piv_probe_ykpiv(struct piv_token *pk)
 	err = piv_apdu_transceive_chain(pk, apdu);
 	if (err) {
 		err = ioerrf(err, pk->pt_rdrname);
-		bunyan_log(BNY_WARN, "piv_probe_ykpiv.transceive_apdu failed",
+		bunyan_log(BNY_WARN, "ykpiv_get_version.transceive_apdu failed",
 		    "error", BNY_ERF, err, NULL);
 		piv_apdu_free(apdu);
 		return (err);
@@ -593,6 +611,15 @@ piv_probe_ykpiv(struct piv_token *pk)
 	return (err);
 }
 
+/*
+ * Reads the serial number from a YubiKey. This is only available in YubicoPIV
+ * applet version 5.0.0 or later.
+ *
+ * This command is undocumented at present, but can be found used by the
+ * official yubico tools (which are open source). The official clients use
+ * require a response to this command in some circumstances before they will
+ * operate on a device.
+ */
 static errf_t *
 ykpiv_read_serial(struct piv_token *pt)
 {
@@ -633,6 +660,10 @@ ykpiv_read_serial(struct piv_token *pt)
 	return (err);
 }
 
+/*
+ * Reads and parses the PIV Discovery Object.
+ * [piv] 800-73-4 part 1 appendix A (table 18)
+ */
 static errf_t *
 piv_read_discov(struct piv_token *pk)
 {
@@ -691,6 +722,7 @@ piv_read_discov(struct piv_token *pk)
 				tlv_skip(tlv);
 				break;
 			case 0x5F2F:	/* PIN and OCC policy */
+				/* See [piv] 800-73-4 part 1, section 3.3.2 */
 				if ((err = tlv_read_u8to32(tlv, &policy)))
 					goto invdata;
 				bunyan_log(BNY_TRACE, "policy in discov",
@@ -759,6 +791,11 @@ invdata:
 	goto out;
 }
 
+/*
+ * Reads and parses the PIV Key History Object.
+ * [piv] 800-73-4 part 1 section 3.3.3
+ * [piv] 800-73-4 part 1 appendix A (table 19)
+ */
 static errf_t *
 piv_read_keyhist(struct piv_token *pk)
 {
@@ -875,6 +912,11 @@ invdata:
 	goto out;
 }
 
+/*
+ * Reads and parses the PIV Card Holder Unique Identifier Object.
+ * [piv] 800-73-4 part 1 section 3.1.2
+ * [piv] 800-73-4 part 1 appendix A (table 9)
+ */
 static errf_t *
 piv_read_chuid(struct piv_token *pk)
 {
@@ -1117,7 +1159,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			}
 		}
 		if (err == ERRF_OK) {
-			err = piv_probe_ykpiv(key);
+			err = ykpiv_get_version(key);
 			if (err == ERRF_OK) {
 				err = ykpiv_read_serial(key);
 			}
@@ -1301,7 +1343,7 @@ nopenotxn:
 		}
 	}
 	if (err == ERRF_OK) {
-		err = piv_probe_ykpiv(key);
+		err = ykpiv_get_version(key);
 		if (err == ERRF_OK) {
 			err = ykpiv_read_serial(key);
 		}
@@ -1777,6 +1819,11 @@ piv_select(struct piv_token *tk)
 	}
 
 	if (apdu->a_sw == SW_NO_ERROR || apdu->a_sw == SW_WARNING_EOF) {
+		/*
+		 * The PIV response to select is documented in
+		 * [piv] 800-73-4 part 2, section 3.1.1
+		 * In particular, table 3 has the list of tags here.
+		 */
 		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
 		if ((rv = tlv_read_tag(tlv, &tag)))
@@ -1851,6 +1898,9 @@ invdata:
 	goto out;
 }
 
+/*
+ * see [piv] 800-73-4 part 2 appendix A.1
+ */
 errf_t *
 piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 {
@@ -2035,6 +2085,9 @@ invdata:
 	goto out;
 }
 
+/*
+ * see [piv] 800-73-4 part 2 section 3.3.1
+ */
 errf_t *
 piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 {
@@ -2090,6 +2143,9 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 	return (err);
 }
 
+/*
+ * see [piv] 800-73-4 part 2 section 3.3.2
+ */
 static errf_t *
 piv_generate_common(struct piv_token *pt, struct apdu *apdu,
     struct tlv_state *tlv, enum piv_alg alg, enum piv_slotid slotid,
@@ -2228,6 +2284,9 @@ invdata:
 	goto out;
 }
 
+/*
+ * see [piv] 800-73-4 part 2 section 3.3.2
+ */
 errf_t *
 piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
     struct sshkey **pubkey)
@@ -2251,6 +2310,10 @@ piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
 	return (piv_generate_common(pt, apdu, tlv, alg, slotid, pubkey));
 }
 
+/*
+ * The yubico extensions for generate are documented in [yubico-piv]. They're
+ * all extra tags which can be included underneath the 'AC' top-level template.
+ */
 errf_t *
 ykpiv_generate(struct piv_token *pt, enum piv_slotid slotid,
     enum piv_alg alg, enum ykpiv_pin_policy pinpolicy,
@@ -2324,6 +2387,9 @@ out:
 	return (err);
 }
 
+/*
+ * Documented under [yubico-piv]
+ */
 errf_t *
 ykpiv_import(struct piv_token *pt, enum piv_slotid slotid, struct sshkey *key,
     enum ykpiv_pin_policy pinpolicy, enum ykpiv_touch_policy touchpolicy)
@@ -2417,6 +2483,10 @@ out:
 	return (err);
 }
 
+/*
+ * [piv] 800-73-4 part 1 section 3.3.3
+ * [piv] 800-73-4 part 1 appendix A (table 19)
+ */
 errf_t *
 piv_write_keyhistory(struct piv_token *pt, uint oncard, uint offcard,
     const char *offcard_url)
@@ -2513,6 +2583,12 @@ piv_write_cert(struct piv_token *pk, enum piv_slotid slotid,
 	return (err);
 }
 
+/*
+ * Attestation is documented under [yubico-piv] and also in the pages at
+ * https://developers.yubico.com/PIV/Introduction/PIV_attestation.html
+ * and
+ * https://developers.yubico.com/yubico-piv-tool/Attestation.html
+ */
 errf_t *
 ykpiv_attest(struct piv_token *pt, struct piv_slot *slot, uint8_t **data,
     size_t *len)
@@ -2574,6 +2650,9 @@ ykpiv_attest(struct piv_token *pt, struct piv_slot *slot, uint8_t **data,
 	return (err);
 }
 
+/*
+ * see [piv] 800-73-4 part 2 section 3.1.2
+ */
 errf_t *
 piv_read_file(struct piv_token *pt, uint tag, uint8_t **data, size_t *len)
 {
@@ -2663,6 +2742,13 @@ piv_file_data_free(uint8_t *data, size_t len)
 	freezero(data, len);
 }
 
+/*
+ * The structure inside the certificate objects is documented in
+ * [piv] 800-73-4 part 2 appendix A, in tables 15 and onwards
+ *
+ * Towards the end of Appendix A (after table 39 or so) there is some
+ * additional text explaining how CertInfo works and compression.
+ */
 errf_t *
 piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 {
@@ -2985,6 +3071,9 @@ piv_read_all_certs(struct piv_token *tk)
 	return (ERRF_OK);
 }
 
+/*
+ * see [piv] 800-83-4 part 2 section 3.2.2
+ */
 errf_t *
 piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
     const char *newpin)
@@ -3048,6 +3137,9 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 
 	return (err);
 }
+/*
+ * see [piv] 800-83-4 part 2 section 3.2.3
+ */
 
 errf_t *
 piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
