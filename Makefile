@@ -18,7 +18,7 @@ CURL		= curl -k
 prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
 
-VERSION		= 0.2.0
+VERSION		= 0.2.1
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
