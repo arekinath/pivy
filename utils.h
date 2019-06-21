@@ -24,10 +24,8 @@ typedef unsigned int uint;
 typedef unsigned int u_int;
 #endif
 
-#if !defined(__OpenBSD__)
 void *malloc_conceal(size_t size) __attribute__((malloc));
 void *calloc_conceal(size_t nmemb, size_t size) __attribute__((malloc));
-#endif
 
 void set_no_dump(void *ptr, size_t size);
 

@@ -56,6 +56,19 @@ ifeq ($(SYSTEM), Linux)
 	endif
 	SYSTEMDDIR	?= /usr/lib/systemd/user
 endif
+ifeq ($(SYSTEM), OpenBSD)
+	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
+	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
+	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a
+	ZLIB_CFLAGS	=
+	ZLIB_LIBS	= -lz
+	SYSTEM_CFLAGS	=
+	SYSTEM_LIBS	=
+	RDLINE_CFLAGS	=
+	RDLINE_LIBS	= -ledit
+	HAVE_ZFS	:= no
+endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
 	PCSC_LIBS	= -framework PCSC

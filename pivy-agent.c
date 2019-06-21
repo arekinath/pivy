@@ -1421,7 +1421,10 @@ handle_socket_read(u_int socknum)
 	char fn[128];
 	FILE *f;
 #endif
-#if defined(SO_PEERCRED)
+#if defined(__OpenBSD__)
+	struct sockpeercred *peer;
+	socklen_t len;
+#elif defined(SO_PEERCRED)
 	struct ucred *peer;
 	socklen_t len;
 	char fn[128], ln[128];
@@ -1452,6 +1455,18 @@ handle_socket_read(u_int socknum)
 		fclose(f);
 	}
 	free(psinfo);
+#elif defined(__OpenBSD__)
+	peer = calloc(1, sizeof (struct sockpeercred));
+	len = sizeof (struct sockpeercred);
+	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, peer, &len)) {
+		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	euid = peer->uid;
+	egid = peer->gid;
+	pid = peer->pid;
+	free(peer);
 #elif defined(SO_PEERCRED)
 	peer = calloc(1, sizeof (struct ucred));
 	len = sizeof (struct ucred);

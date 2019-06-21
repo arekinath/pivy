@@ -26,7 +26,6 @@ set_no_dump(void *ptr, size_t size)
 	(void) mlock(ptr, size);
 }
 
-#if !defined(__OpenBSD__)
 void *
 malloc_conceal(size_t size)
 {
@@ -44,7 +43,6 @@ calloc_conceal(size_t nmemb, size_t size)
 		set_no_dump(ptr, size);
 	return (ptr);
 }
-#endif
 
 #if !defined(__OpenBSD__) && !defined(__sun)
 void

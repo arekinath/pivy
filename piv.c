@@ -1668,6 +1668,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	errf_t *rv;
 	size_t offset;
 	size_t rem;
+	boolean_t gotok = B_FALSE;
 
 	VERIFY(pk->pt_intxn == B_TRUE);
 
@@ -1725,6 +1726,8 @@ again:
 	 */
 	while ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00 ||
 	    (apdu->a_sw == SW_NO_ERROR && apdu->a_reply.b_len >= 0xFF)) {
+		if (apdu->a_sw == SW_NO_ERROR)
+			gotok = B_TRUE;
 		apdu->a_cls = CLA_ISO;
 		apdu->a_ins = INS_CONTINUE;
 		apdu->a_p1 = 0;
@@ -1741,6 +1744,9 @@ again:
 		if (rv)
 			return (rv);
 	}
+
+	if (gotok && apdu->a_sw == SW_WRONG_DATA)
+		apdu->a_sw = SW_NO_ERROR;
 
 	/* Work out the total length of all the segments we recieved. */
 	apdu->a_reply.b_len += apdu->a_reply.b_offset - offset;

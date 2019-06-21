@@ -31,6 +31,14 @@
 #include <winscard.h>
 #endif
 
+#if defined(__sun)
+#include <libtecla.h>
+#elif defined(__OpenBSD__)
+#include <readline/readline.h>
+#else
+#include <editline/readline.h>
+#endif
+
 extern char *ebox_pin;
 extern uint ebox_min_retries;
 extern boolean_t ebox_batch;

@@ -51,12 +51,6 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
-#if defined(__sun)
-#include <libtecla.h>
-#else
-#include <editline/readline.h>
-#endif
-
 #include "tlv.h"
 #include "errf.h"
 #include "ebox.h"
