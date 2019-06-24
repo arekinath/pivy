@@ -252,6 +252,21 @@ cmd_unlock(const char *fsname)
 		    fsname);
 	}
 #endif
+	/*
+	 * If we just unlocked the root of a zpool, do the same thing that
+	 * 'zpool import' would have done and call zpool_enable_datasets() to
+	 * try mounting the filesystems under it.
+	 *
+	 * This is kind of best-effort, so we ignore errors.
+	 */
+	if (strchr(fsname, '/') == NULL) {
+		zpool_handle_t *pool;
+		pool = zpool_open_canfail(zfshdl, fsname);
+		if (pool != NULL) {
+			(void) zpool_enable_datasets(pool, NULL, 0);
+			zpool_close(pool);
+		}
+	}
 
 	if (recovered) {
 		fprintf(stderr, "-- Add new primary configuration --\n");
