@@ -899,6 +899,7 @@ sshbuf_get_ebox_tpl_config(struct sshbuf *buf, struct ebox_tpl_config **pconfig)
 			err = errf("PartError", err, "error reading part %u", i);
 			goto out;
 		}
+		part->etp_next->etp_prev = part;
 		part = part->etp_next;
 		config->etc_lastpart = part;
 	}
@@ -1062,6 +1063,7 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 			    "failed to read config %u", i));
 			goto out;
 		}
+		config->etc_next->etc_prev = config;
 		config = config->etc_next;
 		tpl->et_lastconfig = config;
 	}
