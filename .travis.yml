@@ -1,14 +1,30 @@
 language: c
-os: osx
-osx_image: xcode9.2
-script: make && sudo make package
+matrix:
+  include:
+    - os: osx
+      osx_image: xcode9.2
+    - os: linux
+script:
+ - make
+ - if [ "$TRAVIS_OS_NAME" = "osx" ]; then sudo make package; fi
 addons:
+  apt:
+    update: true
+    packages:
+    - libpcsclite-dev
+    - libpcsclite1
+    - libbsd-dev
+    - libbsd0
+    - libedit-dev
+    - libreadline-dev
+    - libcryptsetup-dev
   artifacts:
     paths:
     - $(ls macosx/pivy-*.pkg | tr "\n" ":")
   coverity_scan:
     project:
-     name: joyent/pivy
-     version: 0.2.2
+      name: joyent/pivy
+      version: 0.2.2
+    build_command_prepend: make $(pwd)/libressl/crypto/.libs/libcrypto.a
     build_command: make
     branch_pattern: coverity
