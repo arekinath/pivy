@@ -6,3 +6,9 @@ addons:
   artifacts:
     paths:
     - $(ls macosx/pivy-*.pkg | tr "\n" ":")
+  coverity_scan:
+    project:
+     name: joyent/pivy
+     version: 0.2.2
+    build_command: make
+    branch_pattern: coverity
