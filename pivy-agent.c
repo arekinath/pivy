@@ -1442,7 +1442,7 @@ pin_again:
 	if (errf_caused_by(err, "PermissionError") && pin_len != 0 &&
 	    piv_token_is_ykpiv(selk) && canskip) {
 		/*
-		 * On a Yubikey, slots other than 9C (SIGNATURE) can also be
+		 * On a YubiKey, slots other than 9C (SIGNATURE) can also be
 		 * set to "PIN Always" mode. We might have one, so try again
 		 * with forced PIN entry.
 		 */

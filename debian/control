@@ -8,4 +8,4 @@ Build-Depends: libpcsclite-dev, libbsd-dev, libedit-dev, libreadline-dev, libcry
 Package: pivy
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Tools for using PIV tokens (like Yubikeys) as an SSH agent, for encrypting data at rest, and more
+Description: Tools for using PIV tokens (like YubiKeys) as an SSH agent, for encrypting data at rest, and more
