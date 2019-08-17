@@ -50,6 +50,7 @@
 
 #include <libzfs.h>
 #include <libzfs_core.h>
+#include <sys/spa_impl.h>
 #include <libnvpair.h>
 #include <sys/dmu.h>
 
@@ -335,13 +336,18 @@ cmd_rekey(const char *fsname)
 	nvlist_t *props, *prop;
 	char *b64, *description;
 	struct sshbuf *buf;
-	struct ebox *ebox, *nebox;
+	struct ebox *ebox = NULL, *nebox;
 	size_t desclen;
 	errf_t *error;
 	boolean_t recovered;
 	int rc;
-	const uint8_t *key;
-	size_t keylen;
+	const uint8_t *key = NULL;
+	const uint8_t *nkey;
+	size_t keylen, nkeylen;
+#if defined(DMU_OT_ENCRYPTED)
+	uint64_t kstatus;
+	nvlist_t *nprops;
+#endif
 
 	if (zfsebtpl == NULL) {
 		warnx("-t <tplname|path> option is required");
@@ -352,8 +358,27 @@ cmd_rekey(const char *fsname)
 	if (ds == NULL)
 		err(EXIT_ERROR, "failed to open dataset %s", fsname);
 
+	buf = sshbuf_new();
+	if (buf == NULL)
+		err(EXIT_ERROR, "failed to allocate buffer");
+
+#if defined(DMU_OT_ENCRYPTED)
+	props = zfs_get_all_props(ds);
+	VERIFY(props != NULL);
+
+	if (nvlist_lookup_nvlist(props, "keystatus", &prop)) {
+		errx(EXIT_ERROR, "no keystatus property "
+		    "could be read on dataset %s", fsname);
+	}
+	VERIFY0(nvlist_lookup_uint64(prop, "value", &kstatus));
+
+	if (kstatus == ZFS_KEYSTATUS_AVAILABLE) {
+		goto newkey;
+	}
+#else
 	props = zfs_get_user_props(ds);
 	VERIFY(props != NULL);
+#endif
 
 	if (nvlist_lookup_nvlist(props, "rfd77:ebox", &prop)) {
 		errx(EXIT_ERROR, "no rfd77:ebox property "
@@ -367,9 +392,6 @@ cmd_rekey(const char *fsname)
 	description = calloc(1, desclen);
 	snprintf(description, desclen, "ZFS filesystem %s", fsname);
 
-	buf = sshbuf_new();
-	if (buf == NULL)
-		err(EXIT_ERROR, "failed to allocate buffer");
 	if ((rc = sshbuf_b64tod(buf, b64))) {
 		error = ssherrf("sshbuf_b64tod", rc);
 		errfx(EXIT_ERROR, error, "failed to parse rfd77:ebox property"
@@ -386,7 +408,43 @@ cmd_rekey(const char *fsname)
 
 	key = ebox_key(ebox, &keylen);
 
-	error = ebox_create(zfsebtpl, key, keylen, NULL, 0, &nebox);
+#if defined(DMU_OT_ENCRYPTED)
+	rc = lzc_load_key(fsname, B_FALSE, (uint8_t *)key, keylen);
+	if (rc != 0) {
+		errno = rc;
+		err(EXIT_ERROR, "failed to load key material into ZFS for %s",
+		    fsname);
+	}
+#endif
+newkey:
+
+#if defined(DMU_OT_ENCRYPTED)
+	VERIFY0(nvlist_alloc(&nprops, NV_UNIQUE_NAME, 0));
+	VERIFY0(nvlist_add_uint64(nprops,
+	    "keyformat", ZFS_KEYFORMAT_RAW));
+	VERIFY0(nvlist_add_uint64(nprops,
+	    "keylocation", ZFS_KEYLOCATION_PROMPT));
+
+	nkeylen = 32;
+	nkey = calloc_conceal(1, 32);
+	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+	arc4random_buf(nkey, nkeylen);
+
+	rc = lzc_change_key(fsname, DCP_CMD_NEW_KEY, nprops, nkey, nkeylen);
+	if (rc != 0) {
+		errno = rc;
+		err(EXIT_ERROR, "failed to load key material into ZFS for %s",
+		    fsname);
+	}
+	nvlist_free(nprops);
+#else
+	warnx("WARN: this ZFS implementation does not support encryption: "
+	    "the existing wrapping key will be re-used");
+	nkey = key;
+	nkeylen = keylen;
+#endif
+
+	error = ebox_create(zfsebtpl, nkey, nkeylen, NULL, 0, &nebox);
 	if (error)
 		errfx(EXIT_ERROR, error, "ebox_create failed");
 	sshbuf_reset(buf);
