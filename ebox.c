@@ -119,6 +119,10 @@ struct ebox_config {
 	/* key for collecting challenge-responses */
 	struct sshkey *ec_chalkey;
 
+	/* nonce for uniquifying recovery keys */
+	uint8_t *ec_nonce;
+	size_t ec_noncelen;
+
 	void *ec_priv;
 };
 
@@ -194,6 +198,7 @@ enum ebox_part_tag {
 enum ebox_version {
 	EBOX_V1 = 0x01,
 	EBOX_V2 = 0x02,
+	EBOX_V3 = 0x03,
 	EBOX_VNEXT,
 	EBOX_VMIN = EBOX_V1
 };
@@ -1099,6 +1104,7 @@ ebox_config_free(struct ebox_config *config)
 		return;
 	if (config->ec_chalkey != NULL)
 		sshkey_free(config->ec_chalkey);
+	freezero(config->ec_nonce, config->ec_noncelen);
 	free(config->ec_priv);
 	for (part = config->ec_parts; part != NULL; part = npart) {
 		npart = part->ep_next;
@@ -1944,6 +1950,20 @@ sshbuf_get_ebox_config(struct sshbuf *buf, const struct ebox *ebox,
 		    "ebox config has unknown type: 0x%02x", tconfig->etc_type);
 		goto out;
 	}
+	if (ebox->e_version >= EBOX_V3) {
+		rc = sshbuf_get_string8(buf, &config->ec_nonce,
+		    &config->ec_noncelen);
+		if (rc) {
+			err = ssherrf("sshbuf_get_string8", rc);
+			goto out;
+		}
+		if (config->ec_noncelen > 0 &&
+		    tconfig->etc_type != EBOX_RECOVERY) {
+			err = errf("InvalidConfig", NULL,
+			    "ebox config is PRIMARY but has config nonce");
+			goto out;
+		}
+	}
 	if (tconfig->etc_type == EBOX_PRIMARY &&
 	    tconfig->etc_n > 1) {
 		err = errf("InvalidConfig", NULL,
@@ -2276,6 +2296,19 @@ sshbuf_put_ebox_config(struct sshbuf *buf, struct ebox *ebox,
 		return (ssherrf("sshbuf_put_u8", rc));
 	}
 
+	if (config->ec_noncelen > 0 && config->ec_nonce != NULL) {
+		VERIFY3S(ebox->e_version, >=, EBOX_V3);
+		VERIFY3S(tconfig->etc_type, ==, EBOX_RECOVERY);
+		rc = sshbuf_put_string8(buf, config->ec_nonce,
+		    config->ec_noncelen);
+		if (rc)
+			return (ssherrf("sshbuf_put_string8", rc));
+	} else {
+		rc = sshbuf_put_u8(buf, 0);
+		if (rc)
+			return (ssherrf("sshbuf_put_u8", rc));
+	}
+
 	part = config->ec_parts;
 	for (; part != NULL; part = part->ep_next) {
 		if ((err = sshbuf_put_ebox_part(buf, ebox, part)))
@@ -2597,6 +2630,7 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 	struct ebox_part *ppart, *npart;
 	size_t plainlen;
 	uint8_t *plain;
+	uint8_t *configkey;
 	struct sshbuf *buf;
 	struct piv_ecdh_box *pbox;
 	sss_Keyshare *share, *shares = NULL;
@@ -2650,10 +2684,23 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 			/* sss_* only supports 32-byte keys */
 			VERIFY3U(box->e_rcv_key.b_len, ==, 32);
 
+			nconfig->ec_nonce = calloc(1, box->e_rcv_key.b_len);
+			nconfig->ec_noncelen = box->e_rcv_key.b_len;
+			VERIFY(nconfig->ec_nonce != NULL);
+			arc4random_buf(nconfig->ec_nonce, keylen);
+
+			configkey = calloc_conceal(1, nconfig->ec_noncelen);
+			for (i = 0; i < nconfig->ec_noncelen; ++i) {
+				configkey[i] = nconfig->ec_nonce[i] ^
+				    box->e_rcv_key.b_data[i];
+			}
+
 			shareslen = tconfig->etc_m * sizeof (sss_Keyshare);
 			shares = calloc_conceal(1, shareslen);
-			sss_create_keyshares(shares, box->e_rcv_key.b_data,
-			    tconfig->etc_m, tconfig->etc_n);
+			sss_create_keyshares(shares, configkey, tconfig->etc_m,
+			    tconfig->etc_n);
+
+			freezero(configkey, nconfig->ec_noncelen);
 		}
 
 		ppart = NULL;
@@ -2739,6 +2786,12 @@ ebox_unlock(struct ebox *ebox, struct ebox_config *config)
 	    "least one part box to be unlocked"));
 }
 
+size_t
+ebox_config_nonce_len(const struct ebox_config *config)
+{
+	return (config->ec_noncelen);
+}
+
 errf_t *
 ebox_recover(struct ebox *ebox, struct ebox_config *config)
 {
@@ -2750,6 +2803,8 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 	errf_t *err;
 	int rc;
 	uint8_t tag;
+	uint8_t *configkey;
+	size_t cklen;
 	sss_Keyshare *share, *shares = NULL;
 
 	if (ebox->e_key != NULL || ebox->e_keylen > 0) {
@@ -2794,10 +2849,32 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 		goto out;
 	}
 
-	ebox->e_rcv_key.b_data = calloc_conceal(1, sizeof (sss_Keyshare));
-	ebox->e_rcv_key.b_len = sizeof (sss_Keyshare);
-	sss_combine_keyshares(ebox->e_rcv_key.b_data,
-	    (const sss_Keyshare *)shares, n);
+	/* sss_* only supports 32-byte keys */
+	ebox->e_rcv_key.b_len = (cklen = 32);
+	ebox->e_rcv_key.b_data = calloc_conceal(1, cklen);
+
+	configkey = calloc_conceal(1, cklen);
+	sss_combine_keyshares(configkey, (const sss_Keyshare *)shares, n);
+
+	if (config->ec_noncelen > 0 && config->ec_nonce != NULL) {
+		if (config->ec_noncelen < cklen) {
+			free(ebox->e_rcv_key.b_data);
+			freezero(configkey, cklen);
+			freezero(shares, m * sizeof (sss_Keyshare));
+			return (errf("RecoveryFailed", errf("BadConfigNonce",
+			    NULL, "recovery config nonce has bad length: %zu "
+			    "(need %zu bytes)", config->ec_noncelen, cklen),
+			    "ebox recovery failed"));
+		}
+		VERIFY3U(config->ec_noncelen, ==, cklen);
+		for (i = 0; i < cklen; ++i) {
+			ebox->e_rcv_key.b_data[i] = configkey[i] ^
+			    config->ec_nonce[i];
+		}
+	} else {
+		bcopy(configkey, ebox->e_rcv_key.b_data, cklen);
+	}
+	free(configkey);
 
 	err = ebox_decrypt_recovery(ebox);
 	if (err) {

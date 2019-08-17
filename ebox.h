@@ -156,6 +156,7 @@ void ebox_free(struct ebox *box);
 uint ebox_version(const struct ebox *ebox);
 enum ebox_type ebox_type(const struct ebox *ebox);
 uint ebox_ephem_count(const struct ebox *ebox);
+size_t ebox_config_nonce_len(const struct ebox_config *config);
 
 const char *ebox_cipher(const struct ebox *box);
 const uint8_t *ebox_key(const struct ebox *box, size_t *len);

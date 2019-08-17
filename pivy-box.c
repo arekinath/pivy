@@ -1408,6 +1408,7 @@ cmd_key_info(int argc, char *argv[])
 	struct sshbuf *buf;
 	struct ebox *ebox;
 	struct ebox_tpl *tpl;
+	struct ebox_config *config = NULL;
 	errf_t *error;
 
 	buf = read_stdin_b64(EBOX_MAX_SIZE);
@@ -1432,6 +1433,12 @@ cmd_key_info(int argc, char *argv[])
 	}
 	fprintf(stderr, "ephemeral keys: %u\n", ebox_ephem_count(ebox));
 	fprintf(stderr, "recovery cipher: %s\n", ebox_cipher(ebox));
+
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		size_t len = ebox_config_nonce_len(config);
+		if (len > 0)
+			fprintf(stderr, "per-config nonce: %zu bytes\n", len);
+	}
 
 	tpl = ebox_tpl(ebox);
 	print_tpl(stderr, tpl);

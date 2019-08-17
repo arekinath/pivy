@@ -221,6 +221,11 @@ authenticates the output data (so we can detect corrupted shares reliably), and
 allows the storage of additional data that is only available after recovery (a
 useful feature for RFD77).
 
+Since there is only one encrypted recovery box for the entire ebox structure, to
+prevent cross-use of shares between different recovery configurations, each
+recovery config encodes a different intermediate key. This is XOR'd with
+a per-recovery nonce to retrieve the actual symmetric key for the recovery box.
+
 The two possible processes for arriving at the final key from an ebox are
 shown below:
 
@@ -234,23 +239,36 @@ shown below:
                                         |
                                         |
                                         |                                                +--------------+
-                                        +---------------------------+------------------->|Final key     |
-                                                                    ^                    +--------------+
-                                                                    |
-                                                                    |
-                                                                    |
-+-----------------+-----+   unseal  +------+   GF^256 SS       +-----+-------+
+                                        +-----------------------------+----------------->|Final key     |
+                                                                      ^                  +--------------+
+                                                                      |
+                                                                      |
+                                                                      |
++-----------------+-----+   unseal  +------+   GF^256 SS       +------+------+
 |Recovery config  | box +---------->|share +--------+          |recovery box +-----> "(additional info)"
 |                 +-----+           +------+        |          |contents     |
 | N=2             | box +---------->|share +--------+          +-------------+
-|                 +-----+           +------+        |                ^
-|                 | box |                           |                |
-+-----------------+-----+                           |                | aes256-gcm
-                                                    |                |
-                                                    |       +--------+---+
-                                                    +------>|intermediate|
-                                                            |key         |
-                                                            +------------+
+|                 +-----+           +------+        |                 ^
+|                 | box |                           |                 |
++-----------------+-----+                           v                 | aes256-gcm
+|                 nonce |-------.                +-----+              |
++-----------------------+        '------.        |     |       +------+------+
+                                         '------>| XOR +------>|intermediate |
+                                                 |     |       |key          |
+                                                 +-----+       +-------------+
+                                                                   ^
++-----------------+-----+   unseal  +------+   GF^256 SS           |
+|Recovery config  | box +---------->|share +--------+              |
+|                 +-----+           +------+        |              |
+| N=3             | box +---------->|share +--------+              |
+|                 +-----+           +------+        |              |
+|                 | box +---------->|share +--------+              |
++                 +-----+           +------+        v              |
+|                 | box |                        +-----+           |
++-----------------------+                        |     |           |
+|                 nonce |----------------------->| XOR +-----------'
++-----------------------+                        |     |
+                                                 +-----+
 
 ....
 
@@ -312,7 +330,7 @@ format-breaking change and bump the top-level version number in the structure.
                     +----------+---------------------------+
                     | uint8[2] : magic                     | <---  always 0xEB, 0x0C
                     +----------+---------------------------+                    +---------+---+
-                    | uint8    : version                   | <---  2            |TEMPLATE : 1 |
+                    | uint8    : version                   | <---  3            |TEMPLATE : 1 |
                     +----------+---------------------------+                    |KEY      : 2 |
                     | uint8    : type                      | <------------------|STREAM   : 3 |
                     +==========+===========================+                    +---------+---+
@@ -335,6 +353,8 @@ format-breaking change and bump the top-level version number in the structure.
              |      | uint8    : N                         | <--- always 1 if "(config type = PRIMARY)"
   repeat ----+      +----------+---------------------------+
              |      | uint8    : number of parts (M)       |
+             |      +----------+---------------------------+
+             |      | string8  : config nonce              | <--- always 0 bytes if "(config type = PRIMARY)"
              |   .- +==========+===========================+
   repeat --- | --+  | ...      : part information          |  -------.
              '-- '- +==========+===========================+         |
