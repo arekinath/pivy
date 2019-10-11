@@ -154,6 +154,10 @@ static uint64_t last_op;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static boolean_t sign_9d = B_FALSE;
+static boolean_t check_client_uid = B_TRUE;
+#if defined(__sun)
+static boolean_t check_client_zoneid = B_TRUE;
+#endif
 
 static char *pinmem = NULL;
 static char *pin = NULL;
@@ -1418,6 +1422,7 @@ handle_socket_read(u_int socknum)
 #if defined(__sun)
 	ucred_t *peer;
 	struct psinfo *psinfo;
+	zoneid_t zid;
 	char fn[128];
 	FILE *f;
 #endif
@@ -1444,6 +1449,7 @@ handle_socket_read(u_int socknum)
 	euid = ucred_geteuid(peer);
 	egid = ucred_getegid(peer);
 	pid = ucred_getpid(peer);
+	zid = ucred_getzoneid(peer);
 	ucred_free(peer);
 	psinfo = calloc(1, sizeof (struct psinfo));
 	snprintf(fn, sizeof (fn), "/proc/%d/psinfo", (int)pid);
@@ -1455,6 +1461,12 @@ handle_socket_read(u_int socknum)
 		fclose(f);
 	}
 	free(psinfo);
+	if (check_client_zoneid && zid != getzoneid()) {
+		error("zoneid mismatch: peer zoneid %u != zoneid %u",
+		    (u_int) zid, (u_int) getzoneid());
+		close(fd);
+		return -1;
+	}
 #elif defined(__OpenBSD__)
 	peer = calloc(1, sizeof (struct sockpeercred));
 	len = sizeof (struct sockpeercred);
@@ -1491,7 +1503,7 @@ handle_socket_read(u_int socknum)
 		return -1;
 	}
 #endif
-	if ((euid != 0) && (getuid() != euid)) {
+	if (check_client_uid && (euid != 0) && (getuid() != euid)) {
 		error("uid mismatch: peer euid %u != uid %u",
 		    (u_int) euid, (u_int) getuid());
 		close(fd);
@@ -1727,7 +1739,12 @@ usage(void)
 	    "  -E fp_hash            Set hash algo for fingerprints\n"
 	    "  -g guid               GUID or GUID prefix of PIV token to use\n"
 	    "  -K cak                9E (card auth) key to authenticate PIV token\n"
-	    "  -k                    Kill an already-running agent\n");
+	    "  -k                    Kill an already-running agent\n"
+	    "  -U                    Don't check client UID (allow any uid to connect)\n"
+#if defined(__sun)
+	    "  -Z                    Don't check client zoneid (allow any zone to connect)\n"
+#endif
+	    );
 	exit(1);
 }
 
@@ -1921,7 +1938,7 @@ main(int ac, char **av)
 
 	__progname = "pivy-agent";
 
-	while ((ch = getopt(ac, av, "cDdkisE:a:P:g:K:m")) != -1) {
+	while ((ch = getopt(ac, av, "cDdkisE:a:P:g:K:mZU")) != -1) {
 		switch (ch) {
 		case 'g':
 			guid = parse_hex(optarg, &len);
@@ -1932,6 +1949,14 @@ main(int ac, char **av)
 				exit(3);
 			}
 			break;
+		case 'U':
+			check_client_uid = B_FALSE;
+			break;
+#if defined(__sun)
+		case 'Z':
+			check_client_zoneid = B_FALSE;
+			break;
+#endif
 		case 'K':
 			cak = sshkey_new(KEY_UNSPEC);
 			VERIFY(cak != NULL);
