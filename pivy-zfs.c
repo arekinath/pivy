@@ -193,23 +193,16 @@ cmd_unlock(const char *fsname)
 	if (ds == NULL)
 		err(EXIT_ERROR, "failed to open dataset %s", fsname);
 
-#if defined(DMU_OT_ENCRYPTED)
-	props = zfs_get_all_props(ds);
+	props = zfs_get_user_props(ds);
 	VERIFY(props != NULL);
 
-	if (nvlist_lookup_nvlist(props, "keystatus", &prop)) {
-		errx(EXIT_ERROR, "no keystatus property "
-		    "could be read on dataset %s", fsname);
-	}
-	VERIFY0(nvlist_lookup_uint64(prop, "value", &kstatus));
+#if defined(DMU_OT_ENCRYPTED)
+	kstatus = zfs_prop_get_int(ds, ZFS_PROP_KEYSTATUS);
 
 	if (kstatus == ZFS_KEYSTATUS_AVAILABLE) {
 		errx(EXIT_ALREADY_UNLOCKED, "key already loaded for %s",
 		    fsname);
 	}
-#else
-	props = zfs_get_user_props(ds);
-	VERIFY(props != NULL);
 #endif
 
 	if (nvlist_lookup_nvlist(props, "rfd77:ebox", &prop)) {
@@ -362,22 +355,15 @@ cmd_rekey(const char *fsname)
 	if (buf == NULL)
 		err(EXIT_ERROR, "failed to allocate buffer");
 
-#if defined(DMU_OT_ENCRYPTED)
-	props = zfs_get_all_props(ds);
+	props = zfs_get_user_props(ds);
 	VERIFY(props != NULL);
 
-	if (nvlist_lookup_nvlist(props, "keystatus", &prop)) {
-		errx(EXIT_ERROR, "no keystatus property "
-		    "could be read on dataset %s", fsname);
-	}
-	VERIFY0(nvlist_lookup_uint64(prop, "value", &kstatus));
+#if defined(DMU_OT_ENCRYPTED)
+	kstatus = zfs_prop_get_int(ds, ZFS_PROP_KEYSTATUS);
 
 	if (kstatus == ZFS_KEYSTATUS_AVAILABLE) {
 		goto newkey;
 	}
-#else
-	props = zfs_get_user_props(ds);
-	VERIFY(props != NULL);
 #endif
 
 	if (nvlist_lookup_nvlist(props, "rfd77:ebox", &prop)) {
