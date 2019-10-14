@@ -563,7 +563,7 @@ ebox_tpl_part_guid(const struct ebox_tpl_part *part)
 }
 
 struct ebox_tpl *
-ebox_tpl_clone(struct ebox_tpl *tpl)
+ebox_tpl_clone(const struct ebox_tpl *tpl)
 {
 	struct ebox_tpl *ntpl;
 	struct ebox_tpl_config *pconfig, *nconfig, *config;
