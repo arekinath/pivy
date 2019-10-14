@@ -81,7 +81,7 @@ void ebox_tpl_free(struct ebox_tpl *tpl);
 uint ebox_tpl_version(const struct ebox_tpl *tpl);
 
 /* Recursively clones the entire ebox_tpl, all configurations and parts. */
-struct ebox_tpl *ebox_tpl_clone(struct ebox_tpl *tpl);
+struct ebox_tpl *ebox_tpl_clone(const struct ebox_tpl *tpl);
 
 void ebox_tpl_add_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config);
 void ebox_tpl_remove_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config);
