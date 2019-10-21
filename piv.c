@@ -2796,6 +2796,7 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		}
 		err = argerrf("slotid", "a supported PIV slot number",
 		    "%02x", slotid);
+		tlv_pop(tlv);
 		tlv_free(tlv);
 		return (err);
 	}
