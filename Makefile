@@ -10,6 +10,8 @@ HAVE_ZFS	:= no
 USE_ZFS		?= no
 HAVE_LUKS	:= no
 USE_LUKS	?= no
+HAVE_PAM	:= no
+USE_PAM		?= no
 
 TAR		= tar
 CURL		= curl -k
@@ -53,6 +55,13 @@ ifeq ($(SYSTEM), Linux)
 	else
 		HAVE_LUKS	:= no
 	endif
+	ifeq (yes,$(USE_PAM))
+		SYSTEM_CFLAGS	+= -fPIC
+	endif
+	HAVE_PAM	:= $(USE_PAM)
+	PAM_CFLAGS	= -fPIC
+	PAM_LIBS	= -lpam
+	PAM_PLUGINDIR	= /usr/lib/security
 	SYSTEMDDIR	?= /usr/lib/systemd/user
 endif
 ifeq ($(SYSTEM), OpenBSD)
@@ -68,6 +77,7 @@ ifeq ($(SYSTEM), OpenBSD)
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
 	LIBCRYPTO	= /usr/lib/libcrypto.a
+	HAVE_PAM	:= no
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
@@ -81,6 +91,7 @@ ifeq ($(SYSTEM), Darwin)
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
+	HAVE_PAM	:= no
 endif
 ifeq ($(SYSTEM), SunOS)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
@@ -97,6 +108,7 @@ ifeq ($(SYSTEM), SunOS)
 	LIBZFS_CFLAGS	=
 	LIBZFS_LIBS	= -lzfs -lzfs_core -lnvpair
 	TAR		= gtar
+	HAVE_PAM	:= no
 endif
 LIBCRYPTO	?= $(LIBRESSL_LIB)/libcrypto.a
 
@@ -318,6 +330,48 @@ install: install_pivyluks
 
 endif
 
+PAMPIVY_SOURCES=		\
+	pam_pivy.c		\
+	$(PIV_COMMON_SOURCES)	\
+	$(LIBSSH_SOURCES)
+PAMPIVY_HEADERS=		\
+	$(PIV_COMMON_HEADERS)	\
+
+ifeq (yes, $(HAVE_PAM))
+
+PAMPIVY_OBJS=		$(PAMPIVY_SOURCES:%.c=%.o)
+PAMPIVY_CFLAGS=		$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(PAM_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			$(SECURITY_CFLAGS) \
+			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
+PAMPIVY_LDFLAGS=	-m64
+PAMPIVY_LIBS=		$(PCSC_LIBS) \
+			$(CRYPTO_LIBS) \
+			$(ZLIB_LIBS) \
+			$(PAM_LIBS) \
+			$(SYSTEM_LIBS)
+
+pam_pivy.so :		CFLAGS=		$(PAMPIVY_CFLAGS)
+pam_pivy.so :		LIBS+=		$(PAMPIVY_LIBS)
+pam_pivy.so :		LDFLAGS+=	$(PAMPIVY_LDFLAGS)
+pam_pivy.so :		HEADERS=	$(PAMPIVY_HEADERS)
+
+pam_pivy.so: $(PAMPIVY_OBJS) $(LIBCRYPTO)
+	$(CC) -shared -o $@ $(LDFLAGS) $(LIBS) \
+	    -Wl,--version-script=pam_pivy.version $(PAMPIVY_OBJS) $(LIBCRYPTO)
+
+all: pam_pivy.so
+
+install_pampivy: pam_pivy.so install_common
+	install -o root -g wheel -m 0755 pam_pivy.so $(DESTDIR)$(PAMPLUGINDIR)
+install: install_pampivy
+.PHONY: install_pampivy
+
+endif
+
 AGENT_SOURCES=			\
 	pivy-agent.c		\
 	$(PIV_COMMON_SOURCES)	\
@@ -370,7 +424,7 @@ $(LIBRESSL_INC):
 
 $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	cd libressl && \
-	    ./configure --enable-static && \
+	    CFLAGS=-fPIC ./configure --enable-static && \
 	    cd crypto && $(MAKE)
 endif
 

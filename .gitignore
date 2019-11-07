@@ -6,5 +6,6 @@
 /pivy-zfs
 /pivy-box
 /pivy-luks
+/pam_pivy.so
 /macosx/*.pkg
 /macosx/root
