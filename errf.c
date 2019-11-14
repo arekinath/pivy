@@ -20,8 +20,8 @@ struct errf {
 	int errf_errno;
 	char errf_name[128];
 	char errf_message[256];
-	const char *errf_function;
-	const char *errf_file;
+	char errf_function[64];
+	char errf_file[64];
 	uint errf_line;
 };
 
@@ -146,9 +146,9 @@ _errf(const char *name, struct errf *cause, const char *func, const char *file,
 
 	strlcpy(e->errf_name, name, sizeof (e->errf_name));
 	e->errf_cause = cause;
-	e->errf_file = file;
+	strlcpy(e->errf_file, file, sizeof (e->errf_file));
 	e->errf_line = line;
-	e->errf_function = func;
+	strlcpy(e->errf_function, func, sizeof (e->errf_function));
 
 	va_start(ap, fmt);
 	wrote = vsnprintf(e->errf_message, sizeof (e->errf_message), fmt, ap);
@@ -190,10 +190,10 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 
 	strlcpy(e->errf_name, macro ? macro : "SystemError",
 	    sizeof (e->errf_name));
-	e->errf_file = file;
+	strlcpy(e->errf_file, file, sizeof (e->errf_file));
 	e->errf_line = line;
 	e->errf_errno = eno;
-	e->errf_function = func;
+	strlcpy(e->errf_function, func, sizeof (e->errf_function));
 
 	wrote = snprintf(e->errf_message, sizeof (e->errf_message),
 	    "%s returned errno %d (%s): %s%s", enofunc, eno, macro,
