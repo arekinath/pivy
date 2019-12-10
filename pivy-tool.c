@@ -303,29 +303,39 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 		return;
 
 	if (pin == NULL && prompt) {
-		char prompt[64];
-		char *guid = piv_token_shortid(pk);
-		snprintf(prompt, 64, "Enter %s for token %s: ",
-		    pin_type_to_name(auth), guid);
-		do {
-			pin = getpass(prompt);
-		} while (pin == NULL && errno == EINTR);
-		if ((pin == NULL && errno == ENXIO) || strlen(pin) < 1) {
-			piv_txn_end(pk);
-			errx(EXIT_PIN, "a PIN is required to unlock "
-			    "token %s", guid);
-		} else if (pin == NULL) {
-			piv_txn_end(pk);
-			err(EXIT_PIN, "failed to read PIN");
-		} else if (strlen(pin) < 6 || strlen(pin) > 8) {
-			const char *charType = "digits";
-			if (piv_token_is_ykpiv(selk))
-				charType = "characters";
-			errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
-			    charType);
+		if ((pin = getenv("PIV_PIN")) != NULL) {
+			if (strlen(pin) < 6 || strlen(pin) > 8) {
+				const char *charType = "digits";
+				if (piv_token_is_ykpiv(selk))
+					charType = "characters";
+				errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+				    charType);
+			}
+		} else {
+			char prompt[64];
+			char *guid = piv_token_shortid(pk);
+			snprintf(prompt, 64, "Enter %s for token %s: ",
+			    pin_type_to_name(auth), guid);
+			do {
+				pin = getpass(prompt);
+			} while (pin == NULL && errno == EINTR);
+			if ((pin == NULL && errno == ENXIO) || strlen(pin) < 1) {
+				piv_txn_end(pk);
+				errx(EXIT_PIN, "a PIN is required to unlock "
+				    "token %s", guid);
+			} else if (pin == NULL) {
+				piv_txn_end(pk);
+				err(EXIT_PIN, "failed to read PIN");
+			} else if (strlen(pin) < 6 || strlen(pin) > 8) {
+				const char *charType = "digits";
+				if (piv_token_is_ykpiv(selk))
+					charType = "characters";
+				errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+				    charType);
+			}
+			free(guid);
 		}
 		pin = strdup(pin);
-		free(guid);
 	}
 	er = piv_verify_pin(pk, auth, pin, &retries, B_FALSE);
 	if (errf_caused_by(er, "PermissionError")) {
