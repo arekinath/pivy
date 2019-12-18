@@ -572,6 +572,8 @@ ebox_tpl_clone(const struct ebox_tpl *tpl)
 	ntpl = calloc(1, sizeof (struct ebox_tpl));
 	VERIFY(ntpl != NULL);
 
+	ntpl->et_version = tpl->et_version;
+
 	pconfig = NULL;
 	config = tpl->et_configs;
 	for (; config != NULL; config = config->etc_next) {
