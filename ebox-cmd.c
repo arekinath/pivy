@@ -165,50 +165,52 @@ again:
 		errx(EXIT_PIN, "Invalid PIN in Enviroment-Varibale PIV_PIN");
 		return;
 	}
-	if (ebox_pin == NULL && !prompt)
-		return;
-	if (ebox_pin == NULL && prompt) {
-		if ((ebox_pin = getenv("PIV_PIN")) != NULL) {
-			read_pin_env = B_TRUE;
-			if (strlen(ebox_pin) < 6 || strlen(ebox_pin) > 8) {
-				const char *charType = "digits";
-				if (piv_token_is_ykpiv(pk))
-					charType = "characters";
-				ebox_pin = NULL;
-				errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
-				    charType);
-				return;
-			}
-		} else {
-			char prompt[64];
-			char *guid = piv_token_shortid(pk);
-			snprintf(prompt, 64, fmt,
-			    pin_type_to_name(auth), guid, partname);
-			do {
-				ebox_pin = getpass(prompt);
-			} while (ebox_pin == NULL && errno == EINTR);
-			if ((ebox_pin == NULL && errno == ENXIO) ||
-			    strlen(ebox_pin) < 1) {
-				piv_txn_end(pk);
-				errx(EXIT_PIN, "a PIN is required to unlock "
-				    "token %s", guid);
-			} else if (ebox_pin == NULL) {
-				piv_txn_end(pk);
-				err(EXIT_PIN, "failed to read PIN");
-			} else if (strlen(ebox_pin) < 6 || strlen(ebox_pin) > 8) {
-				const char *charType = "digits";
-				if (piv_token_is_ykpiv(pk))
-					charType = "characters";
-				warnx("a valid PIN must be 6-8 %s in length",
-				    charType);
-				free(ebox_pin);
-				free(guid);
-				ebox_pin = NULL;
-				goto again;
-			}
-			free(guid);
+	if ((ebox_pin = getenv("PIV_PIN")) != NULL) {
+		read_pin_env = B_TRUE;
+		if (strlen(ebox_pin) < 6 || strlen(ebox_pin) > 8) {
+			const char *charType = "digits";
+			if (piv_token_is_ykpiv(pk))
+				charType = "characters";
+			free(ebox_pin);
+			ebox_pin = NULL;
+			errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+			    charType);
+			return;
 		}
 		ebox_pin = strdup(ebox_pin);
+	}
+	if (ebox_pin == NULL && !prompt) {
+		return;
+	}
+	if (ebox_pin == NULL && prompt) {
+		char prompt[64];
+		char *guid = piv_token_shortid(pk);
+		snprintf(prompt, 64, fmt,
+		    pin_type_to_name(auth), guid, partname);
+		do {
+			ebox_pin = getpass(prompt);
+		} while (ebox_pin == NULL && errno == EINTR);
+		if ((ebox_pin == NULL && errno == ENXIO) ||
+		    strlen(ebox_pin) < 1) {
+			piv_txn_end(pk);
+			errx(EXIT_PIN, "a PIN is required to unlock "
+			    "token %s", guid);
+		} else if (ebox_pin == NULL) {
+			piv_txn_end(pk);
+			err(EXIT_PIN, "failed to read PIN");
+		} else if (strlen(ebox_pin) < 6 || strlen(ebox_pin) > 8) {
+			const char *charType = "digits";
+			if (piv_token_is_ykpiv(pk))
+				charType = "characters";
+			warnx("a valid PIN must be 6-8 %s in length",
+			    charType);
+			free(ebox_pin);
+			free(guid);
+			ebox_pin = NULL;
+			goto again;
+		}
+		ebox_pin = strdup(ebox_pin);
+		free(guid);
 	}
 	retries = ebox_min_retries;
 	er = piv_verify_pin(pk, auth, ebox_pin, &retries, B_FALSE);
