@@ -2917,6 +2917,8 @@ ebox_recover(struct ebox *ebox, struct ebox_config *config)
 	for (part = config->ec_parts; part != NULL; part = part->ep_next) {
 		if (part->ep_share != NULL) {
 			freezero(part->ep_share, part->ep_sharelen);
+			part->ep_share = NULL;
+			part->ep_sharelen = 0;
 		}
 		if (!piv_box_sealed(part->ep_box)) {
 			freezero(part->ep_box->pdb_plain.b_data,
