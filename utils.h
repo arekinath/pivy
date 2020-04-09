@@ -35,6 +35,10 @@ void freezero(void *ptr, size_t size);
 
 char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 
+#if defined(__bounded)
+#undef __bounded
+#endif
+
 #if defined(HAVE_BOUNDED_ATTR)
 #define __bounded(_what, ...) __attribute__((__bounded__(_what, __VA_ARG__)))
 #else
