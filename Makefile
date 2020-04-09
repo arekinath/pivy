@@ -1,11 +1,11 @@
 all: pivy-tool pivy-agent pivy-box
 
+
 LIBRESSL_VER	= 2.7.4
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
 LIBRESSL_INC	= $(CURDIR)/libressl/include
 LIBRESSL_LIB	= $(CURDIR)/libressl/crypto/.libs
-LIBCRYPTO	= $(LIBRESSL_LIB)/libcrypto.a
 
 HAVE_ZFS	:= no
 USE_ZFS		?= no
@@ -59,8 +59,8 @@ endif
 ifeq ($(SYSTEM), OpenBSD)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
-	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
-	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a
+	CRYPTO_CFLAGS	=
+	CRYPTO_LIBS	= -lcrypto
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
@@ -68,6 +68,7 @@ ifeq ($(SYSTEM), OpenBSD)
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
+	LIBCRYPTO	= /usr/lib/libcrypto.a
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
@@ -98,6 +99,7 @@ ifeq ($(SYSTEM), SunOS)
 	LIBZFS_LIBS	= -lzfs -lzfs_core -lnvpair
 	TAR		= gtar
 endif
+LIBCRYPTO	?= $(LIBRESSL_LIB)/libcrypto.a
 
 _ED25519_SOURCES=		\
 	ed25519.c		\
@@ -360,6 +362,9 @@ clean:
 distclean: clean
 	rm -fr libressl
 
+ifeq ($(SYSTEM), OpenBSD)
+# use system libressl
+else
 $(LIBRESSL_INC):
 	$(CURL) $(LIBRESSL_URL) | $(TAR) -zxf - && \
 	    mv libressl-$(LIBRESSL_VER) libressl
@@ -368,6 +373,7 @@ $(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
 	cd libressl && \
 	    ./configure --enable-static && \
 	    cd crypto && $(MAKE)
+endif
 
 .PHONY: install install_common setup
 
