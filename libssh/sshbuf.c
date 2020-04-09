@@ -23,10 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-
-#if defined(__linux) || defined(__APPLE__) || defined(__sun)
 #include <ctype.h>
-#endif
 
 #include "../utils.h"
 #include "ssherr.h"
