@@ -1093,7 +1093,7 @@ signagain:
 		return (err);
 	}
 
-	M_ASN1_BIT_STRING_set(cert->signature, sig, siglen);
+	ASN1_STRING_set(cert->signature, sig, siglen);
 	cert->signature->flags = ASN1_STRING_FLAG_BITS_LEFT;
 
 	rv = i2d_X509(cert, &cdata);
