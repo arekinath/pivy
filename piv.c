@@ -3201,6 +3201,11 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 		err = errf("PermissionError", swerrf("INS_RESET_PIN(%x)",
 		    apdu->a_sw, type), "Incorrect PUK supplied");
 
+	} else if (apdu->a_sw == SW_FILE_INVALID) {
+		err = errf("PermissionError", swerrf("INS_RESET_PIN(%x)",
+		    apdu->a_sw, type), "PUK is blocked due to too many "
+		    "incorrect attempts");
+
 	} else {
 		err = swerrf("INS_RESET_PIN(%x)", apdu->a_sw, type);
 		bunyan_log(BNY_DEBUG, "unexpected card error",
