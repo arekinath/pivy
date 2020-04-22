@@ -69,6 +69,8 @@ int PEM_write_X509(FILE *fp, X509 *x);
 boolean_t debug = B_FALSE;
 static boolean_t parseable = B_FALSE;
 static const char *cn = NULL;
+static const char *upn = NULL;
+static boolean_t save_pinfo_admin = B_TRUE;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static uint min_retries = 1;
@@ -543,6 +545,90 @@ cmd_list(void)
 }
 
 static errf_t *
+save_pinfo_admin_key(struct piv_token *tk)
+{
+	struct tlv_state *tlv;
+	errf_t *err;
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0x88);
+	tlv_push(tlv, 0x89);
+	tlv_write(tlv, admin_key, 24);
+	tlv_pop(tlv);
+	tlv_pop(tlv);
+
+	err = piv_write_file(tk, PIV_TAG_PRINTINFO,
+	    tlv_buf(tlv), tlv_len(tlv));
+	tlv_free(tlv);
+	return (err);
+}
+
+static errf_t *
+try_pinfo_admin_key(struct piv_token *tk)
+{
+	uint8_t *data = NULL;
+	size_t dlen = 0;
+	errf_t *err;
+	uint tag;
+	struct tlv_state *tlv = NULL;
+
+	assert_pin(tk, B_FALSE);
+again:
+	err = piv_read_file(tk, PIV_TAG_PRINTINFO, &data, &dlen);
+	if (err && errf_caused_by(err, "PermissionError")) {
+		assert_pin(tk, B_TRUE);
+		goto again;
+	}
+	if (err == ERRF_OK) {
+		tlv = tlv_init(data, 0, dlen);
+		while (!tlv_at_end(tlv)) {
+			if ((err = tlv_read_tag(tlv, &tag)))
+				goto out;
+			if (tag == 0x88) {
+				if ((err = tlv_read_tag(tlv, &tag)))
+					goto out;
+				if (tag == 0x89) {
+					uint8_t *key;
+					size_t keylen;
+					err = tlv_read_alloc(tlv, &key,
+					    &keylen);
+					if (err)
+						goto out;
+					if ((err = tlv_end(tlv)))
+						goto out;
+					if (keylen == 24) {
+						admin_key = key;
+						err = ERRF_OK;
+					} else {
+						err = errf("BadLength", NULL,
+						    "Data is wrong length for "
+						    "an admin key (%d bytes)",
+						    keylen);
+						goto out;
+					}
+				} else {
+					tlv_skip(tlv);
+				}
+				if ((err = tlv_end(tlv)))
+					goto out;
+			} else {
+				tlv_skip(tlv);
+			}
+		}
+		bunyan_log(BNY_DEBUG, "using admin key from printedinfo file",
+		    NULL);
+		tlv_free(tlv);
+		tlv = NULL;
+	}
+
+out:
+	if (tlv != NULL)
+		tlv_abort(tlv);
+	freezero(data, dlen);
+	return (err);
+}
+
+static errf_t *
 cmd_init(void)
 {
 	errf_t *err;
@@ -628,7 +714,14 @@ cmd_init(void)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
+admin_again:
 	err = piv_auth_admin(selk, admin_key, 24);
+	if (err && errf_caused_by(err, "PermissionError") &&
+	    admin_key == DEFAULT_ADMIN_KEY) {
+		err = try_pinfo_admin_key(selk);
+		if (err == ERRF_OK)
+			goto admin_again;
+	}
 	if (err == ERRF_OK) {
 		err = piv_write_file(selk, PIV_TAG_CARDCAP,
 		    tlv_buf(ccc), tlv_len(ccc));
@@ -678,6 +771,13 @@ cmd_set_admin(uint8_t *new_admin_key)
 		err = ykpiv_set_admin(selk, new_admin_key, 24, touchpolicy);
 		if (err) {
 			err = funcerrf(err, "Failed to set new admin key");
+		}
+		if (!err && save_pinfo_admin) {
+			admin_key = new_admin_key;
+			if ((err = save_pinfo_admin_key(selk))) {
+				err = funcerrf(err, "Failed to write new "
+				    "admin key to printed info object");
+			}
 		}
 	}
 	piv_txn_end(selk);
@@ -890,7 +990,7 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	X509 *cert;
 	EVP_PKEY *pkey;
 	X509_NAME *subj;
-	const char *ku, *basic;
+	const char *ku, *basic, *eku = NULL;
 	char *name;
 	enum sshdigest_types wantalg, hashalg;
 	int nid;
@@ -904,30 +1004,38 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	X509_EXTENSION *ext;
 	X509V3_CTX x509ctx;
 	const char *guidhex;
+	const char *myupn = upn;
+	const char *mycn = cn;
 
-	guidhex = piv_token_guid_hex(selk);
+	guidhex = piv_token_shortid(selk);
+
+	name = calloc(1, 64);
 
 	switch (slotid) {
 	case 0x9A:
-		name = "piv-auth";
+		snprintf(name, 64, "piv-auth@%s", guidhex);
 		basic = "critical,CA:FALSE";
 		ku = "critical,digitalSignature,nonRepudiation";
+		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
+		if (myupn == NULL)
+			myupn = getenv("LOGNAME");
 		break;
 	case 0x9C:
-		name = "piv-sign";
+		snprintf(name, 64, "piv-sign@%s", guidhex);
 		basic = "critical,CA:TRUE";
 		ku = "critical,digitalSignature,nonRepudiation,"
 		    "keyCertSign,cRLSign";
 		break;
 	case 0x9D:
-		name = "piv-key-mgmt";
+		snprintf(name, 64, "piv-key-mgmt@%s", guidhex);
 		basic = "critical,CA:FALSE";
 		ku = "critical,keyAgreement,keyEncipherment,dataEncipherment";
 		break;
 	case 0x9E:
-		name = "piv-card-auth";
+		snprintf(name, 64, "piv-card-auth@%s", guidhex);
 		basic = "critical,CA:FALSE";
 		ku = "critical,digitalSignature,nonRepudiation";
+		eku = "clientAuth";
 		break;
 	case 0x82:
 	case 0x83:
@@ -949,8 +1057,7 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	case 0x93:
 	case 0x94:
 	case 0x95:
-		name = calloc(1, 64);
-		snprintf(name, 64, "piv-retired-%u", slotid - 0x81);
+		snprintf(name, 64, "piv-retired-%u@%s", slotid - 0x81, guidhex);
 		basic = "critical,CA:FALSE";
 		ku = "critical,digitalSignature,nonRepudiation";
 		if (slotid - 0x82 > piv_token_keyhistory_oncard(selk)) {
@@ -964,6 +1071,17 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 		err = funcerrf(NULL, "PIV slot %02X cannot be "
 		    "used for asymmetric crypto\n", slotid);
 		return (err);
+	}
+
+	if (myupn != NULL && eku == NULL) {
+		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
+	}
+
+	if (myupn != NULL) {
+		char *newupn = calloc(1, 128);
+		snprintf(newupn, 128,
+		    "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:%s", myupn);
+		myupn = newupn;
 	}
 
 	pkey = EVP_PKEY_new();
@@ -1021,15 +1139,11 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 
 	subj = X509_NAME_new();
 	VERIFY(subj != NULL);
-	if (cn == NULL) {
-		VERIFY(X509_NAME_add_entry_by_NID(subj, NID_title, MBSTRING_ASC,
-		    (unsigned char *)name, -1, -1, 0) == 1);
-		VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
-		    MBSTRING_ASC, (unsigned char *)guidhex, -1, -1, 0) == 1);
-	} else {
-		VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
-		    MBSTRING_ASC, (unsigned char *)cn, -1, -1, 0) == 1);
+	if (mycn == NULL) {
+		mycn = name;
 	}
+	VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
+	    MBSTRING_ASC, (unsigned char *)mycn, -1, -1, 0) == 1);
 	/*VERIFY(X509_NAME_add_entry_by_NID(subj, NID_organizationalUnitName,
 	    MBSTRING_ASC, (unsigned char *)"tokens", -1, -1, 0) == 1);
 	VERIFY(X509_NAME_add_entry_by_NID(subj, NID_organizationName,
@@ -1050,6 +1164,22 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	VERIFY(ext != NULL);
 	X509_add_ext(cert, ext, -1);
 	X509_EXTENSION_free(ext);
+
+	if (eku != NULL) {
+		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_ext_key_usage,
+		    (char *)eku);
+		VERIFY(ext != NULL);
+		X509_add_ext(cert, ext, -1);
+		X509_EXTENSION_free(ext);
+	}
+
+	if (myupn != NULL) {
+		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_subject_alt_name,
+		    (char *)myupn);
+		VERIFY(ext != NULL);
+		X509_add_ext(cert, ext, -1);
+		X509_EXTENSION_free(ext);
+	}
 
 	VERIFY(X509_set_pubkey(cert, pkey) == 1);
 
@@ -1185,7 +1315,14 @@ cmd_import(uint slotid)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
+admin_again:
 	err = piv_auth_admin(selk, admin_key, 24);
+	if (err && errf_caused_by(err, "PermissionError") &&
+	    admin_key == DEFAULT_ADMIN_KEY) {
+		err = try_pinfo_admin_key(selk);
+		if (err == ERRF_OK)
+			goto admin_again;
+	}
 	if (err == ERRF_OK) {
 		err = ykpiv_import(selk, slotid, priv, pinpolicy, touchpolicy);
 	}
@@ -1241,7 +1378,14 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
+admin_again:
 	err = piv_auth_admin(selk, admin_key, 24);
+	if (err && errf_caused_by(err, "PermissionError") &&
+	    admin_key == DEFAULT_ADMIN_KEY) {
+		err = try_pinfo_admin_key(selk);
+		if (err == ERRF_OK)
+			goto admin_again;
+	}
 	if (err == ERRF_OK) {
 		if (pinpolicy == YKPIV_PIN_DEFAULT &&
 		    touchpolicy == YKPIV_TOUCH_DEFAULT) {
@@ -2033,14 +2177,14 @@ again9d:
 	arc4random_buf(admin_key, 24);
 	if (usetouch)
 		touchpolicy = YKPIV_TOUCH_ALWAYS;
-	hex = buf_to_hex(admin_key, 24, B_FALSE);
-	printf("Admin 3DES key: %s\n", hex);
-	fprintf(stderr, "This key is only needed to generate new slot keys or "
-	    "change certificates in future. If you don't intend to do either "
-	    "you can simply forget about this key and the Yubikey will be "
-	    "sealed.\n");
+
 	if ((err = cmd_set_admin(admin_key)))
 		return (err);
+
+	if (!save_pinfo_admin) {
+		hex = buf_to_hex(admin_key, 24, B_FALSE);
+		printf("Admin 3DES key: %s\n", hex);
+	}
 
 	fprintf(stderr, "Done!\n");
 
@@ -2119,6 +2263,8 @@ usage(void)
 	    "                         RSA algos: rsa1024, rsa2048, rsa4096\n"
 	    "  -n <cn>                Set a CN= attribute to be used on\n"
 	    "                         the new slot's certificate\n"
+	    "  -u <upn>               Set a UPN= attribute to be used on\n"
+	    "                         the new slot's certificate\n"
 	    "  -t <never|always|cached>\n"
 	    "                         Set the touch policy. Only supported\n"
 	    "                         with YubiKeys\n"
@@ -2127,7 +2273,12 @@ usage(void)
 	    "\n"
 	    "Options for 'box'/'unbox':\n"
 	    "  -k <pubkey>            Use a public key for box operation\n"
-	    "                         instead of a slot\n");
+	    "                         instead of a slot\n"
+	    "\n"
+	    "Options for 'set-admin'/'setup':\n"
+	    "  -R                     Don't save admin key in the PIV\n"
+	    "                         'printed info' object (compat with\n"
+	    "                         Yubico PIV manager)\n");
 	exit(EXIT_BAD_ARGS);
 }
 
@@ -2140,7 +2291,7 @@ usage(void)
     "f(force)"
     "K:(admin-key)"
     "k:(key)";*/
-const char *optstring = "dpg:P:a:fK:k:n:t:i:";
+const char *optstring = "dpg:P:a:fK:k:n:t:i:u:R";
 
 int
 main(int argc, char *argv[])
@@ -2167,6 +2318,9 @@ main(int argc, char *argv[])
 			if (++d_level > 1)
 				piv_full_apdu_debug = B_TRUE;
 			break;
+		case 'R':
+			save_pinfo_admin = B_FALSE;
+			break;
 		case 'K':
 			if (strcmp(optarg, "default") == 0) {
 				admin_key = DEFAULT_ADMIN_KEY;
@@ -2185,6 +2339,9 @@ main(int argc, char *argv[])
 				errx(EXIT_BAD_ARGS, "admin key must be "
 				    "24 bytes in length (%d given)", len);
 			}
+			break;
+		case 'u':
+			upn = optarg;
 			break;
 		case 'n':
 			cn = optarg;
