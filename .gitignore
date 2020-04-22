@@ -9,3 +9,7 @@
 /pam_pivy.so
 /macosx/*.pkg
 /macosx/root
+/docs/*.svg
+/docs/.asciidoctor
+/docs/*.html
+/.vscode
