@@ -1,7 +1,6 @@
 all: pivy-tool pivy-agent pivy-box
 
-
-LIBRESSL_VER	= 2.7.4
+LIBRESSL_VER	= 3.1.0
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
 LIBRESSL_INC	= $(CURDIR)/libressl/include
