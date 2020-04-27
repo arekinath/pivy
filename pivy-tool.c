@@ -2472,6 +2472,12 @@ main(int argc, char *argv[])
 
 		if (strcmp(argv[optind], "default") == 0) {
 			new_admin = (uint8_t *)DEFAULT_ADMIN_KEY;
+			len = 24;
+		} else if (strcmp(argv[optind], "random") == 0) {
+			new_admin = malloc(24);
+			VERIFY(new_admin != NULL);
+			arc4random_buf(new_admin, 24);
+			len = 24;
 		} else if (argv[optind][0] == '@') {
 			buf = read_key_file(&argv[optind][1], &len);
 			if (len > 24 && sniff_hex(buf, len)) {
