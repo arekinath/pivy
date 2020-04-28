@@ -173,6 +173,9 @@ enum piv_alg {
 	 */
 	PIV_ALG_ECCP256_SHA1 = 0xf0,
 	PIV_ALG_ECCP256_SHA256 = 0xf1,
+	PIV_ALG_ECCP384_SHA1 = 0xf2,
+	PIV_ALG_ECCP384_SHA256 = 0xf3,
+	PIV_ALG_ECCP384_SHA384 = 0xf4,
 };
 
 /* Types of PIV cardholder authentication methods. */

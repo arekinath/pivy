@@ -3579,7 +3579,7 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 	struct ssh_digest_ctx *hctx;
 	uint8_t *buf;
 	size_t nread, dglen, inplen;
-	boolean_t cardhash = B_FALSE, ch_sha256 = B_FALSE;
+	boolean_t cardhash = B_FALSE, ch_sha256 = B_FALSE, ch_sha384 = B_FALSE;
 	enum piv_alg oldalg;
 
 	VERIFY(tk->pt_intxn);
@@ -3644,19 +3644,67 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 			} else if (cardhash) {
 				*hashalgo = SSH_DIGEST_SHA1;
 				dglen = 20;
+				oldalg = slot->ps_alg;
 				slot->ps_alg = PIV_ALG_ECCP256_SHA1;
 			}
 		}
 		break;
 	case PIV_ALG_ECCP384:
 		inplen = 48;
+		/*
+		 * JC22x cards running PivApplet have proprietary algorithm IDs
+		 * for hash-on-card ECDSA since they can't sign a precomputed
+		 * hash value from the host like they're supposed to.
+		 *
+		 * If it's one of these cards, it advertises
+		 * PIV_ALG_ECCP384_SHA* in the pt_algs list. If we have this,
+		 * try to use it (since regular ECCP384 won't work).
+		 */
+		for (i = 0; i < tk->pt_alg_count; ++i) {
+			if (tk->pt_algs[i] == PIV_ALG_ECCP384_SHA384) {
+				cardhash = B_TRUE;
+				ch_sha384 = B_TRUE;
+			} else if (tk->pt_algs[i] == PIV_ALG_ECCP384_SHA256) {
+				cardhash = B_TRUE;
+				ch_sha256 = B_TRUE;
+			} else if (tk->pt_algs[i] == PIV_ALG_ECCP384_SHA1) {
+				cardhash = B_TRUE;
+			}
+		}
 		if (*hashalgo == SSH_DIGEST_SHA1) {
 			dglen = 20;
+			if (cardhash) {
+				oldalg = slot->ps_alg;
+				slot->ps_alg = PIV_ALG_ECCP384_SHA1;
+			}
 		} else if (*hashalgo == SSH_DIGEST_SHA256) {
 			dglen = 32;
+			if (cardhash && ch_sha256) {
+				oldalg = slot->ps_alg;
+				slot->ps_alg = PIV_ALG_ECCP384_SHA256;
+			} else if (cardhash) {
+				*hashalgo = SSH_DIGEST_SHA1;
+				dglen = 20;
+				oldalg = slot->ps_alg;
+				slot->ps_alg = PIV_ALG_ECCP384_SHA1;
+			}
 		} else {
 			*hashalgo = SSH_DIGEST_SHA384;
 			dglen = 48;
+			if (cardhash && ch_sha384) {
+				oldalg = slot->ps_alg;
+				slot->ps_alg = PIV_ALG_ECCP384_SHA384;
+			} else if (cardhash && ch_sha256) {
+				*hashalgo = SSH_DIGEST_SHA256;
+				dglen = 32;
+				oldalg = slot->ps_alg;
+				slot->ps_alg = PIV_ALG_ECCP384_SHA256;
+			} else if (cardhash) {
+				*hashalgo = SSH_DIGEST_SHA1;
+				dglen = 20;
+				oldalg = slot->ps_alg;
+				slot->ps_alg = PIV_ALG_ECCP384_SHA1;
+			}
 		}
 		break;
 	default:
