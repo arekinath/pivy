@@ -376,6 +376,12 @@ alg_to_string(uint alg)
 		return ("ECCP256-SHA1");
 	case PIV_ALG_ECCP256_SHA256:
 		return ("ECCP256-SHA256");
+	case PIV_ALG_ECCP384_SHA1:
+		return ("ECCP384-SHA1");
+	case PIV_ALG_ECCP384_SHA256:
+		return ("ECCP384-SHA256");
+	case PIV_ALG_ECCP384_SHA384:
+		return ("ECCP384-SHA384");
 	default:
 		return ("?");
 	}
