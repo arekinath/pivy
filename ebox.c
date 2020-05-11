@@ -2689,7 +2689,7 @@ ebox_create(const struct ebox_tpl *tpl, const uint8_t *key, size_t keylen,
 			nconfig->ec_nonce = calloc(1, box->e_rcv_key.b_len);
 			nconfig->ec_noncelen = box->e_rcv_key.b_len;
 			VERIFY(nconfig->ec_nonce != NULL);
-			arc4random_buf(nconfig->ec_nonce, keylen);
+			arc4random_buf(nconfig->ec_nonce, nconfig->ec_noncelen);
 
 			configkey = calloc_conceal(1, nconfig->ec_noncelen);
 			for (i = 0; i < nconfig->ec_noncelen; ++i) {
