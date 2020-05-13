@@ -1862,6 +1862,78 @@ cmd_box_info(void)
 }
 
 static errf_t *
+cmd_bench(uint slotid)
+{
+	struct piv_slot *cert;
+	struct sshkey *pubkey;
+	errf_t *err = NULL;
+	uint i, n = 60;
+	struct timespec t1;
+	struct timespec t2;
+
+	switch (slotid) {
+	case 0x9A:
+	case 0x9C:
+	case 0x9D:
+	case 0x9E:
+		break;
+	default:
+		if (slotid >= 0x82 && slotid <= 0x95)
+			break;
+		err = funcerrf(NULL, "PIV slot %02X cannot be "
+		    "used for signing", slotid);
+		return (err);
+	}
+
+	if (override == NULL) {
+		if ((err = piv_txn_begin(selk)))
+			return (err);
+		assert_select(selk);
+		err = piv_read_cert(selk, slotid);
+		piv_txn_end(selk);
+
+		cert = piv_get_slot(selk, slotid);
+	} else {
+		cert = override;
+	}
+
+	if (cert == NULL || err) {
+		err = funcerrf(err, "failed to read cert for signing key");
+		return (err);
+	}
+
+	pubkey = piv_slot_pubkey(cert);
+
+	if ((err = piv_txn_begin(selk)))
+		errfx(1, err, "failed to open transaction");
+	assert_select(selk);
+	assert_pin(selk, B_FALSE);
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	for (i = 0; i < n; ++i) {
+again:
+		if (err != NULL)
+			errf_free(err);
+		err = piv_auth_key(selk, cert, pubkey);
+		if (errf_caused_by(err, "PermissionError")) {
+			assert_pin(selk, B_TRUE);
+			goto again;
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t2);
+	piv_txn_end(selk);
+	const double t1d = t1.tv_sec + ((double)t1.tv_nsec / 1000000000.0f);
+	const double t2d = t2.tv_sec + ((double)t2.tv_nsec / 1000000000.0f);
+	const double delta = (t2d - t1d) / ((double)n);
+	fprintf(stderr, "time per sign = %.1f ms\n", delta * 1000);
+	if (err) {
+		err = funcerrf(err, "key authentication failed");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
 cmd_auth(uint slotid)
 {
 	struct piv_slot *cert;
@@ -2548,6 +2620,25 @@ main(int argc, char *argv[])
 		if (hasover)
 			override = piv_force_slot(selk, slotid, overalg);
 		err = cmd_sign(slotid);
+
+	} else if (strcmp(op, "bench") == 0) {
+		uint slotid;
+
+		if (optind >= argc) {
+			warnx("not enough arguments for %s", op);
+			usage();
+		}
+		slotid = strtol(argv[optind++], NULL, 16);
+
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+
+		check_select_key();
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_bench(slotid);
 
 	} else if (strcmp(op, "pubkey") == 0) {
 		uint slotid;
