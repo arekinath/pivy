@@ -325,6 +325,14 @@ uint piv_token_keyhistory_offcard(const struct piv_token *token);
 const char *piv_token_offcard_url(const struct piv_token *token);
 
 /*
+ * Returns the applet name/label and applet URI fields which may be included
+ * in the response to SELECT. These fields are optional and both functions may
+ * return NULL.
+ */
+const char *piv_token_app_label(const struct piv_token *token);
+const char *piv_token_app_uri(const struct piv_token *token);
+
+/*
  * Returns true if the card advertises that it implements YubicoPIV extensions
  */
 boolean_t piv_token_is_ykpiv(const struct piv_token *token);

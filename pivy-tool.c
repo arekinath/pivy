@@ -493,6 +493,12 @@ cmd_list(void)
 				    ykpiv_token_serial(pk));
 			}
 		}
+		if (piv_token_app_label(pk) != NULL) {
+			printf("%10s: %s\n", "applet", piv_token_app_label(pk));
+		}
+		if (piv_token_app_uri(pk) != NULL) {
+			printf("%10s: %s\n", "uri", piv_token_app_uri(pk));
+		}
 		printf("%10s:", "auth");
 		defauth = piv_token_default_auth(pk);
 		if (piv_token_has_auth(pk, PIV_PIN)) {

@@ -229,6 +229,10 @@ struct piv_token {
 	uint8_t pt_hist_offcard;
 	char *pt_hist_url;
 
+	/* Extra into in response to SELECT */
+	char *pt_app_label;
+	char *pt_app_uri;
+
 	/* Our preferred authentication method */
 	enum piv_pin pt_auth;
 
@@ -437,6 +441,18 @@ const char *
 piv_token_offcard_url(const struct piv_token *token)
 {
 	return (token->pt_hist_url);
+}
+
+const char *
+piv_token_app_label(const struct piv_token *token)
+{
+	return (token->pt_app_label);
+}
+
+const char *
+piv_token_app_uri(const struct piv_token *token)
+{
+	return (token->pt_app_uri);
 }
 
 boolean_t
@@ -1387,6 +1403,8 @@ piv_release(struct piv_token *pk)
 			free(ps);
 		}
 		free(pk->pt_hist_url);
+		free(pk->pt_app_label);
+		free(pk->pt_app_uri);
 		free((char *)pk->pt_rdrname);
 		free(pk->pt_guidhex);
 
@@ -1844,10 +1862,22 @@ piv_select(struct piv_token *tk)
 			switch (tag) {
 			case PIV_TAG_AID:
 			case PIV_TAG_AUTHORITY:
-			case PIV_TAG_APP_LABEL:
-			case PIV_TAG_URI:
 				/* TODO: validate/store these maybe? */
 				tlv_skip(tlv);
+				break;
+			case PIV_TAG_APP_LABEL:
+				rv = tlv_read_string(tlv, &tk->pt_app_label);
+				if (rv != NULL)
+					goto invdata;
+				if ((rv = tlv_end(tlv)))
+					goto invdata;
+				break;
+			case PIV_TAG_URI:
+				rv = tlv_read_string(tlv, &tk->pt_app_uri);
+				if (rv != NULL)
+					goto invdata;
+				if ((rv = tlv_end(tlv)))
+					goto invdata;
 				break;
 			case PIV_TAG_ALGS:
 				if (tk->pt_alg_count > 0) {
