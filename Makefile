@@ -18,6 +18,8 @@ CURL		= curl -k
 
 prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
+binowner	?= root
+bingroup	?= wheel
 
 VERSION		= 0.4.0
 
@@ -276,7 +278,7 @@ pivy-zfs: $(PIVZFS_OBJS) $(LIBCRYPTO)
 all: pivy-zfs
 
 install_pivyzfs: pivy-zfs install_common
-	install -o root -g wheel -m 0755 pivy-zfs $(DESTDIR)$(bindir)
+	install -o $(binowner) -g $(bingroup) -m 0755 pivy-zfs $(DESTDIR)$(bindir)
 install: install_pivyzfs
 .PHONY: install_pivyzfs
 
@@ -324,7 +326,7 @@ pivy-luks: $(PIVYLUKS_OBJS) $(LIBCRYPTO)
 all: pivy-luks
 
 install_pivyluks: pivy-luks install_common
-	install -o root -g wheel -m 0755 pivy-luks $(DESTDIR)$(bindir)
+	install -o $(binowner) -g $(bingroup) -m 0755 pivy-luks $(DESTDIR)$(bindir)
 install: install_pivyluks
 .PHONY: install_pivyluks
 
@@ -366,7 +368,7 @@ pam_pivy.so: $(PAMPIVY_OBJS) $(LIBCRYPTO)
 all: pam_pivy.so
 
 install_pampivy: pam_pivy.so install_common
-	install -o root -g wheel -m 0755 pam_pivy.so $(DESTDIR)$(PAMPLUGINDIR)
+	install -o $(binowner) -g $(bingroup) -m 0755 pam_pivy.so $(DESTDIR)$(PAMPLUGINDIR)
 install: install_pampivy
 .PHONY: install_pampivy
 
@@ -436,17 +438,17 @@ endif
 
 
 install_common: pivy-tool pivy-agent pivy-box
-	install -o root -g wheel -m 0755 -d $(DESTDIR)$(bindir)
-	install -o root -g wheel -m 0755 pivy-agent $(DESTDIR)$(bindir)
-	install -o root -g wheel -m 0755 pivy-tool $(DESTDIR)$(bindir)
-	install -o root -g wheel -m 0755 pivy-box $(DESTDIR)$(bindir)
+	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(bindir)
+	install -o $(binowner) -g $(bingroup) -m 0755 pivy-agent $(DESTDIR)$(bindir)
+	install -o $(binowner) -g $(bingroup) -m 0755 pivy-tool $(DESTDIR)$(bindir)
+	install -o $(binowner) -g $(bingroup) -m 0755 pivy-box $(DESTDIR)$(bindir)
 
 ifeq ($(SYSTEM), Darwin)
 install: install_common
-	install -o root -g wheel -m 0755 -d $(DESTDIR)/etc/paths.d
+	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)/etc/paths.d
 	echo "$(bindir)" > $(DESTDIR)/etc/paths.d/pivy
-	install -o root -g wheel -m 0755 -d $(DESTDIR)$(prefix)/share
-	install -o root -g wheel -m 0644 macosx/net.cooperi.pivy-agent.plist \
+	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(prefix)/share
+	install -o $(binowner) -g $(bingroup) -m 0644 macosx/net.cooperi.pivy-agent.plist \
 	    $(DESTDIR)$(prefix)/share
 
 .PHONY: package
