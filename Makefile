@@ -22,7 +22,7 @@ libdir		?= $(prefix)/lib
 binowner	?= root
 bingroup	?= wheel
 
-VERSION		= 0.4.0
+VERSION		= 0.5.0
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
@@ -515,4 +515,8 @@ setup: .dist/default_config
 	@echo '  if [[ ! -e "$$SSH_AUTH_SOCK" || "$$SSH_AUTH_SOCK" == *"/keyring/"* ]]; then'
 	@echo '    export SSH_AUTH_SOCK="$$XDG_RUNTIME_DIR/piv-ssh-default.socket"'
 	@echo '  fi'
+
+deb:
+	git archive --prefix pivy-$(VERSION)/ -o ../pivy_$(VERSION).orig.tar.gz HEAD
+	DEB_BUILD_OPTIONS="parallel=4" debuild -us -uc
 endif
