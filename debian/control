@@ -1,0 +1,11 @@
+Source: pivy
+Maintainer: Alex Wilson <alex@cooperi.net>
+Section: misc
+Priority: optional
+Standards-Version: 3.9.2
+Build-Depends: libpcsclite-dev, libbsd-dev, libedit-dev, libreadline-dev, libcryptsetup-dev, libjson-c-dev, libpam-dev
+
+Package: pivy
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Tools for using PIV tokens (like Yubikeys) as an SSH agent, for encrypting data at rest, and more

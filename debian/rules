@@ -1,0 +1,8 @@
+#!/usr/bin/make -f
+DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+
+%:
+	USE_PAM=yes USE_LUKS=yes \
+	prefix=/usr bingroup=root \
+	PAM_PLUGINDIR=/lib/$(DEB_HOST_MULTIARCH)/security \
+	    dh $@
