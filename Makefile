@@ -18,6 +18,7 @@ CURL		= curl -k
 
 prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
+libdir		?= $(prefix)/lib
 binowner	?= root
 bingroup	?= wheel
 
@@ -63,8 +64,8 @@ ifeq ($(SYSTEM), Linux)
 	HAVE_PAM	:= $(USE_PAM)
 	PAM_CFLAGS	= -fPIC
 	PAM_LIBS	= -lpam
-	PAM_PLUGINDIR	= /usr/lib/security
-	SYSTEMDDIR	?= /usr/lib/systemd/user
+	PAM_PLUGINDIR	?= $(libdir)/security
+	SYSTEMDDIR	?= $(libdir)/systemd/user
 endif
 ifeq ($(SYSTEM), OpenBSD)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
@@ -368,7 +369,8 @@ pam_pivy.so: $(PAMPIVY_OBJS) $(LIBCRYPTO)
 all: pam_pivy.so
 
 install_pampivy: pam_pivy.so install_common
-	install -o $(binowner) -g $(bingroup) -m 0755 pam_pivy.so $(DESTDIR)$(PAMPLUGINDIR)
+	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(PAM_PLUGINDIR)
+	install -o $(binowner) -g $(bingroup) -m 0755 pam_pivy.so $(DESTDIR)$(PAM_PLUGINDIR)
 install: install_pampivy
 .PHONY: install_pampivy
 
