@@ -409,6 +409,7 @@ clean:
 	rm -f pivy-box $(PIVYBOX_OBJS)
 	rm -f pivy-zfs $(PIVZFS_OBJS)
 	rm -f pivy-luks $(PIVYLUKS_OBJS)
+	rm -f pam_pivy.so $(PAMPIVY_OBJS)
 	rm -fr .dist
 	rm -fr macosx/root macosx/*.pkg
 
