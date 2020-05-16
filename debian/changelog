@@ -1,3 +1,9 @@
+pivy (0.5.1-1) UNRELEASED; urgency=medium
+
+  * Bug fixes
+
+ -- Alex Wilson <alex@cooperi.net>  Sat, 16 May 2020 08:28:51 +0000
+
 pivy (0.5.0-1) UNRELEASED; urgency=medium
 
   * Initial release. (Closes: #XXXXXX)

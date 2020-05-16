@@ -22,7 +22,7 @@ libdir		?= $(prefix)/lib
 binowner	?= root
 bingroup	?= wheel
 
-VERSION		= 0.5.0
+VERSION		= 0.5.1
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
