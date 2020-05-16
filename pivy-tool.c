@@ -730,6 +730,7 @@ admin_again:
 	err = piv_auth_admin(selk, admin_key, 24);
 	if (err && errf_caused_by(err, "PermissionError") &&
 	    admin_key == DEFAULT_ADMIN_KEY) {
+		errf_free(err);
 		err = try_pinfo_admin_key(selk);
 		if (err == ERRF_OK)
 			goto admin_again;
@@ -776,7 +777,15 @@ cmd_set_admin(uint8_t *new_admin_key)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
+admin_again:
 	err = piv_auth_admin(selk, admin_key, 24);
+	if (err && errf_caused_by(err, "PermissionError") &&
+	    admin_key == DEFAULT_ADMIN_KEY) {
+		errf_free(err);
+		err = try_pinfo_admin_key(selk);
+		if (err == ERRF_OK)
+			goto admin_again;
+	}
 	if (err) {
 		err = funcerrf(err, "Failed to authenticate with old admin key");
 	} else {
@@ -1331,6 +1340,7 @@ admin_again:
 	err = piv_auth_admin(selk, admin_key, 24);
 	if (err && errf_caused_by(err, "PermissionError") &&
 	    admin_key == DEFAULT_ADMIN_KEY) {
+		errf_free(err);
 		err = try_pinfo_admin_key(selk);
 		if (err == ERRF_OK)
 			goto admin_again;
@@ -1394,6 +1404,7 @@ admin_again:
 	err = piv_auth_admin(selk, admin_key, 24);
 	if (err && errf_caused_by(err, "PermissionError") &&
 	    admin_key == DEFAULT_ADMIN_KEY) {
+		errf_free(err);
 		err = try_pinfo_admin_key(selk);
 		if (err == ERRF_OK)
 			goto admin_again;
