@@ -2563,7 +2563,11 @@ piv_write_keyhistory(struct piv_token *pt, uint oncard, uint offcard,
 	if (err == ERRF_OK) {
 		pt->pt_hist_oncard = oncard;
 		pt->pt_hist_offcard = offcard;
-		pt->pt_hist_url = strdup(offcard_url);
+		free(pt->pt_hist_url);
+		if (offcard_url != NULL)
+			pt->pt_hist_url = strdup(offcard_url);
+		else
+			pt->pt_hist_url = NULL;
 	}
 
 	tlv_free(tlv);
