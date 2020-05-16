@@ -54,8 +54,10 @@ sign_and_send_pubkey: signing failed: agent refused operation
 user@host: Permission denied (publickey).
 -----
 
-To use the 9C key I will have to give my PIV PIN to the agent using the
-`ssh-add -X` command, so that it can unlock the card to use the key.
+To use the 9C key I will have to give my PIV PIN to the agent so that it can
+unlock the card to use the key. I can do this either by starting the agent with
+an environment variable `SSH_ASKPASS` set (in which case I will get a graphical
+prompt for the PIN), or by using the command `ssh-add -X`:
 
 -----
 $ ssh-add -X
@@ -88,6 +90,24 @@ One useful way to use the `pivy-agent` is to set up a systemd unit file for it
 to run whenever you log in, and adjust your shell profile to use it as your
 normal SSH agent. Then your PIV keys are automatically ready for use in any
 shell.
+
+### Connection confirm mode
+
+You can also start the `pivy-agent` with mode `-C`, which indicates that it
+should prompt for confirmation (by running the program specified in the
+`SSH_CONFIRM` environment variable).
+
+Unlike the regular `ssh-agent`, `pivy-agent` only prompts for confirmation once
+per connection to the agent, and only for connections which are forwarded via
+SSH agent forwarding (unless you give the option twice, as `-CC`, in which case
+every connection is confirmed). This makes the option more suitable for regular
+use: local programs don't necessarily need prompting, and programs which make
+repeated use of your keys to perform operations will only pop up one prompt.
+
+The `SSH_CONFIRM` environment variable can be given as a path to the `zenity`
+tool if desired -- `pivy-agent` will generate appropriate arguments itself.
+
+If you use agent forwarding (`ssh -A`), use of this mode is highly recommended.
 
 ## Using `pivy-tool`
 

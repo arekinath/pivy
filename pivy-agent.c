@@ -70,6 +70,7 @@
 #include <sys/time.h>
 #include <sys/un.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 
 #include <openssl/evp.h>
 
@@ -144,6 +145,12 @@
 #define	flagserrf(val)		\
     errf("FlagsError", NULL, "unsupported flags value: %x", val)
 
+typedef enum confirm_mode {
+	C_NEVER,
+	C_CONNECTION,
+	C_FORWARDED
+} confirm_mode_t;
+
 static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
 static boolean_t txnopen = B_FALSE;
@@ -155,6 +162,7 @@ static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static boolean_t sign_9d = B_FALSE;
 static boolean_t check_client_uid = B_TRUE;
+static confirm_mode_t confirm_mode = C_NEVER;
 #if defined(__sun)
 static boolean_t check_client_zoneid = B_TRUE;
 #endif
@@ -170,25 +178,46 @@ static struct bunyan_frame *msg_log_frame;
 /* Maximum accepted message length */
 #define AGENT_MAX_LEN	(256*1024)
 
-typedef enum {
+typedef enum sock_type {
 	AUTH_UNUSED,
 	AUTH_SOCKET,
 	AUTH_CONNECTION
-} sock_type;
+} sock_type_t;
 
-typedef struct {
-	int fd;
-	sock_type type;
-	pid_t pid;
-	gid_t gid;
-	char *exepath;
-	struct sshbuf *input;
-	struct sshbuf *output;
-	struct sshbuf *request;
-} SocketEntry;
+typedef enum authz {
+	AUTHZ_NOT_YET = 0,
+	AUTHZ_DENIED,
+	AUTHZ_ALLOWED
+} authz_t;
+
+typedef struct socket_entry {
+	int se_fd;
+	sock_type_t se_type;
+	pid_t se_pid;
+	gid_t se_gid;
+	char *se_exepath;
+	char *se_exeargs;
+	authz_t se_authz;
+	struct sshbuf *se_input;
+	struct sshbuf *se_output;
+	struct sshbuf *se_request;
+	struct pid_entry *se_pid_ent;
+	uint se_pid_idx;
+} socket_entry_t;
 
 u_int sockets_alloc = 0;
-SocketEntry *sockets = NULL;
+socket_entry_t *sockets = NULL;
+
+typedef struct pid_entry {
+	boolean_t pe_valid;
+	uint64_t pe_time;
+	pid_t pe_pid;
+	uint64_t pe_start_time;
+	uint pe_conn_count;
+} pid_entry_t;
+
+pid_entry_t *pids = NULL;
+uint pids_alloc = 0;
 
 int max_fd = 0;
 
@@ -293,6 +322,54 @@ agent_piv_close(boolean_t force)
 		piv_txn_end(selk);
 		txnopen = B_FALSE;
 	}
+}
+
+static char *
+piv_token_shortid(struct piv_token *pk)
+{
+	char *guid;
+	if (piv_token_has_chuid(pk)) {
+		guid = strdup(piv_token_guid_hex(pk));
+	} else {
+		guid = strdup("0000000000");
+	}
+	guid[8] = '\0';
+	return (guid);
+}
+
+static const char *
+pin_type_to_name(enum piv_pin type)
+{
+	switch (type) {
+	case PIV_PIN:
+		return ("PIV PIN");
+	case PIV_GLOBAL_PIN:
+		return ("Global PIN");
+	case PIV_PUK:
+		return ("PUK");
+	default:
+		VERIFY(0);
+		return (NULL);
+	}
+}
+
+static errf_t *
+valid_pin(const char *pin)
+{
+	int i;
+	if (strlen(pin) < 6 || strlen(pin) > 8) {
+		return (errf("InvalidPIN", NULL, "PIN must be 6-8 characters "
+		    "(was given %d)", strlen(pin)));
+	}
+	for (i = 0; pin[i] != 0; ++i) {
+		if (!(pin[i] >= '0' && pin[i] <= '9') &&
+		    !(pin[i] >= 'a' && pin[i] <= 'z') &&
+		    !(pin[i] >= 'A' && pin[i] <= 'Z')) {
+			return (errf("InvalidPIN", NULL, "PIN contains "
+			    "invalid characters: '%c'", pin[i]));
+		}
+	}
+	return (NULL);
 }
 
 static void
@@ -463,11 +540,191 @@ wrap_pin_error(errf_t *err, int retries)
 	return (err);
 }
 
+static const char *askpass = NULL;
+static const char *confirm = NULL;
+
+static void
+try_askpass(void)
+{
+	int p[2], status;
+	pid_t kid, ret;
+	size_t len;
+	errf_t *err;
+	uint retries = 1;
+	char prompt[64], buf[1024];
+	char *guid = piv_token_shortid(selk);
+	enum piv_pin auth = piv_token_default_auth(selk);
+	snprintf(prompt, 64, "Enter %s for token %s",
+	    pin_type_to_name(auth), guid);
+
+	if (askpass == NULL)
+		askpass = getenv("SSH_ASKPASS");
+	if (askpass == NULL)
+		return;
+
+	if (pipe(p) == -1)
+		return;
+	if ((kid = fork()) == -1)
+		return;
+	if (kid == 0) {
+		close(p[0]);
+		if (dup2(p[1], STDOUT_FILENO) == -1)
+			exit(1);
+		execlp(askpass, askpass, prompt, (char *)NULL);
+		exit(1);
+	}
+	close(p[1]);
+
+	len = 0;
+	do {
+		ssize_t r = read(p[0], buf + len, sizeof(buf) - 1 - len);
+
+		if (r == -1 && errno == EINTR)
+			continue;
+		if (r <= 0)
+			break;
+		len += r;
+	} while (sizeof(buf) - 1 - len > 0);
+	buf[len] = '\0';
+
+	close(p[0]);
+	while ((ret = waitpid(kid, &status, 0)) == -1)
+		if (errno != EINTR)
+			break;
+	if (ret == -1 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		explicit_bzero(buf, sizeof(buf));
+		bunyan_log(BNY_WARN, "executing askpass failed",
+		    "exit_status", BNY_UINT, (uint)WEXITSTATUS(status),
+		    NULL);
+		return;
+	}
+
+	buf[strcspn(buf, "\r\n")] = '\0';
+	if ((err = valid_pin(buf))) {
+		errf_free(err);
+		goto out;
+	}
+	if ((err = agent_piv_open())) {
+		errf_free(err);
+		goto out;
+	}
+	err = piv_verify_pin(selk, auth, buf, &retries, B_FALSE);
+	if (err != ERRF_OK) {
+		err = wrap_pin_error(err, retries);
+		bunyan_log(BNY_WARN, "failed to use PIN provided by askpass",
+		    "error", BNY_ERF, err, NULL);
+		errf_free(err);
+		goto out;
+	}
+	agent_piv_close(B_FALSE);
+	if (pin_len != 0)
+		explicit_bzero(pin, pin_len);
+	pin_len = strlen(buf);
+	bcopy(buf, pin, pin_len);
+	bunyan_log(BNY_INFO, "storing PIN in memory", NULL);
+	card_probe_interval = card_probe_interval_pin;
+
+out:
+	explicit_bzero(buf, sizeof(buf));
+}
+
+static void
+try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
+{
+	int status;
+	pid_t kid, ret;
+	boolean_t add_zenity_args = B_FALSE;
+	char prompt[1024];
+	char *guid = piv_token_shortid(selk);
+
+	if (confirm_mode == C_NEVER) {
+		e->se_authz = AUTHZ_ALLOWED;
+		return;
+	}
+
+	if (confirm_mode == C_FORWARDED) {
+		char *ssh = strstr(e->se_exepath, "ssh");
+		if (ssh != NULL && ssh > e->se_exepath)
+			--ssh;
+		if (e->se_pid_idx == 0 || ssh == NULL ||
+		    strcmp(ssh, "/ssh") != 0) {
+			e->se_authz = AUTHZ_ALLOWED;
+			return;
+		}
+	}
+
+	if (askpass == NULL)
+		askpass = getenv("SSH_ASKPASS");
+	if (confirm == NULL)
+		confirm = getenv("SSH_CONFIRM");
+	if (askpass == NULL && confirm == NULL) {
+		e->se_authz = AUTHZ_DENIED;
+		return;
+	}
+
+	if (confirm != NULL) {
+		char *tmp = strdup(confirm);
+		if (strcmp(basename(tmp), "zenity") == 0)
+			add_zenity_args = B_TRUE;
+		free(tmp);
+	}
+
+	snprintf(prompt, sizeof (prompt),
+	    "%sA new client is trying to use PIV token %s\n\n"
+	    "Client PID: %d\nClient executable: %s\nClient cmd: %s\n"
+	    "Slot requested: %02x",
+	    (add_zenity_args ? "--text=" : ""),
+	    guid, (int)e->se_pid,
+	    (e->se_exepath == NULL) ? "(unknown)" : e->se_exepath,
+	    (e->se_exeargs == NULL) ? "(unknown)" : e->se_exeargs,
+	    (uint)slotid);
+
+	if ((kid = fork()) == -1)
+		return;
+	if (kid == 0) {
+		close(STDOUT_FILENO);
+		close(STDIN_FILENO);
+		if (confirm && add_zenity_args) {
+			execlp(confirm, confirm,
+			    "--question", "--ok-label=Allow",
+			    "--cancel-label=Block", "--width=300",
+			    "--title=pivy-agent",
+			    "--icon-name=application-certificate-symbolic",
+			    prompt,
+			    (char *)NULL);
+		} else if (confirm) {
+			execlp(confirm, confirm, prompt, (char *)NULL);
+		} else {
+			setenv("SSH_ASKPASS_PROMPT", "confirm", 1);
+			execlp(askpass, askpass, prompt, (char *)NULL);
+		}
+		exit(128);
+	}
+	while ((ret = waitpid(kid, &status, 0)) == -1)
+		if (errno != EINTR)
+			break;
+	if (ret == -1 || !WIFEXITED(status) ||
+	    (WEXITSTATUS(status) != 0 && WEXITSTATUS(status) != 1)) {
+		bunyan_log(BNY_WARN, "executing confirm failed",
+		    "exit_status", BNY_UINT, (uint)WEXITSTATUS(status),
+		    NULL);
+		return;
+	}
+
+	if (WEXITSTATUS(status) == 0) {
+		e->se_authz = AUTHZ_ALLOWED;
+	} else {
+		e->se_authz = AUTHZ_DENIED;
+	}
+}
+
 static errf_t *
 agent_piv_try_pin(boolean_t canskip)
 {
 	errf_t *err = NULL;
 	uint retries = 1;
+	if (pin_len == 0 && !canskip)
+		try_askpass();
 	if (pin_len != 0) {
 		err = piv_verify_pin(selk, piv_token_default_auth(selk),
 		    pin, &retries, canskip);
@@ -476,17 +733,138 @@ agent_piv_try_pin(boolean_t canskip)
 	return (err);
 }
 
-static void
-close_socket(SocketEntry *e)
+static uint64_t
+get_pid_start_time(pid_t pid)
 {
-	close(e->fd);
-	e->fd = -1;
-	e->type = AUTH_UNUSED;
-	sshbuf_free(e->input);
-	sshbuf_free(e->output);
-	sshbuf_free(e->request);
-	if (e->exepath != NULL)
-		free(e->exepath);
+	uint64_t val = 0;
+	FILE *f;
+	char fn[128];
+
+#if defined(__sun)
+	struct psinfo *psinfo;
+
+	psinfo = calloc(1, sizeof (struct psinfo));
+	snprintf(fn, sizeof (fn), "/proc/%d/psinfo", (int)pid);
+	f = fopen(fn, "r");
+	if (f != NULL) {
+		if (fread(psinfo, sizeof (struct psinfo), 1, f) == 1) {
+			val = psinfo->pr_start.tv_sec;
+			val *= 1000;
+			val += (psinfo->pr_start.tv_nsec / 1000000);
+		}
+		fclose(f);
+	}
+	free(psinfo);
+#endif
+#if defined(__linux__)
+	char ln[1024];
+	size_t len;
+	uint i = 0, j = 0;
+	char *last = ln;
+	char *p;
+
+	snprintf(fn, sizeof (fn), "/proc/%d/stat", (int)pid);
+	f = fopen(fn, "r");
+	if (f != NULL) {
+		len = fread(ln, 1, sizeof (ln) - 1, f);
+		fclose(f);
+
+		/*
+		 * The stat file is an annoying format which we will have to
+		 * parse by hand -- the (cmd) field might have spaces in it.
+		 */
+		for (i = 0; i < len; ++i) {
+			if (ln[i] == ' ') {
+				ln[i] = '\0';
+				++j;
+				if (j == 22) {
+					unsigned long long int parsed;
+					errno = 0;
+					parsed = strtoull(last, &p, 10);
+					if (errno == 0 && *p == '\0') {
+						val = parsed;
+						break;
+					}
+				}
+				last = &ln[i+1];
+			} else if (ln[i] == '(') {
+				for (; i < len; ++i) {
+					if (ln[i] == ')')
+						break;
+				}
+			}
+		}
+	}
+#endif
+	return (val);
+}
+
+static struct pid_entry *
+find_or_make_pid_entry(pid_t pid, uint64_t start_time)
+{
+	uint i;
+	uint64_t now = monotime();
+	uint npids_alloc;
+
+	for (i = 0; i < pids_alloc; ++i) {
+		if (pids[i].pe_valid && pids[i].pe_pid == pid &&
+		    pids[i].pe_start_time == start_time) {
+			pids[i].pe_time = now;
+			return (&pids[i]);
+		}
+		if (pids[i].pe_valid && pids[i].pe_pid == pid) {
+			pids[i].pe_time = now;
+			pids[i].pe_start_time = start_time;
+			pids[i].pe_conn_count = 0;
+			return (&pids[i]);
+		}
+		if (pids[i].pe_valid) {
+			uint64_t delta = now - pids[i].pe_time;
+			if (delta > 30000) {
+				uint64_t nstart;
+				nstart = get_pid_start_time(pids[i].pe_pid);
+				if (nstart == 0 ||
+				    nstart != pids[i].pe_start_time) {
+					pids[i].pe_valid = B_FALSE;
+				}
+			}
+		}
+	}
+
+	for (i = 0; i < pids_alloc; ++i) {
+		if (!pids[i].pe_valid)
+			goto newpid;
+	}
+
+	npids_alloc = pids_alloc + 128;
+	pids = reallocarray(pids, npids_alloc, sizeof (pid_entry_t));
+	VERIFY(pids != NULL);
+	for (i = pids_alloc; i < npids_alloc; ++i)
+		pids[i].pe_valid = B_FALSE;
+	i = pids_alloc;
+	pids_alloc = npids_alloc;
+newpid:
+	pids[i].pe_valid = B_TRUE;
+	pids[i].pe_pid = pid;
+	pids[i].pe_start_time = start_time;
+	pids[i].pe_time = now;
+	pids[i].pe_conn_count = 0;
+	return (&pids[i]);
+}
+
+static void
+close_socket(socket_entry_t *e)
+{
+	close(e->se_fd);
+	e->se_fd = -1;
+	e->se_type = AUTH_UNUSED;
+	e->se_authz = AUTHZ_NOT_YET;
+	e->se_pid_ent = NULL;
+	sshbuf_free(e->se_input);
+	sshbuf_free(e->se_output);
+	sshbuf_free(e->se_request);
+	free(e->se_exepath);
+	free(e->se_exeargs);;
 }
 
 static int
@@ -537,29 +915,29 @@ sanitise_stdfd(void)
 }
 
 static void
-send_status(SocketEntry *e, int success)
+send_status(socket_entry_t *e, int success)
 {
 	int r;
 
-	if ((r = sshbuf_put_u32(e->output, 1)) != 0 ||
-	    (r = sshbuf_put_u8(e->output, success ?
+	if ((r = sshbuf_put_u32(e->se_output, 1)) != 0 ||
+	    (r = sshbuf_put_u8(e->se_output, success ?
 	    SSH_AGENT_SUCCESS : SSH_AGENT_FAILURE)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 }
 
 static void
-send_extfail(SocketEntry *e)
+send_extfail(socket_entry_t *e)
 {
 	int r;
 
-	if ((r = sshbuf_put_u32(e->output, 1)) != 0 ||
-	    (r = sshbuf_put_u8(e->output, SSH2_AGENT_EXT_FAILURE)) != 0)
+	if ((r = sshbuf_put_u32(e->se_output, 1)) != 0 ||
+	    (r = sshbuf_put_u8(e->se_output, SSH2_AGENT_EXT_FAILURE)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 }
 
 /* send list of supported public keys to 'client' */
 static errf_t *
-process_request_identities(SocketEntry *e)
+process_request_identities(socket_entry_t *e)
 {
 	struct sshbuf *msg;
 	struct piv_slot *slot = NULL;
@@ -622,7 +1000,7 @@ process_request_identities(SocketEntry *e)
 			    ssh_err(r));
 		}
 	}
-	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 out:
@@ -632,7 +1010,7 @@ out:
 
 /* ssh2 only */
 static errf_t *
-process_sign_request2(SocketEntry *e)
+process_sign_request2(socket_entry_t *e)
 {
 	const u_char *data;
 	u_char *signature = NULL;
@@ -651,9 +1029,9 @@ process_sign_request2(SocketEntry *e)
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
-	if ((r = sshkey_froms(e->request, &key)) != 0 ||
-	    (r = sshbuf_get_string_direct(e->request, &data, &dlen)) != 0 ||
-	    (r = sshbuf_get_u32(e->request, &flags)) != 0) {
+	if ((r = sshkey_froms(e->se_request, &key)) != 0 ||
+	    (r = sshbuf_get_string_direct(e->se_request, &data, &dlen)) != 0 ||
+	    (r = sshbuf_get_u32(e->se_request, &flags)) != 0) {
 		err = parserrf("sshbuf_get_string", r);
 		goto out;
 	}
@@ -674,6 +1052,12 @@ process_sign_request2(SocketEntry *e)
 	}
 	bunyan_add_vars(msg_log_frame,
 	    "slotid", BNY_UINT, (uint)piv_slot_id(slot), NULL);
+
+	try_confirm_client(e, piv_slot_id(slot));
+	if (e->se_authz == AUTHZ_DENIED) {
+		err = errf("AuthzError", NULL, "client blocked");
+		goto out;
+	}
 
 	if (piv_slot_id(slot) == PIV_SLOT_KEY_MGMT && !sign_9d) {
 		err = errf("PermissionError", NULL, "key management key (9d) "
@@ -723,6 +1107,11 @@ pin_again:
 		canskip = B_FALSE;
 		goto pin_again;
 	} else if (errf_caused_by(err, "PermissionError")) {
+		try_askpass();
+		if (pin_len != 0) {
+			canskip = B_FALSE;
+			goto pin_again;
+		}
 		agent_piv_close(B_TRUE);
 		err = nopinerrf(err);
 		goto out;
@@ -755,7 +1144,7 @@ pin_again:
 	if ((r = sshbuf_put_u8(msg, SSH2_AGENT_SIGN_RESPONSE)) != 0 ||
 	    (r = sshbuf_put_string(msg, signature, slen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
-	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 out:
@@ -767,26 +1156,7 @@ out:
 }
 
 static errf_t *
-valid_pin(const char *pin)
-{
-	int i;
-	if (strlen(pin) < 6 || strlen(pin) > 8) {
-		return (errf("InvalidPIN", NULL, "PIN must be 6-8 characters "
-		    "(was given %d)", strlen(pin)));
-	}
-	for (i = 0; pin[i] != 0; ++i) {
-		if (!(pin[i] >= '0' && pin[i] <= '9') &&
-		    !(pin[i] >= 'a' && pin[i] <= 'z') &&
-		    !(pin[i] >= 'A' && pin[i] <= 'Z')) {
-			return (errf("InvalidPIN", NULL, "PIN contains "
-			    "invalid characters: '%c'", pin[i]));
-		}
-	}
-	return (NULL);
-}
-
-static errf_t *
-process_remove_all_identities(SocketEntry *e)
+process_remove_all_identities(socket_entry_t *e)
 {
 	drop_pin();
 	send_status(e, 1);
@@ -795,12 +1165,12 @@ process_remove_all_identities(SocketEntry *e)
 
 struct exthandler {
 	const char *eh_name;
-	errf_t *(*eh_handler)(SocketEntry *, struct sshbuf *);
+	errf_t *(*eh_handler)(socket_entry_t *, struct sshbuf *);
 };
 struct exthandler exthandlers[];
 
 static errf_t *
-process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
+process_ext_ecdh(socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err;
@@ -848,6 +1218,12 @@ process_ext_ecdh(SocketEntry *e, struct sshbuf *buf)
 	bunyan_add_vars(msg_log_frame,
 	    "slotid", BNY_UINT, (uint)piv_slot_id(slot), NULL);
 
+	try_confirm_client(e, piv_slot_id(slot));
+	if (e->se_authz == AUTHZ_DENIED) {
+		err = errf("AuthzError", NULL, "client blocked");
+		goto out;
+	}
+
 	if (key->type != KEY_ECDSA || partner->type != KEY_ECDSA) {
 		agent_piv_close(B_FALSE);
 		err = errf("InvalidKeysError", NULL,
@@ -871,6 +1247,11 @@ pin_again:
 		canskip = B_FALSE;
 		goto pin_again;
 	} else if (errf_caused_by(err, "PermissionError")) {
+		try_askpass();
+		if (pin_len != 0) {
+			canskip = B_FALSE;
+			goto pin_again;
+		}
 		agent_piv_close(B_TRUE);
 		err = nopinerrf(err);
 		goto out;
@@ -886,7 +1267,7 @@ pin_again:
 	explicit_bzero(secret, seclen);
 	free(secret);
 
-	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 out:
@@ -897,7 +1278,7 @@ out:
 }
 
 static errf_t *
-process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
+process_ext_rebox(socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err;
@@ -910,6 +1291,7 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	struct piv_token *tk;
 	uint8_t *secret = NULL, *out = NULL;
 	size_t seclen, outlen;
+	boolean_t canskip = B_TRUE;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -936,6 +1318,12 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 		goto out;
 	}
 
+	try_confirm_client(e, PIV_SLOT_KEY_MGMT);
+	if (e->se_authz == AUTHZ_DENIED) {
+		err = errf("AuthzError", NULL, "client blocked");
+		goto out;
+	}
+
 	err = sshbuf_get_piv_box(boxbuf, &box);
 	if (err)
 		goto out;
@@ -951,16 +1339,38 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 
 	if ((err = agent_piv_open()))
 		goto out;
-	if ((err = agent_piv_try_pin(B_FALSE))) {
+pin_again:
+	if ((err = agent_piv_try_pin(canskip))) {
 		agent_piv_close(B_TRUE);
 		goto out;
 	}
-	if ((err = piv_box_open(selk, slot, box))) {
+	err = piv_box_open(selk, slot, box);
+	if (errf_caused_by(err, "PermissionError") && pin_len != 0 &&
+	    piv_token_is_ykpiv(selk) && canskip) {
+		/*
+		 * On a Yubikey, slots other than 9C (SIGNATURE) can also be
+		 * set to "PIN Always" mode. We might have one, so try again
+		 * with forced PIN entry.
+		 */
+		canskip = B_FALSE;
+		goto pin_again;
+	} else if (errf_caused_by(err, "PermissionError")) {
+		try_askpass();
+		if (pin_len != 0) {
+			canskip = B_FALSE;
+			goto pin_again;
+		}
+		agent_piv_close(B_TRUE);
+		err = nopinerrf(err);
+		goto out;
+	} else if (err) {
 		agent_piv_close(B_TRUE);
 		goto out;
 	}
+
 	VERIFY0(piv_box_take_data(box, &secret, &seclen));
 	agent_piv_close(B_FALSE);
+
 
 	newbox = piv_box_new();
 	VERIFY(newbox != NULL);
@@ -979,7 +1389,7 @@ process_ext_rebox(SocketEntry *e, struct sshbuf *buf)
 	    (r = sshbuf_put_string(msg, out, outlen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
-	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 out:
@@ -1001,7 +1411,7 @@ out:
 }
 
 static errf_t *
-process_ext_x509_certs(SocketEntry *e, struct sshbuf *buf)
+process_ext_x509_certs(socket_entry_t *e, struct sshbuf *buf)
 {
 	/*int r;
 	struct sshbuf *msg;*/
@@ -1010,7 +1420,7 @@ process_ext_x509_certs(SocketEntry *e, struct sshbuf *buf)
 }
 
 static errf_t *
-process_ext_attest(SocketEntry *e, struct sshbuf *buf)
+process_ext_attest(socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err;
@@ -1086,7 +1496,7 @@ process_ext_attest(SocketEntry *e, struct sshbuf *buf)
 	    (r = sshbuf_put_string(msg, ptr, len)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
-	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 out:
@@ -1100,7 +1510,7 @@ out:
 }
 
 static errf_t *
-process_ext_query(SocketEntry *e, struct sshbuf *buf)
+process_ext_query(socket_entry_t *e, struct sshbuf *buf)
 {
 	int r, n = 0;
 	struct exthandler *h;
@@ -1120,7 +1530,7 @@ process_ext_query(SocketEntry *e, struct sshbuf *buf)
 			fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	}
 
-	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	sshbuf_free(msg);
 
@@ -1137,7 +1547,7 @@ struct exthandler exthandlers[] = {
 };
 
 static errf_t *
-process_extension(SocketEntry *e)
+process_extension(socket_entry_t *e)
 {
 	errf_t *err;
 	int r;
@@ -1146,10 +1556,10 @@ process_extension(SocketEntry *e)
 	struct sshbuf *inner = NULL;
 	struct exthandler *h, *hdlr = NULL;
 
-	if ((r = sshbuf_get_cstring(e->request, &extname, &enlen)))
+	if ((r = sshbuf_get_cstring(e->se_request, &extname, &enlen)))
 		return (parserrf("sshbuf_get_cstring", r));
 
-	if ((r = sshbuf_froms(e->request, &inner))) {
+	if ((r = sshbuf_froms(e->se_request, &inner))) {
 		err = parserrf("sshbuf_froms", r);
 		goto out;
 	}
@@ -1191,7 +1601,7 @@ out:
 }
 
 static errf_t *
-process_lock_agent(SocketEntry *e, int lock)
+process_lock_agent(socket_entry_t *e, int lock)
 {
 	int r;
 	char *passwd;
@@ -1204,7 +1614,7 @@ process_lock_agent(SocketEntry *e, int lock)
 	 * but we can't parse their request properly. The only safe thing to
 	 * do is abort.
 	 */
-	if ((r = sshbuf_get_cstring(e->request, &passwd, &pwlen)) != 0)
+	if ((r = sshbuf_get_cstring(e->se_request, &passwd, &pwlen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	VERIFY(passwd != NULL);
 
@@ -1280,7 +1690,7 @@ process_message(u_int socknum)
 	const u_char *cp;
 	int r;
 	errf_t *err;
-	SocketEntry *e;
+	socket_entry_t *e;
 
 	if (socknum >= sockets_alloc) {
 		fatal("%s: socket number %u >= allocated %u",
@@ -1288,22 +1698,22 @@ process_message(u_int socknum)
 	}
 	e = &sockets[socknum];
 
-	if (sshbuf_len(e->input) < 5)
+	if (sshbuf_len(e->se_input) < 5)
 		return 0;		/* Incomplete message header. */
-	cp = sshbuf_ptr(e->input);
+	cp = sshbuf_ptr(e->se_input);
 	msg_len = PEEK_U32(cp);
 	if (msg_len > AGENT_MAX_LEN) {
 		sdebug("%s: socket %u (fd=%d) message too long %u > %u",
-		    __func__, socknum, e->fd, msg_len, AGENT_MAX_LEN);
+		    __func__, socknum, e->se_fd, msg_len, AGENT_MAX_LEN);
 		return -1;
 	}
-	if (sshbuf_len(e->input) < msg_len + 4)
+	if (sshbuf_len(e->se_input) < msg_len + 4)
 		return 0;		/* Incomplete message body. */
 
 	/* move the current input to e->request */
-	sshbuf_reset(e->request);
-	if ((r = sshbuf_get_stringb(e->input, e->request)) != 0 ||
-	    (r = sshbuf_get_u8(e->request, &type)) != 0) {
+	sshbuf_reset(e->se_request);
+	if ((r = sshbuf_get_stringb(e->se_input, e->se_request)) != 0 ||
+	    (r = sshbuf_get_u8(e->se_request, &type)) != 0) {
 		if (r == SSH_ERR_MESSAGE_INCOMPLETE ||
 		    r == SSH_ERR_STRING_TOO_LARGE) {
 			sdebug("%s: buffer error: %s", __func__, ssh_err(r));
@@ -1313,11 +1723,12 @@ process_message(u_int socknum)
 	}
 
 	msg_log_frame = bunyan_push(
-	    "fd", BNY_INT, e->fd,
+	    "fd", BNY_INT, e->se_fd,
 	    "msg_type", BNY_INT, (int)type,
 	    "msg_type_name", BNY_STRING, msg_type_to_name(type),
-	    "remote_pid", BNY_INT, (int)e->pid,
-	    "remote_cmd", BNY_STRING, (e->exepath == NULL) ? "???" : e->exepath,
+	    "remote_pid", BNY_INT, (int)e->se_pid,
+	    "remote_cmd", BNY_STRING,
+	    (e->se_exepath == NULL) ? "???" : e->se_exepath,
 	    NULL);
 	bunyan_log(BNY_DEBUG, "received ssh-agent message", NULL);
 
@@ -1355,7 +1766,7 @@ process_message(u_int socknum)
 		    bunyan_get_level() > BNY_WARN) {
 			warnfx(err, "denied command due to lack of PIN");
 		}
-		sshbuf_reset(e->request);
+		sshbuf_reset(e->se_request);
 		send_status(e, 0);
 		errf_free(err);
 	} else {
@@ -1368,8 +1779,8 @@ process_message(u_int socknum)
 
 extern void *reallocarray(void *ptr, size_t nmemb, size_t size);
 
-static SocketEntry *
-new_socket(sock_type type, int fd)
+static socket_entry_t *
+new_socket(sock_type_t type, int fd)
 {
 	u_int i, old_alloc, new_alloc;
 
@@ -1379,32 +1790,32 @@ new_socket(sock_type type, int fd)
 		max_fd = fd;
 
 	for (i = 0; i < sockets_alloc; i++)
-		if (sockets[i].type == AUTH_UNUSED) {
-			sockets[i].fd = fd;
-			if ((sockets[i].input = sshbuf_new()) == NULL)
+		if (sockets[i].se_type == AUTH_UNUSED) {
+			sockets[i].se_fd = fd;
+			if ((sockets[i].se_input = sshbuf_new()) == NULL)
 				fatal("%s: sshbuf_new failed", __func__);
-			if ((sockets[i].output = sshbuf_new()) == NULL)
+			if ((sockets[i].se_output = sshbuf_new()) == NULL)
 				fatal("%s: sshbuf_new failed", __func__);
-			if ((sockets[i].request = sshbuf_new()) == NULL)
+			if ((sockets[i].se_request = sshbuf_new()) == NULL)
 				fatal("%s: sshbuf_new failed", __func__);
-			sockets[i].type = type;
+			sockets[i].se_type = type;
 			return (&sockets[i]);
 		}
 	old_alloc = sockets_alloc;
 	new_alloc = sockets_alloc + 10;
-	sockets = reallocarray(sockets, new_alloc, sizeof(SocketEntry));
+	sockets = reallocarray(sockets, new_alloc, sizeof(socket_entry_t));
 	VERIFY(sockets != NULL);
 	for (i = old_alloc; i < new_alloc; i++)
-		sockets[i].type = AUTH_UNUSED;
+		sockets[i].se_type = AUTH_UNUSED;
 	sockets_alloc = new_alloc;
-	sockets[old_alloc].fd = fd;
-	if ((sockets[old_alloc].input = sshbuf_new()) == NULL)
+	sockets[old_alloc].se_fd = fd;
+	if ((sockets[old_alloc].se_input = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
-	if ((sockets[old_alloc].output = sshbuf_new()) == NULL)
+	if ((sockets[old_alloc].se_output = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
-	if ((sockets[old_alloc].request = sshbuf_new()) == NULL)
+	if ((sockets[old_alloc].se_request = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
-	sockets[old_alloc].type = type;
+	sockets[old_alloc].se_type = type;
 	return (&sockets[old_alloc]);
 }
 
@@ -1417,8 +1828,12 @@ handle_socket_read(u_int socknum)
 	gid_t egid;
 	int fd;
 	pid_t pid = 0;
+	uint i;
 	char *exepath = NULL;
-	SocketEntry *ent;
+	char *exeargs = NULL;
+	socket_entry_t *ent;
+	FILE *f;
+	uint64_t start_time;
 #if defined(__sun)
 	ucred_t *peer = NULL;
 	struct psinfo *psinfo;
@@ -1432,10 +1847,10 @@ handle_socket_read(u_int socknum)
 #elif defined(SO_PEERCRED)
 	struct ucred *peer;
 	socklen_t len;
-	char fn[128], ln[128];
+	char fn[128], ln[1024];
 #endif
 	slen = sizeof(sunaddr);
-	fd = accept(sockets[socknum].fd, (struct sockaddr *)&sunaddr, &slen);
+	fd = accept(sockets[socknum].se_fd, (struct sockaddr *)&sunaddr, &slen);
 	if (fd < 0) {
 		error("accept from AUTH_SOCKET: %s", strerror(errno));
 		return -1;
@@ -1456,7 +1871,10 @@ handle_socket_read(u_int socknum)
 	f = fopen(fn, "r");
 	if (f != NULL) {
 		if (fread(psinfo, sizeof (struct psinfo), 1, f) == 1) {
-			exepath = strdup(psinfo->pr_fname);
+			exepath = strndup(psinfo->pr_fname,
+			    sizeof (psinfo->pr_fname));
+			exeargs = strndup(psinfo->pr_psargs,
+			    sizeof (psinfo->pr_psargs));
 		}
 		fclose(f);
 	}
@@ -1498,6 +1916,15 @@ handle_socket_read(u_int socknum)
 	if (len > 0 && len < sizeof (ln)) {
 		exepath = strndup(ln, len);
 	}
+	snprintf(fn, sizeof (fn), "/proc/%d/cmdline", (int)pid);
+	f = fopen(fn, "r");
+	len = fread(ln, 1, sizeof (ln) - 1, f);
+	fclose(f);
+	for (i = 0; i < len; ++i) {
+		if (ln[i] == '\0')
+			ln[i] = ' ';
+	}
+	exeargs = strndup(ln, len);
 #else
 	if (getpeereid(fd, &euid, &egid) < 0) {
 		error("getpeereid %d failed: %s", fd, strerror(errno));
@@ -1512,9 +1939,13 @@ handle_socket_read(u_int socknum)
 		return -1;
 	}
 	ent = new_socket(AUTH_CONNECTION, fd);
-	ent->pid = pid;
-	ent->gid = egid;
-	ent->exepath = exepath;
+	ent->se_pid = pid;
+	ent->se_gid = egid;
+	ent->se_exepath = exepath;
+	ent->se_exeargs = exeargs;
+	start_time = get_pid_start_time(pid);
+	ent->se_pid_ent = find_or_make_pid_entry(pid, start_time);
+	ent->se_pid_idx = ent->se_pid_ent->pe_conn_count++;
 	return 0;
 }
 
@@ -1525,17 +1956,17 @@ handle_conn_read(u_int socknum)
 	ssize_t len;
 	int r;
 
-	if ((len = read(sockets[socknum].fd, buf, sizeof(buf))) <= 0) {
+	if ((len = read(sockets[socknum].se_fd, buf, sizeof(buf))) <= 0) {
 		if (len == -1) {
 			if (errno == EAGAIN || errno == EINTR)
 				return 0;
 			error("%s: read error on socket %u (fd %d): %s",
-			    __func__, socknum, sockets[socknum].fd,
+			    __func__, socknum, sockets[socknum].se_fd,
 			    strerror(errno));
 		}
 		return -1;
 	}
-	if ((r = sshbuf_put(sockets[socknum].input, buf, len)) != 0)
+	if ((r = sshbuf_put(sockets[socknum].se_input, buf, len)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	explicit_bzero(buf, sizeof(buf));
 	process_message(socknum);
@@ -1548,21 +1979,21 @@ handle_conn_write(u_int socknum)
 	ssize_t len;
 	int r;
 
-	if (sshbuf_len(sockets[socknum].output) == 0)
+	if (sshbuf_len(sockets[socknum].se_output) == 0)
 		return 0; /* shouldn't happen */
-	if ((len = write(sockets[socknum].fd,
-	    sshbuf_ptr(sockets[socknum].output),
-	    sshbuf_len(sockets[socknum].output))) <= 0) {
+	if ((len = write(sockets[socknum].se_fd,
+	    sshbuf_ptr(sockets[socknum].se_output),
+	    sshbuf_len(sockets[socknum].se_output))) <= 0) {
 		if (len == -1) {
 			if (errno == EAGAIN || errno == EINTR)
 				return 0;
 			error("%s: read error on socket %u (fd %d): %s",
-			    __func__, socknum, sockets[socknum].fd,
+			    __func__, socknum, sockets[socknum].se_fd,
 			    strerror(errno));
 		}
 		return -1;
 	}
-	if ((r = sshbuf_consume(sockets[socknum].output, len)) != 0)
+	if ((r = sshbuf_consume(sockets[socknum].se_output, len)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	return 0;
 }
@@ -1578,10 +2009,10 @@ after_poll(struct pollfd *pfd, size_t npfd)
 			continue;
 		/* Find sockets entry */
 		for (socknum = 0; socknum < sockets_alloc; socknum++) {
-			if (sockets[socknum].type != AUTH_SOCKET &&
-			    sockets[socknum].type != AUTH_CONNECTION)
+			if (sockets[socknum].se_type != AUTH_SOCKET &&
+			    sockets[socknum].se_type != AUTH_CONNECTION)
 				continue;
-			if (pfd[i].fd == sockets[socknum].fd)
+			if (pfd[i].fd == sockets[socknum].se_fd)
 				break;
 		}
 		if (socknum >= sockets_alloc) {
@@ -1589,7 +2020,7 @@ after_poll(struct pollfd *pfd, size_t npfd)
 			continue;
 		}
 		/* Process events */
-		switch (sockets[socknum].type) {
+		switch (sockets[socknum].se_type) {
 		case AUTH_SOCKET:
 			if ((pfd[i].revents & (POLLIN|POLLERR)) != 0 &&
 			    handle_socket_read(socknum) != 0)
@@ -1620,7 +2051,7 @@ prepare_poll(struct pollfd **pfdp, size_t *npfdp, int *timeoutp)
 
 	/* Count active sockets */
 	for (i = 0; i < sockets_alloc; i++) {
-		switch (sockets[i].type) {
+		switch (sockets[i].se_type) {
 		case AUTH_SOCKET:
 		case AUTH_CONNECTION:
 			npfd++;
@@ -1628,7 +2059,7 @@ prepare_poll(struct pollfd **pfdp, size_t *npfdp, int *timeoutp)
 		case AUTH_UNUSED:
 			break;
 		default:
-			fatal("Unknown socket type %d", sockets[i].type);
+			fatal("Unknown socket type %d", sockets[i].se_type);
 			break;
 		}
 	}
@@ -1639,14 +2070,14 @@ prepare_poll(struct pollfd **pfdp, size_t *npfdp, int *timeoutp)
 	*npfdp = npfd;
 
 	for (i = j = 0; i < sockets_alloc; i++) {
-		switch (sockets[i].type) {
+		switch (sockets[i].se_type) {
 		case AUTH_SOCKET:
 		case AUTH_CONNECTION:
-			pfd[j].fd = sockets[i].fd;
+			pfd[j].fd = sockets[i].se_fd;
 			pfd[j].revents = 0;
 			/* XXX backoff when input buffer full */
 			pfd[j].events = POLLIN;
-			if (sshbuf_len(sockets[i].output) > 0)
+			if (sshbuf_len(sockets[i].se_output) > 0)
 				pfd[j].events |= POLLOUT;
 			j++;
 			break;
@@ -1737,6 +2168,10 @@ usage(void)
 	    "  -D                    Foreground mode; do not fork\n"
 	    "  -d                    Debug mode\n"
 	    "  -i                    Foreground + command logging\n"
+	    "  -C                    Confirm new connections by running\n"
+	    "                        SSH_CONFIRM or SSH_ASKPASS\n"
+	    "                        (one -C = confirm only forwarded agent,\n"
+	    "                         two -C = confirm all connections)\n"
 	    "  -m                    Allow signing with 9D (KEY_MGMT) key\n"
 	    "  -E fp_hash            Set hash algo for fingerprints\n"
 	    "  -g guid               GUID or GUID prefix of PIV token to use\n"
@@ -1746,6 +2181,13 @@ usage(void)
 #if defined(__sun)
 	    "  -Z                    Don't check client zoneid (allow any zone to connect)\n"
 #endif
+	    "\n"
+	    "Environment variables:\n"
+	    "  SSH_ASKPASS           Path to ssh-askpass command to run to get\n"
+	    "                        PIN at first use (if no PIN already known)\n"
+	    "  SSH_CONFIRM           Path to a program to run to confirm that\n"
+	    "                        a new client should be allowed to use the\n"
+	    "                        keys in the agent. Can be 'zenity'.\n"
 	    );
 	exit(1);
 }
@@ -1940,7 +2382,7 @@ main(int ac, char **av)
 
 	__progname = "pivy-agent";
 
-	while ((ch = getopt(ac, av, "cDdkisE:a:P:g:K:mZU")) != -1) {
+	while ((ch = getopt(ac, av, "cCDdkisE:a:P:g:K:mZU")) != -1) {
 		switch (ch) {
 		case 'g':
 			guid = parse_hex(optarg, &len);
@@ -1976,6 +2418,12 @@ main(int ac, char **av)
 			if (s_flag)
 				usage();
 			c_flag++;
+			break;
+		case 'C':
+			if (confirm_mode == C_FORWARDED)
+				confirm_mode = C_CONNECTION;
+			else
+				confirm_mode = C_FORWARDED;
 			break;
 		case 'k':
 			k_flag++;
