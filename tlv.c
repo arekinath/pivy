@@ -445,6 +445,12 @@ tlv_write_u8to32(struct tlv_state *ts, uint32_t val)
 	int shift = 24;
 	uint32_t part;
 
+	if (val == 0) {
+		VERIFY(!tlv_at_root_end(ts));
+		buf[ts->ts_pos++] = 0;
+		return;
+	}
+
 	/* Skip any leading zero bytes. */
 	while (shift >= 0) {
 		part = (val & mask) >> shift;
