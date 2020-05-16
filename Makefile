@@ -520,3 +520,7 @@ deb:
 	git archive --prefix pivy-$(VERSION)/ -o ../pivy_$(VERSION).orig.tar.gz HEAD
 	DEB_BUILD_OPTIONS="parallel=4" debuild -us -uc
 endif
+
+ifeq ($(SYSTEM), OpenBSD)
+install: install_common
+endif
