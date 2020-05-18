@@ -1420,7 +1420,7 @@ handle_socket_read(u_int socknum)
 	char *exepath = NULL;
 	SocketEntry *ent;
 #if defined(__sun)
-	ucred_t *peer;
+	ucred_t *peer = NULL;
 	struct psinfo *psinfo;
 	zoneid_t zid;
 	char fn[128];
@@ -1473,6 +1473,7 @@ handle_socket_read(u_int socknum)
 	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, peer, &len)) {
 		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
 		close(fd);
+		free(peer);
 		return -1;
 	}
 	euid = peer->uid;
@@ -1485,6 +1486,7 @@ handle_socket_read(u_int socknum)
 	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, peer, &len)) {
 		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
 		close(fd);
+		free(peer);
 		return -1;
 	}
 	euid = peer->uid;
