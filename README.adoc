@@ -158,6 +158,64 @@ Available operations:
 ...
 ----
 
+### Setting up a new YubiKey and recommended usage
+
+I recommend that new users run the `pivy-tool setup` command -- it will
+initialise the PIV applet and then generate a standard set of basic keys
+which will suit most users.
+
+The different key "slots" (`9a`, `9c`, `9d` and `9e`) have different assigned
+purposes in the PIV spec, but YubiKeys and a lot of compatible devices are not
+very strict in enforcing these.
+
+If you want detailed information about how the slots are intended to be used,
+you should consult
+https://csrc.nist.gov/publications/detail/sp/800-73/4/final[NIST SP 800-73-4],
+but I will attempt a short summary here:
+
+ * `9E`: Card Authentication Key (often styled as "CAK"). This key is intended
+   to authenticate only the *device*/card, not the person who owns it. It
+   defaults to not requiring any authentication to use (no PIN, no touch
+   confirmation on YubiKeys). In `pivy-agent`, for example, this slot is used
+   to check that the device it's talking to is actually the device it's supposed
+   to be (and not an attacker replacement with the same ID) before giving it
+   the user's PIN.
+ * `9A`: PIV Authentication Key. This is the main key used to authenticate the
+   owner of the card/device. It's protected by the PIN by default. You should
+   use this key as your primary option for signature authentication (e.g. this
+   is the key you should add to `.ssh/authorized_keys` or GitHub).
+ * `9C`: Signature Key. This key is intended for use signing documents or
+   certificates. Since this purpose is not as common as authentication amongst
+   users of `pivy`, it also serves duty as a backup authentication key. If you
+   need to SSH or auth to a system that does not support EC keys, this key is
+   an RSA key so that you can use it as a fallback for the `9A` key. It requires
+   a PIN by default, like `9A`.
+ * `9D`: Key Management Key. This key is intended for use only to derive
+   symmetric keys to encrypt/decrypt data. It's a matter of some controversy
+   in the cryptography community whether it's entirely safe to use the same EC
+   key both for signing and key derivation (ECDH), so I would recommend you
+   avoid signing arbitrary data with your `9D` key (don't use it for regular
+   authentication). See the next section for more information about using this
+   key to encrypt data at rest. Requires both PIN and touch confirmation (on
+   YubiKeys).
+
+As well as these 4 basic slots, there are also the "Retired Key Management"
+slots, `82` through `95`. These are intended for rolling old previously-used
+`9D` keys into so that you can continue to decrypt data protected by them on
+a new device. However, as usual, YubiKeys do not enforce this usage, and these
+slots can be used for anything you like.
+
+If you need to import an existing key into your YubiKey, I would recommend using
+one of these retired slots rather than placing it in one of the "main 4".
+
+Note that using the `pivy-agent` for SSH authentication becomes more complex
+when you have more than 4 keys available -- most SSH servers default to
+`MaxAuthTries 6` in their configuration, and each key counts as a "try", so
+if you connect with an agent that contains 6 keys, no other auth methods can be
+attempted (so you will never fall back to trying password/interactive auth). If
+needed, you can work around this with the `IdentitesOnly` SSH configuration
+option.
+
 ## Eboxes and `pivy-box`
 
 The `pivy-box` command provides facilities for managing encrypted data storage
