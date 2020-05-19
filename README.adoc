@@ -164,13 +164,34 @@ I recommend that new users run the `pivy-tool setup` command -- it will
 initialise the PIV applet and then generate a standard set of basic keys
 which will suit most users.
 
+The `setup` command will prompt you to set a PIN and PUK, as well as generating
+keys. The PIV PIN and PUK are both secret strings of 6-8 ASCII characters
+which are used to protect access to your device. In the PIV spec, these strings
+are required to be numeric (consisting only of digits 0 through 9), but many
+PIV devices such as YubiKeys will allow a much wider variety of characters.
+
+The PIN is what you will normally use to authenticate to your device and unlock
+the use of private keys. By default, 5 invalid attempts to validate the PIN are
+allowed before it becomes locked. The PUK is intended as a fall-back if the PIN
+is forgotten, and can be used to reset it when locked. If you supply the PUK
+incorrectly 3 times (by default), then the card/device becomes locked down and
+will generally destroy its private keys.
+
+It's fine for personal use to set the PIN and PUK to the same value. The PUK
+is best used in an organisational context where devices are being provisioned
+for users centrally -- it can be securely stored rather than given to the user
+and used to help unlock devices when PINs have been forgotten.
+
+In a PIV device/card, your keys are stored in a fixed set of "slots", which
+are known by their numbered slot IDs.
+
 The different key "slots" (`9a`, `9c`, `9d` and `9e`) have different assigned
 purposes in the PIV spec, but YubiKeys and a lot of compatible devices are not
 very strict in enforcing these.
 
 If you want detailed information about how the slots are intended to be used,
 you should consult
-https://csrc.nist.gov/publications/detail/sp/800-73/4/final[NIST SP 800-73-4],
+https://csrc.nist.gov/publications/detail/sp/800-73/4/final[NIST SP 800-73-4 (the PIV standard)],
 but I will attempt a short summary here:
 
  * `9E`: Card Authentication Key (often styled as "CAK"). This key is intended
