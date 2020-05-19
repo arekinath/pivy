@@ -166,6 +166,8 @@ static confirm_mode_t confirm_mode = C_NEVER;
 #if defined(__sun)
 static boolean_t check_client_zoneid = B_TRUE;
 #endif
+/* One bit per slot, bit# = slot# & 0x7f */
+static uint64_t slot_ena_mask = 0x743ffffc;
 
 static char *pinmem = NULL;
 static char *pin = NULL;
@@ -935,6 +937,71 @@ send_extfail(socket_entry_t *e)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 }
 
+static boolean_t
+is_slot_enabled(const struct piv_slot *slot)
+{
+	const uint64_t mask = (1ull << (piv_slot_id(slot) & 0x7F));
+	if ((slot_ena_mask & mask) == 0)
+		return (B_FALSE);
+	return (B_TRUE);
+}
+
+static errf_t *
+parse_slot_spec(const char *instr)
+{
+	char *str;
+	char *tmp, *token;
+	char *saveptr = NULL;
+	char *p;
+
+	str = strdup(instr);
+	tmp = str;
+	token = NULL;
+
+	while (1) {
+		boolean_t invert = B_FALSE;
+		uint64_t mask = 0;
+		unsigned long int parsed;
+
+		token = strtok_r(tmp, ",", &saveptr);
+		if (token == NULL)
+			break;
+		tmp = NULL;
+
+		if (token[0] == '!') {
+			invert = B_TRUE;
+			++token;
+		}
+
+		if (strcasecmp(token, "all") == 0) {
+			mask = 0x743ffffc;
+			goto maskout;
+		}
+
+		parsed = strtoul(token, &p, 16);
+		if (errno != 0 || *p != '\0') {
+			free(str);
+			return (errf("ParseError", NULL,
+			    "Failed to parse slot id: '%s'", token));
+		}
+		parsed &= 0x7f;
+		if (parsed > 63) {
+			free(str);
+			return (errf("InvalidSlot", NULL,
+			    "Invalid slot id: '%s'", token));
+		}
+		mask = (1ull << parsed);
+maskout:
+		if (invert)
+			slot_ena_mask &= ~mask;
+		else
+			slot_ena_mask |= mask;
+	}
+
+	free(str);
+	return (ERRF_OK);
+}
+
 /* send list of supported public keys to 'client' */
 static errf_t *
 process_request_identities(socket_entry_t *e)
@@ -966,8 +1033,11 @@ process_request_identities(socket_entry_t *e)
 	agent_piv_close(B_FALSE);
 
 	n = 0;
-	while ((slot = piv_slot_next(selk, slot)) != NULL)
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
+		if (!is_slot_enabled(slot))
+			continue;
 		++n;
+	}
 
 	if ((r = sshbuf_put_u8(msg, SSH2_AGENT_IDENTITIES_ANSWER)) != 0 ||
 	    (r = sshbuf_put_u32(msg, n)) != 0)
@@ -975,6 +1045,8 @@ process_request_identities(socket_entry_t *e)
 
 	while ((slot = piv_slot_next(selk, slot)) != NULL) {
 		if (piv_slot_id(slot) == PIV_SLOT_KEY_MGMT)
+			continue;
+		if (!is_slot_enabled(slot))
 			continue;
 		comment[0] = 0;
 		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
@@ -990,7 +1062,8 @@ process_request_identities(socket_entry_t *e)
 	 * that this slot is not used for signing by default will be unlikely
 	 * to try using it.
 	 */
-	if ((slot = piv_get_slot(selk, PIV_SLOT_KEY_MGMT)) != NULL) {
+	if ((slot = piv_get_slot(selk, PIV_SLOT_KEY_MGMT)) != NULL &&
+	    is_slot_enabled(slot)) {
 		comment[0] = 0;
 		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
 		    piv_slot_id(slot), piv_slot_subject(slot));
@@ -1045,7 +1118,7 @@ process_sign_request2(socket_entry_t *e)
 			break;
 		}
 	}
-	if (!found || slot == NULL) {
+	if (!found || slot == NULL || !is_slot_enabled(slot)) {
 		agent_piv_close(B_FALSE);
 		err = errf("NotFoundError", NULL, "specified key not found");
 		goto out;
@@ -1210,7 +1283,7 @@ process_ext_ecdh(socket_entry_t *e, struct sshbuf *buf)
 			break;
 		}
 	}
-	if (!found) {
+	if (!found || !is_slot_enabled(slot)) {
 		agent_piv_close(B_FALSE);
 		err = errf("NotFoundError", NULL, "specified key not found");
 		goto out;
@@ -1336,6 +1409,11 @@ process_ext_rebox(socket_entry_t *e, struct sshbuf *buf)
 		    "by a different PIV device");
 		goto out;
 	}
+	if (!is_slot_enabled(slot)) {
+		err = errf("KeyDisabledError", NULL, "box can only be unlocked "
+		    "by a disabled key slot");
+		goto out;
+	}
 
 	if ((err = agent_piv_open()))
 		goto out;
@@ -1456,7 +1534,7 @@ process_ext_attest(socket_entry_t *e, struct sshbuf *buf)
 			break;
 		}
 	}
-	if (!found) {
+	if (!found || !is_slot_enabled(slot)) {
 		agent_piv_close(B_FALSE);
 		err = errf("NotFoundError", NULL, "specified key not found");
 		goto out;
@@ -2181,6 +2259,11 @@ usage(void)
 #if defined(__sun)
 	    "  -Z                    Don't check client zoneid (allow any zone to connect)\n"
 #endif
+	    "  -S !all,9a,9e,...     Filter the key slots available through the\n"
+	    "                        agent. By default all keys are available,\n"
+	    "                        use '!9e' for example to disable just 9e.\n"
+	    "                        !all will disable everything, allowing to\n"
+	    "                        whitelist instead.\n"
 	    "\n"
 	    "Environment variables:\n"
 	    "  SSH_ASKPASS           Path to ssh-askpass command to run to get\n"
@@ -2382,7 +2465,7 @@ main(int ac, char **av)
 
 	__progname = "pivy-agent";
 
-	while ((ch = getopt(ac, av, "cCDdkisE:a:P:g:K:mZU")) != -1) {
+	while ((ch = getopt(ac, av, "cCDdkisE:a:P:g:K:mZUS:")) != -1) {
 		switch (ch) {
 		case 'g':
 			guid = parse_hex(optarg, &len);
@@ -2408,6 +2491,13 @@ main(int ac, char **av)
 			r = sshkey_read(cak, &ptr);
 			if (r != 0)
 				fatal("Invalid CAK key given: %ld", r);
+			break;
+		case 'S':
+			err = parse_slot_spec(optarg);
+			if (err) {
+				errfx(1, err, "Invalid slot spec (-S): %s",
+				    optarg);
+			}
 			break;
 		case 'E':
 			fingerprint_hash = ssh_digest_alg_by_name(optarg);
