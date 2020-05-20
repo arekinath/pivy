@@ -4699,54 +4699,85 @@ piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 	errf_t *err;
 	enum piv_slotid slotid;
 
+	if (!box->pdb_guidslot_valid)
+		goto allslots;
+
+	/* First, try for an exact match on the GUID */
 	for (pt = tks; pt != NULL; pt = pt->pt_next) {
-		if (bcmp(pt->pt_guid, box->pdb_guid, sizeof (pt->pt_guid)) == 0)
-			break;
-	}
-	if (pt == NULL) {
-		slotid = box->pdb_slot;
-		if (slotid == 0 || slotid == 0xFF)
-			slotid = PIV_SLOT_KEY_MGMT;
-		for (pt = tks; pt != NULL; pt = pt->pt_next) {
-			s = piv_get_slot(pt, slotid);
+		if (bcmp(pt->pt_guid, box->pdb_guid,
+		    sizeof (pt->pt_guid)) == 0) {
+			s = piv_get_slot(pt, box->pdb_slot);
 			if (s == NULL) {
-				if (piv_txn_begin(pt))
-					continue;
-				if (piv_select(pt) ||
-				    piv_read_cert(pt, slotid)) {
+				if ((err = piv_txn_begin(pt)))
+					return (err);
+				if ((err = piv_select(pt)) ||
+				    (err = piv_read_cert(pt, box->pdb_slot))) {
 					piv_txn_end(pt);
-					continue;
+					return (err);
 				}
 				piv_txn_end(pt);
-				s = piv_get_slot(pt, slotid);
+				s = piv_get_slot(pt, box->pdb_slot);
 			}
-			if (sshkey_equal_public(s->ps_pubkey, box->pdb_pub))
-				goto out;
-
+			if (s == NULL)
+				continue;
+			if (!sshkey_equal_public(s->ps_pubkey, box->pdb_pub)) {
+				return (errf("NotFoundError", NULL,
+				    "PIV token on system with matching "
+				    "GUID for box has different key"));
+			}
+			goto found;
 		}
-		return (errf("NotFoundError", NULL, "No PIV token found on "
-		    "system to unlock box"));
+	}
+	/*
+	 * If no GUID matches, try probing the relevant slot (or 9D) on all
+	 * the cards we can see to see if the key matches.
+	 */
+	slotid = box->pdb_slot;
+	if (slotid == 0 || slotid == 0xFF)
+		slotid = PIV_SLOT_KEY_MGMT;
+	for (pt = tks; pt != NULL; pt = pt->pt_next) {
+		s = piv_get_slot(pt, slotid);
+		if (s == NULL) {
+			if (piv_txn_begin(pt))
+				continue;
+			if (piv_select(pt) || piv_read_cert(pt, slotid)) {
+				piv_txn_end(pt);
+				continue;
+			}
+			piv_txn_end(pt);
+			s = piv_get_slot(pt, slotid);
+		}
+		if (s == NULL)
+			continue;
+		if (sshkey_equal_public(s->ps_pubkey, box->pdb_pub))
+			goto found;
 	}
 
-	s = piv_get_slot(pt, box->pdb_slot);
-	if (s == NULL) {
-		if ((err = piv_txn_begin(pt)) != 0)
-			return (err);
-		if ((err = piv_select(pt)) != 0 ||
-		    (err = piv_read_cert(pt, box->pdb_slot)) != 0) {
+allslots:
+	/*
+	 * Finally, if all else fails, exhaustively check every slot on every
+	 * token available.
+	 */
+	for (pt = tks; pt != NULL; pt = pt->pt_next) {
+		if (piv_txn_begin(pt))
+			continue;
+		if (piv_select(pt) || piv_read_all_certs(pt)) {
 			piv_txn_end(pt);
-			return (err);
+			continue;
 		}
 		piv_txn_end(pt);
-		s = piv_get_slot(pt, box->pdb_slot);
+
+		s = NULL;
+		while ((s = piv_slot_next(pt, s)) != NULL) {
+			if (sshkey_equal_public(s->ps_pubkey, box->pdb_pub))
+				goto found;
+		}
 	}
 
-	if (!sshkey_equal_public(s->ps_pubkey, box->pdb_pub)) {
-		return (errf("NotFoundError", NULL, "PIV token on system "
-		    "with matching GUID for box has different keys"));
-	}
+	return (errf("NotFoundError", NULL, "No PIV token found on "
+		"system to unlock box"));
 
-out:
+found:
 	*tk = pt;
 	*slot = s;
 	return (ERRF_OK);

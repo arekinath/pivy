@@ -1715,20 +1715,23 @@ cmd_unbox(void)
 		return (err);
 	free(buf);
 
-	if (!piv_box_has_guidslot(box)) {
-		err = funcerrf(NULL, "box has no hardware GUID + slot "
-		    "information; can't be opened by pivy-tool");
-		return (err);
-	}
-
-	err = piv_find(ctx, piv_box_guid(box), GUID_LEN, &tk);
+	if (piv_box_has_guidslot(box))
+		err = piv_find(ctx, piv_box_guid(box), GUID_LEN, &tk);
+	if (err || !piv_box_has_guidslot(box))
+		err = piv_enumerate(ctx, &tk);
 	if (err)
 		return (err);
 	ks = (selk = tk);
 	err = piv_box_find_token(ks, box, &tk, &sl);
 	if (errf_caused_by(err, "NotFoundError")) {
-		err = funcerrf(err, "no token found on system that can "
-		    "unlock this box");
+		if (!piv_box_has_guidslot(box)) {
+			err = funcerrf(NULL, "box has no hardware GUID + slot "
+			    "information; no token found on system that"
+			    "can unlock it");
+		} else {
+			err = funcerrf(err, "no token found on system that can "
+			    "unlock this box");
+		}
 		return (err);
 	} else if (err) {
 		return (err);
