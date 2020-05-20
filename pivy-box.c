@@ -20,6 +20,7 @@
 #include <strings.h>
 #include <limits.h>
 #include <err.h>
+#include <dirent.h>
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -1279,6 +1280,53 @@ cmd_tpl_show(int argc, char *argv[])
 }
 
 static errf_t *
+cmd_tpl_list(int argc, char *argv[])
+{
+	struct dirent *ent;
+	DIR *d;
+	char dpath[PATH_MAX] = { 0 };
+	char fpath[PATH_MAX] = { 0 };
+	const char *home;
+	struct ebox_tpl *tpl;
+	struct ebox_tpl_config *c;
+	struct answer a;
+
+	home = getenv("HOME");
+	if (home == NULL) {
+		errx(EXIT_USAGE, "environment variable HOME not set, "
+		    "can't list templates");
+	}
+	snprintf(dpath, sizeof (dpath), TPL_DEFAULT_PATH,
+	    home, "");
+
+	d = opendir(dpath);
+	if (d == NULL)
+		return (errfno("opendir", errno, "%s", dpath));
+
+	printf("ebox templates in %s:\n", dpath);
+
+	while ((ent = readdir(d)) != NULL) {
+		if (ent->d_name[0] == '.')
+			continue;
+
+		strlcpy(fpath, dpath, sizeof (fpath));
+		strlcat(fpath, ent->d_name, sizeof (fpath));
+		tpl = read_tpl_file(fpath);
+
+		printf("\n%s:\n", ent->d_name);
+		c = NULL;
+		while ((c = ebox_tpl_next_config(tpl, c)) != NULL) {
+			bzero(&a, sizeof (a));
+			make_answer_text_for_config(c, &a);
+			printf(" * %s\n", a.a_text);
+		}
+	}
+
+	closedir(d);
+	return (NULL);
+}
+
+static errf_t *
 cmd_key_generate(int argc, char *argv[])
 {
 	uint8_t *key;
@@ -1877,13 +1925,20 @@ usage_tpl(const char *op)
 		    "  -r         raw input, don't base64-decode stdin\n"
 		    "\n"
 		    "If no [tpl] or -f given, expects template input on stdin.\n");
+	} else if (strcmp(op, "list") == 0) {
+		fprintf(stderr,
+		    "usage: pivy-box tpl list\n"
+		    "\n"
+		    "Lists templates stored in the standard template path, with\n"
+		    "brief information about each.\n");
 	} else {
 noop:
 		fprintf(stderr,
 		    "pivy-box tpl <op>:\n"
 		    "  create                Create a new template\n"
 		    "  edit                  Edit an existing template\n"
-		    "  show                  Pretty-print a template to stdout\n");
+		    "  show                  Pretty-print a template to stdout\n"
+		    "  list                  List templates in default path\n");
 		fprintf(stderr,
 		    "\nIf not using -f, templates are stored in "
 		    TPL_DEFAULT_PATH "\n", "$HOME", "*");
@@ -2122,6 +2177,9 @@ main(int argc, char *argv[])
 		if (strcmp(op, "show") == 0 && argc == 0 && tpl[0] == 0) {
 			error = cmd_tpl_show(argc, argv);
 			goto out;
+		} else if (strcmp(op, "list") == 0 && argc == 0) {
+			error = cmd_tpl_list(argc, argv);
+			goto out;
 		}
 
 	} else if (strcmp(type, "key") == 0) {
@@ -2183,6 +2241,7 @@ main(int argc, char *argv[])
 			ebox_stpl = read_tpl_file(tpl);
 			error = cmd_tpl_show(argc, argv);
 			goto out;
+
 		}
 
 	} else if (strcmp(type, "key") == 0) {
