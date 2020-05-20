@@ -90,7 +90,7 @@ ifeq ($(SYSTEM), Darwin)
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
-	SYSTEM_LIBS	=
+	SYSTEM_LIBS	= -lproc
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no

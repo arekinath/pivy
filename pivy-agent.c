@@ -86,6 +86,7 @@
 #include <time.h>
 #include <string.h>
 #include <unistd.h>
+#include <libgen.h>
 
 #include "libssh/ssh2.h"
 #include "libssh/sshbuf.h"
@@ -111,6 +112,12 @@
 #if defined(__sun)
 #include <ucred.h>
 #include <procfs.h>
+#endif
+
+#if defined(__APPLE__)
+#include <sys/proc_info.h>
+#include <sys/ucred.h>
+#include <libproc.h>
 #endif
 
 #include "libssh/digest.h"
@@ -645,9 +652,10 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 	}
 
 	if (confirm_mode == C_FORWARDED) {
-		char *ssh = strstr(e->se_exepath, "ssh");
-		if (ssh != NULL && ssh > e->se_exepath)
-			--ssh;
+		const char *ssh = NULL;
+		const size_t len = strlen(e->se_exepath);
+		if (len >= 4)
+			ssh = &e->se_exepath[len - 4];
 		if (e->se_pid_idx == 0 || ssh == NULL ||
 		    strcmp(ssh, "/ssh") != 0) {
 			e->se_authz = AUTHZ_ALLOWED;
@@ -739,8 +747,10 @@ static uint64_t
 get_pid_start_time(pid_t pid)
 {
 	uint64_t val = 0;
+#if defined(__sun) || defined(__linux__)
 	FILE *f;
 	char fn[128];
+#endif
 
 #if defined(__sun)
 	struct psinfo *psinfo;
@@ -752,11 +762,22 @@ get_pid_start_time(pid_t pid)
 		if (fread(psinfo, sizeof (struct psinfo), 1, f) == 1) {
 			val = psinfo->pr_start.tv_sec;
 			val *= 1000;
-			val += (psinfo->pr_start.tv_nsec / 1000000);
+			val += psinfo->pr_start.tv_nsec / 1000000;
 		}
 		fclose(f);
 	}
 	free(psinfo);
+#endif
+#if defined(__APPLE__)
+	struct proc_bsdinfo pinfo;
+	int rc;
+
+	rc = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &pinfo, sizeof (pinfo));
+	if (rc >= sizeof (pinfo)) {
+		val = pinfo.pbi_start_tvsec;
+		val *= 1000;
+		val += pinfo.pbi_start_tvusec / 1000;
+	}
 #endif
 #if defined(__linux__)
 	char ln[1024];
@@ -1906,11 +1927,13 @@ handle_socket_read(u_int socknum)
 	gid_t egid;
 	int fd;
 	pid_t pid = 0;
+#if defined(__sun) || defined(SO_PEERCRED)
 	uint i;
+	FILE *f;
+#endif
 	char *exepath = NULL;
 	char *exeargs = NULL;
 	socket_entry_t *ent;
-	FILE *f;
 	uint64_t start_time;
 #if defined(__sun)
 	ucred_t *peer = NULL;
@@ -1918,10 +1941,14 @@ handle_socket_read(u_int socknum)
 	zoneid_t zid;
 	char fn[128];
 	FILE *f;
-#endif
-#if defined(__OpenBSD__)
+#elif defined(__OpenBSD__)
 	struct sockpeercred *peer;
 	socklen_t len;
+#elif defined(__APPLE__)
+	struct xucred *peer;
+	socklen_t len;
+	char pathBuf[PROC_PIDPATHINFO_MAXSIZE];
+	int rc;
 #elif defined(SO_PEERCRED)
 	struct ucred *peer;
 	socklen_t len;
@@ -1976,6 +2003,26 @@ handle_socket_read(u_int socknum)
 	egid = peer->gid;
 	pid = peer->pid;
 	free(peer);
+#elif defined(__APPLE__)
+	peer = calloc(1, sizeof (struct xucred));
+	len = sizeof (struct xucred);
+	if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, peer, &len)) {
+		error("getsockopts(LOCAL_PEERCRED) %d failed: %s", fd, strerror(errno));
+		close(fd);
+		free(peer);
+		return -1;
+	}
+	euid = peer->cr_uid;
+	if (peer->cr_ngroups > 0)
+		egid = peer->cr_groups[0];
+	free(peer);
+	len = sizeof (pid);
+	if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0) {
+		rc = proc_pidpath(pid, pathBuf, sizeof (pathBuf));
+		if (rc > 0) {
+			exepath = strdup(pathBuf);
+		}
+	}
 #elif defined(SO_PEERCRED)
 	peer = calloc(1, sizeof (struct ucred));
 	len = sizeof (struct ucred);

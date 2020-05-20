@@ -19,6 +19,7 @@ typedef uint64_t uintmax_t;
 #endif
 
 #if !defined(USING_SPL) && !defined(__sun)
+#define _MACH_MACHINE_BOOLEAN_H_
 typedef enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
 typedef unsigned int uint;
 typedef unsigned int u_int;
