@@ -40,6 +40,7 @@ ifeq ($(SYSTEM), Linux)
 	RDLINE_LIBS	= $(shell pkg-config --libs libedit)
 	SYSTEM_CFLAGS	= $(shell pkg-config --cflags libbsd-overlay)
 	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
+	SYSTEM_LDFLAGS	=
 	LIBZFS_VER	= $(shell pkg-config --modversion libzfs --silence-errors || true)
 	ifneq (,$(LIBZFS_VER))
 		HAVE_ZFS	:= $(USE_ZFS)
@@ -76,6 +77,7 @@ ifeq ($(SYSTEM), OpenBSD)
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
 	SYSTEM_LIBS	=
+	SYSTEM_LDFLAGS	=
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
@@ -91,6 +93,7 @@ ifeq ($(SYSTEM), Darwin)
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
 	SYSTEM_LIBS	= -lproc
+	SYSTEM_LDFLAGS	=
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
@@ -106,7 +109,8 @@ ifeq ($(SYSTEM), SunOS)
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ltecla
 	SYSTEM_CFLAGS	= -gdwarf-2 -isystem $(PROTO_AREA)/usr/include -m64 -msave-args
-	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib -m64 -lssp -lsocket -lnsl
+	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib -lssp -lsocket -lnsl
+	SYSTEM_LDFLAGS	= -m64
 	HAVE_ZFS	:= $(USE_ZFS)
 	LIBZFS_CFLAGS	=
 	LIBZFS_LIBS	= -lzfs -lzfs_core -lnvpair
@@ -190,8 +194,8 @@ PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
-			-O2 -g -m64 -D_GNU_SOURCE
-PIVTOOL_LDFLAGS=	-m64
+			-O2 -g -D_GNU_SOURCE
+PIVTOOL_LDFLAGS=	$(SYSTEM_LDFLAGS)
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -222,8 +226,8 @@ PIVYBOX_CFLAGS=		$(PCSC_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
-			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
-PIVYBOX_LDFLAGS=	-m64
+			-O2 -g -D_GNU_SOURCE -std=gnu99
+PIVYBOX_LDFLAGS=	$(SYSTEM_LDFLAGS)
 PIVYBOX_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -259,8 +263,8 @@ PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
-			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
-PIVZFS_LDFLAGS=		-m64
+			-O2 -g -D_GNU_SOURCE -std=gnu99
+PIVZFS_LDFLAGS=		$(SYSTEM_LDFLAGS)
 PIVZFS_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -306,8 +310,8 @@ PIVYLUKS_CFLAGS=	$(PCSC_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
-			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
-PIVYLUKS_LDFLAGS=	-m64
+			-O2 -g -D_GNU_SOURCE -std=gnu99
+PIVYLUKS_LDFLAGS=	$(SYSTEM_LDFLAGS)
 PIVYLUKS_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -349,8 +353,8 @@ PAMPIVY_CFLAGS=		$(PCSC_CFLAGS) \
 			$(PAM_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
-			-O2 -g -m64 -D_GNU_SOURCE -std=gnu99
-PAMPIVY_LDFLAGS=	-m64
+			-O2 -g -D_GNU_SOURCE -std=gnu99
+PAMPIVY_LDFLAGS=	$(SYSTEM_LDFLAGS)
 PAMPIVY_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -389,8 +393,8 @@ AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
-			-O2 -g -m64 -D_GNU_SOURCE
-AGENT_LDFLAGS=		-m64
+			-O2 -g -D_GNU_SOURCE
+AGENT_LDFLAGS=		$(SYSTEM_LDFLAGS)
 AGENT_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
