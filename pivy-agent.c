@@ -1940,7 +1940,6 @@ handle_socket_read(u_int socknum)
 	struct psinfo *psinfo;
 	zoneid_t zid;
 	char fn[128];
-	FILE *f;
 #elif defined(__OpenBSD__)
 	struct sockpeercred *peer;
 	socklen_t len;
