@@ -1,3 +1,12 @@
+pivy (0.6.0-1) UNRELEASED; urgency=medium
+
+  * pivy-agent support for SSH_ASKPASS, connection confirm mode
+  * pivy-agent option to disable slots
+  * pivy-box/pivy-tool searches all PIV tokens to unlock a box
+  * pivy-box tpl list command
+
+ -- Alex Wilson <alex@cooperi.net>  Sun, 24 May 2020 08:55:19 +0000
+
 pivy (0.5.1-1) UNRELEASED; urgency=medium
 
   * Bug fixes
