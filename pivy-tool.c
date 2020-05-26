@@ -301,6 +301,17 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 	}
 #endif
 
+	if ((pin = getenv("PIV_PIN")) != NULL) {
+		if (strlen(pin) < 6 || strlen(pin) > 8) {
+			const char *charType = "digits";
+			if (piv_token_is_ykpiv(selk))
+				charType = "characters";
+			errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+			    charType);
+			return;
+		}
+		pin = strdup(pin);
+	}
 	if (pin == NULL && !prompt)
 		return;
 
