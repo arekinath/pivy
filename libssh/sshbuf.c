@@ -1435,6 +1435,7 @@ sshbuf_dup_string(struct sshbuf *buf)
 #define MUL_NO_OVERFLOW	((size_t)1 << (sizeof(size_t) * 4))
 #include <errno.h>
 
+#if !defined(__FreeBSD__)
 void *
 recallocarray(void *ptr, size_t oldnmemb, size_t newnmemb, size_t size)
 {
@@ -1486,3 +1487,4 @@ recallocarray(void *ptr, size_t oldnmemb, size_t newnmemb, size_t size)
 
 	return newptr;
 }
+#endif
