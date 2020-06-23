@@ -64,6 +64,23 @@ ifeq ($(SYSTEM), Linux)
 	PAM_PLUGINDIR	= /usr/lib/security
 	SYSTEMDDIR	?= /usr/lib/systemd/user
 endif
+ifeq ($(SYSTEM), FreeBSD)
+	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
+	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
+	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a -pthread
+	ZLIB_CFLAGS	= $(shell pkg-config --cflags zlib)
+	ZLIB_LIBS	= $(shell pkg-config --libs zlib)
+	RDLINE_CFLAGS	= $(shell pkg-config --cflags libedit)
+	RDLINE_LIBS	= $(shell pkg-config --libs libedit)
+	HAVE_ZFS	:= no
+	HAVE_LUKS	:= no
+	SYSTEM_CFLAGS	+= -fPIC
+	HAVE_PAM	:= $(USE_PAM)
+	PAM_CFLAGS	= -fPIC
+	PAM_LIBS	= -lpam
+	PAM_PLUGINDIR	= /usr/lib
+endif
 ifeq ($(SYSTEM), OpenBSD)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)

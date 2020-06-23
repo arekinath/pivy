@@ -44,7 +44,7 @@ calloc_conceal(size_t nmemb, size_t size)
 	return (ptr);
 }
 
-#if !defined(__OpenBSD__) && !defined(__sun)
+#if !defined(__OpenBSD__) && !defined(__FreeBSD__) && !defined(__sun)
 void
 freezero(void *ptr, size_t sz)
 {

@@ -64,6 +64,9 @@
 
 #define	PAM_SM_AUTH
 #include <security/pam_modules.h>
+#ifdef __FreeBSD__
+#include <security/pam_appl.h>
+#endif
 
 #define	PIVY_AGENT_ENV_DIR	"%s/.config/pivy-agent"
 #define	PIVY_AGENT_ENV_FILE	"%s/.config/pivy-agent/%s"
