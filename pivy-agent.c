@@ -999,6 +999,7 @@ parse_slot_spec(const char *instr)
 			goto maskout;
 		}
 
+		errno = 0;
 		parsed = strtoul(token, &p, 16);
 		if (errno != 0 || *p != '\0') {
 			free(str);
