@@ -244,6 +244,7 @@ struct piv_token {
 
 	struct piv_slot *pt_slots;
 	struct piv_slot *pt_last_slot;
+	boolean_t pt_did_read_all;
 
 	/* YubicoPIV specific stuff */
 	boolean_t pt_ykpiv;			/* Supports YubicoPIV? */
@@ -3109,6 +3110,8 @@ piv_read_all_certs(struct piv_token *tk)
 			errf_free(err);
 	}
 
+	tk->pt_did_read_all = B_TRUE;
+
 	return (ERRF_OK);
 }
 
@@ -4759,13 +4762,15 @@ allslots:
 	 * token available.
 	 */
 	for (pt = tks; pt != NULL; pt = pt->pt_next) {
-		if (piv_txn_begin(pt))
-			continue;
-		if (piv_select(pt) || piv_read_all_certs(pt)) {
+		if (!pt->pt_did_read_all) {
+			if (piv_txn_begin(pt))
+				continue;
+			if (piv_select(pt) || piv_read_all_certs(pt)) {
+				piv_txn_end(pt);
+				continue;
+			}
 			piv_txn_end(pt);
-			continue;
 		}
-		piv_txn_end(pt);
 
 		s = NULL;
 		while ((s = piv_slot_next(pt, s)) != NULL) {

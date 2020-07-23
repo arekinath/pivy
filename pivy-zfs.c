@@ -90,6 +90,26 @@ unlock_or_recover(struct ebox *ebox, const char *descr, boolean_t *recovered)
 	struct answer *a;
 	char k = '0';
 
+	/* Try to use the pivy-agent to unlock first if we have one. */
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
+			part = ebox_config_next_part(config, NULL);
+			tpart = ebox_part_tpl(part);
+			error = local_unlock_agent(ebox_part_box(part));
+			if (error) {
+				errf_free(error);
+				continue;
+			}
+			error = ebox_unlock(ebox, config);
+			if (error)
+				return (error);
+			*recovered = B_FALSE;
+			goto done;
+		}
+	}
+
 	config = NULL;
 	while ((config = ebox_next_config(ebox, config)) != NULL) {
 		tconfig = ebox_config_tpl(config);

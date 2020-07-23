@@ -60,12 +60,13 @@
 
 #include "words.h"
 
-int ebox_authfd;
+int ebox_authfd = -1;
 SCARDCONTEXT ebox_ctx;
 boolean_t ebox_ctx_init = B_FALSE;
 char *ebox_pin;
 uint ebox_min_retries = 1;
 boolean_t ebox_batch = B_FALSE;
+struct piv_token *ebox_enum_tokens = NULL;
 
 #if defined(__sun)
 static GetLine *sungl = NULL;
@@ -232,6 +233,12 @@ local_unlock_agent(struct piv_ecdh_box *box)
 	struct sshbuf *datab = NULL;
 	boolean_t found = B_FALSE;
 
+	if (ebox_authfd == -1 &&
+	    (rc = ssh_get_authentication_socket(&ebox_authfd)) == -1) {
+		err = ssherrf("ssh_get_authentication_socket", rc);
+		goto out;
+	}
+
 	pubkey = piv_box_pubkey(box);
 
 	rc = ssh_fetch_identitylist(ebox_authfd, &idl);
@@ -368,7 +375,8 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 	struct piv_slot *slot, *cakslot;
 	struct piv_token *tokens = NULL, *token;
 
-	if (ssh_get_authentication_socket(&ebox_authfd) != -1) {
+	if (ebox_authfd != -1 ||
+	    ssh_get_authentication_socket(&ebox_authfd) != -1) {
 		agerr = local_unlock_agent(box);
 		if (agerr == ERRF_OK)
 			return (ERRF_OK);
@@ -392,14 +400,27 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 		}
 	}
 
-	err = piv_find(ebox_ctx, piv_box_guid(box), GUID_LEN, &tokens);
-	if (errf_caused_by(err, "NotFoundError")) {
-		errf_free(err);
-		err = piv_enumerate(ebox_ctx, &tokens);
-		if (err && agerr) {
-			err = errf("AgentError", agerr, "ssh-agent unlock "
-			    "failed, and no PIV tokens were detected on "
-			    "the local system");
+	/*
+	 * We might try to call local_unlock on a whole lot of configs in a
+	 * row (looking for one that works). If we resort to enumerating all
+	 * the tokens on the system at any point, cache them in
+	 * ebox_enum_tokens so that things are a bit faster.
+	 */
+	if (ebox_enum_tokens != NULL) {
+		tokens = ebox_enum_tokens;
+		err = NULL;
+	} else {
+		err = piv_find(ebox_ctx, piv_box_guid(box), GUID_LEN, &tokens);
+		if (errf_caused_by(err, "NotFoundError")) {
+			errf_free(err);
+			err = piv_enumerate(ebox_ctx, &tokens);
+			if (err && agerr) {
+				err = errf("AgentError", agerr, "ssh-agent "
+				"unlock failed, and no PIV tokens were "
+				"detected on the local system");
+			} else {
+				ebox_enum_tokens = tokens;
+			}
 		}
 	}
 	errf_free(agerr);
