@@ -942,6 +942,7 @@ again:
 	if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
 		part = ebox_config_next_part(config, NULL);
 		tpart = ebox_part_tpl(part);
+		release_context();
 		error = local_unlock(ebox_part_box(part),
 		    ebox_tpl_part_cak(tpart),
 		    ebox_tpl_part_name(tpart));

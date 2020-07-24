@@ -63,6 +63,8 @@ enum ebox_exit_status {
 #define	EBOX_MAX_SIZE		16384
 #define	BASE64_LINE_LEN		65
 
+void release_context(void);
+
 char *piv_token_shortid(struct piv_token *pk);
 const char *pin_type_to_name(enum piv_pin type);
 void assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt);

@@ -367,6 +367,19 @@ out:
 	return (err);
 }
 
+void
+release_context(void)
+{
+	if (ebox_ctx_init) {
+		if (ebox_enum_tokens != NULL) {
+			piv_release(ebox_enum_tokens);
+			ebox_enum_tokens = NULL;
+		}
+		SCardReleaseContext(ebox_ctx);
+		ebox_ctx_init = B_FALSE;
+	}
+}
+
 errf_t *
 local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 {
@@ -484,7 +497,8 @@ pin:
 	err = ERRF_OK;
 
 out:
-	piv_release(tokens);
+	if (tokens != ebox_enum_tokens)
+		piv_release(tokens);
 	return (err);
 }
 
@@ -934,6 +948,7 @@ recover:
 		fprintf(stderr, "-- Local device %s --\n",
 		    state->ps_ans->a_text);
 partagain:
+		release_context();
 		error = local_unlock(ebox_part_box(part),
 		    ebox_tpl_part_cak(tpart), ebox_tpl_part_name(tpart));
 		if (error && !errf_caused_by(error, "NotFoundError"))
