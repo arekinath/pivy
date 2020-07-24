@@ -241,6 +241,8 @@ errf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
  *
  * Errors:
  *  - PCSCError: a PCSC call failed in a way that is not retryable
+ *  - PCSCContextError: a PCSC call failed in a way that indicates the
+ *                      SCARDCONTEXT is no longer valid
  *  - DuplicateError: a GUID prefix was given and it is not unique on the system
  *  - NotFoundError: token matching the guid was not found
  */

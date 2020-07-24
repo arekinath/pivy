@@ -1096,7 +1096,16 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 	errf_t *err;
 
 	rv = SCardListReaders(ctx, NULL, NULL, &readersLen);
-	if (rv != SCARD_S_SUCCESS) {
+	switch (rv) {
+	case SCARD_S_SUCCESS:
+		break;
+	case SCARD_E_NO_SERVICE:
+	case SCARD_E_INVALID_HANDLE:
+	case SCARD_E_SERVICE_STOPPED:
+		return (errf("PCSCContextError",
+		    pcscerrf("SCardListReaders", rv),
+		    "PCSC context is not functional"));
+	default:
 		return (pcscerrf("SCardListReaders", rv));
 	}
 	readers = calloc(1, readersLen);
@@ -1215,7 +1224,16 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 	errf_t *err;
 
 	rv = SCardListReaders(ctx, NULL, NULL, &readersLen);
-	if (rv != SCARD_S_SUCCESS) {
+	switch (rv) {
+	case SCARD_S_SUCCESS:
+		break;
+	case SCARD_E_NO_SERVICE:
+	case SCARD_E_INVALID_HANDLE:
+	case SCARD_E_SERVICE_STOPPED:
+		return (errf("PCSCContextError",
+		    pcscerrf("SCardListReaders", rv),
+		    "PCSC context is not functional"));
+	default:
 		return (pcscerrf("SCardListReaders", rv));
 	}
 	readers = calloc(1, readersLen);

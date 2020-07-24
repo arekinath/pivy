@@ -151,6 +151,9 @@
     "(try ssh-add -X)")
 #define	flagserrf(val)		\
     errf("FlagsError", NULL, "unsupported flags value: %x", val)
+#define pcscerrf(call, rv)	\
+    errf("PCSCError", NULL, call " failed: %d (%s)", \
+    rv, pcsc_stringify_error(rv))
 
 typedef enum confirm_mode {
 	C_NEVER,
@@ -418,6 +421,7 @@ agent_piv_open(void)
 {
 	struct piv_slot *slot;
 	errf_t *err = NULL;
+	int rv;
 
 	if (txnopen) {
 		txntimeout = monotime() + 2000;
@@ -431,8 +435,22 @@ agent_piv_open(void)
 		if (ks != NULL)
 			piv_release(ks);
 
+findagain:
 		err = piv_find(ctx, guid, guid_len, &ks);
-		if (err) {
+		if (err && errf_caused_by(err, "PCSCContextError")) {
+			ks = NULL;
+			bunyan_log(BNY_TRACE, "got context error, re-initing",
+			    "error", BNY_ERF, err, NULL);
+			errf_free(err);
+			SCardReleaseContext(ctx);
+			rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL,
+			    NULL, &ctx);
+			if (rv != SCARD_S_SUCCESS) {
+				err = pcscerrf("SCardEstablishContext", rv);
+				return (err);
+			}
+			goto findagain;
+		} else if (err) {
 			ks = NULL;
 			err = errf("EnumerationError", err, "Failed to "
 			    "find specified PIV token on the system");
@@ -2797,8 +2815,9 @@ skip:
 
 	r = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
 	if (r != SCARD_S_SUCCESS) {
-		bunyan_log(BNY_ERROR, "SCardEstablishContext failed",
-		    "error", BNY_STRING, pcsc_stringify_error(r), NULL);
+		err = pcscerrf("SCardEstablishContext", r);
+		bunyan_log(BNY_ERROR, "error setting up PCSC lib context",
+		    "error", BNY_ERF, err, NULL);
 		return (1);
 	}
 
