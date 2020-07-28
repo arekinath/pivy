@@ -2850,6 +2850,9 @@ main(int argc, char *argv[])
 		check_select_key();
 		err = cmd_import(slotid);
 
+	} else if (strcmp(op, "version") == 0) {
+		fprintf(stdout, "%s\n", PIVY_VERSION);
+
 	} else {
 		warnx("invalid operation '%s'", op);
 		usage();

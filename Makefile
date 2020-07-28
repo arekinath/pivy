@@ -22,7 +22,7 @@ libdir		?= $(prefix)/lib
 binowner	?= root
 bingroup	?= wheel
 
-VERSION		= 0.6.0
+VERSION		= 0.6.1
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
@@ -194,7 +194,8 @@ PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
-			-O2 -g -D_GNU_SOURCE
+			-O2 -g -D_GNU_SOURCE \
+			-DPIVY_VERSION='"$(VERSION)"'
 PIVTOOL_LDFLAGS=	$(SYSTEM_LDFLAGS)
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \

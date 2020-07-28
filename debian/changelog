@@ -1,3 +1,11 @@
+pivy (0.6.1-1) UNRELEASED; urgency=medium
+
+  * pivy-agent: fix for parsing errors in pivy-agent -S arguments
+  * pivy-box: performance improvements with large numbers of configs
+  * pivy-agent: re-establish new PCSC context on some errors
+
+ -- Alex Wilson <alex@cooperi.net>  Tue, 28 Jul 2020 07:34:33 +0000
+
 pivy (0.6.0-1) UNRELEASED; urgency=medium
 
   * pivy-agent support for SSH_ASKPASS, connection confirm mode
