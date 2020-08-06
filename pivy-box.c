@@ -860,7 +860,7 @@ write:
 }
 
 static errf_t *
-interactive_unlock_ebox(struct ebox *ebox)
+interactive_unlock_ebox(struct ebox *ebox, const char *fn)
 {
 	struct ebox_config *config;
 	struct ebox_part *part;
@@ -870,6 +870,9 @@ interactive_unlock_ebox(struct ebox *ebox)
 	struct question *q;
 	struct answer *a;
 	char k = '0';
+
+	if (fn == NULL)
+		fn = "pivy-box data";
 
 	/* Try to use the pivy-agent to unlock first if we have one. */
 	config = NULL;
@@ -956,7 +959,7 @@ again:
 			return (error);
 		goto done;
 	}
-	error = interactive_recovery(config, "pivy-box data");
+	error = interactive_recovery(config, fn);
 	if (error) {
 		warnfx(error, "failed to activate config %c", a->a_key);
 		errf_free(error);
@@ -1055,17 +1058,17 @@ out:
 }
 
 static struct sshbuf *
-read_stdin_b64(size_t limit)
+read_file_b64(size_t limit, FILE *file)
 {
 	char *buf = malloc(limit + 1);
 	struct sshbuf *sbuf;
 	size_t n;
 	int rc;
 
-	n = fread(buf, 1, limit, stdin);
-	if (ferror(stdin))
+	n = fread(buf, 1, limit, file);
+	if (ferror(file))
 		err(EXIT_USAGE, "error reading input");
-	if (!feof(stdin))
+	if (!feof(file))
 		errx(EXIT_USAGE, "input too long (max %zu bytes)", limit);
 	if (n > limit)
 		errx(EXIT_USAGE, "input too long (max %zu bytes)", limit);
@@ -1091,6 +1094,12 @@ read_stdin_b64(size_t limit)
 	}
 	free(buf);
 	return (sbuf);
+}
+
+static struct sshbuf *
+read_stdin_b64(size_t limit)
+{
+	return (read_file_b64(limit, stdin));
 }
 
 static errf_t *
@@ -1433,8 +1442,21 @@ cmd_key_relock(int argc, char *argv[])
 	struct sshbuf *buf;
 	size_t keylen;
 	const uint8_t *key;
+	const char *fname = NULL;
 
-	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	if (argc == 1) {
+		FILE *file;
+		fname = argv[0];
+		file = fopen(fname, "r");
+		buf = read_file_b64(EBOX_MAX_SIZE, file);
+		fclose(file);
+	} else if (argc == 0) {
+		buf = read_stdin_b64(EBOX_MAX_SIZE);
+	} else {
+		errx(EXIT_USAGE, "too many arguments for pivy-box "
+		    "key relock");
+	}
+
 	error = sshbuf_get_ebox(buf, &ebox);
 	if (error) {
 		errfx(EXIT_ERROR, error, "failed to parse input as "
@@ -1443,7 +1465,7 @@ cmd_key_relock(int argc, char *argv[])
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	error = interactive_unlock_ebox(ebox);
+	error = interactive_unlock_ebox(ebox, fname);
 	if (error)
 		return (error);
 
@@ -1525,8 +1547,21 @@ cmd_key_unlock(int argc, char *argv[])
 	size_t keylen;
 	const uint8_t *key;
 	char *b64;
+	const char *fname = NULL;
 
-	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	if (argc == 1) {
+		FILE *file;
+		fname = argv[0];
+		file = fopen(fname, "r");
+		buf = read_file_b64(EBOX_MAX_SIZE, file);
+		fclose(file);
+	} else if (argc == 0) {
+		buf = read_stdin_b64(EBOX_MAX_SIZE);
+	} else {
+		errx(EXIT_USAGE, "too many arguments for pivy-box "
+		    "key unlock");
+	}
+
 	error = sshbuf_get_ebox(buf, &ebox);
 	if (error) {
 		errfx(EXIT_ERROR, error, "failed to parse input as "
@@ -1536,7 +1571,7 @@ cmd_key_unlock(int argc, char *argv[])
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	error = interactive_unlock_ebox(ebox);
+	error = interactive_unlock_ebox(ebox, fname);
 	if (error)
 		return (error);
 
@@ -1626,6 +1661,18 @@ cmd_stream_decrypt(int argc, char *argv[])
 	const uint8_t *data;
 	struct sshbuf *ibuf, *nbuf;
 	size_t nread, nwrote, poff;
+	FILE *file;
+	const char *fname = NULL;
+
+	if (argc == 1) {
+		fname = argv[0];
+		file = fopen(fname, "r");
+	} else if (argc == 0) {
+		file = stdin;
+	} else {
+		errx(EXIT_USAGE, "too many arguments for pivy-box "
+		    "stream decrypt");
+	}
 
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 
@@ -1636,15 +1683,15 @@ cmd_stream_decrypt(int argc, char *argv[])
 	VERIFY(ibuf != NULL);
 
 	while (es == NULL) {
-		nread = fread(buf, 1, 8192, stdin);
-		if (nread < 1 && ferror(stdin))
+		nread = fread(buf, 1, 8192, file);
+		if (nread < 1 && ferror(file))
 			err(EXIT_ERROR, "failed to read input");
 		VERIFY0(sshbuf_put(ibuf, buf, nread));
 
 		poff = ibuf->off;
 		error = sshbuf_get_ebox_stream(ibuf, &es);
 		if (errf_caused_by(error, "IncompleteMessageError")) {
-			if (feof(stdin))
+			if (feof(file))
 				errfx(EXIT_ERROR, error, "input too short");
 			ibuf->off = poff;
 			errf_free(error);
@@ -1662,22 +1709,22 @@ cmd_stream_decrypt(int argc, char *argv[])
 
 	ebox = ebox_stream_ebox(es);
 
-	error = interactive_unlock_ebox(ebox);
+	error = interactive_unlock_ebox(ebox, fname);
 	if (error)
 		return (error);
 
 	while (1) {
-		nread = fread(buf, 1, 8192, stdin);
-		if (nread < 1 && ferror(stdin))
+		nread = fread(buf, 1, 8192, file);
+		if (nread < 1 && ferror(file))
 			err(EXIT_ERROR, "failed to read input");
-		else if (nread < 1 && feof(stdin) && sshbuf_len(ibuf) == 0)
+		else if (nread < 1 && feof(file) && sshbuf_len(ibuf) == 0)
 			break;
 		VERIFY0(sshbuf_put(ibuf, buf, nread));
 
 		poff = ibuf->off;
 		error = sshbuf_get_ebox_stream_chunk(ibuf, es, &esc);
 		if (errf_caused_by(error, "IncompleteMessageError")) {
-			if (feof(stdin))
+			if (feof(file))
 				errfx(EXIT_ERROR, error, "input too short");
 			ibuf->off = poff;
 			errf_free(error);
@@ -2005,7 +2052,7 @@ usage_key(const char *op)
 		    "\n");
 	} else if (strcmp(op, "unlock") == 0) {
 		fprintf(stderr,
-		    "usage: pivy-box key unlock [-brR]\n"
+		    "usage: pivy-box key unlock [-brR] [file]\n"
 		    "\n"
 		    "Decrypts a 'key' ebox and outputs the contents.\n"
 		    "\n"
@@ -2016,7 +2063,7 @@ usage_key(const char *op)
 		    "\n");
 	} else if (strcmp(op, "relock") == 0) {
 		fprintf(stderr,
-		    "usage: pivy-box key relock [-brR] <newtpl>\n"
+		    "usage: pivy-box key relock [-brR] <newtpl> [file]\n"
 		    "\n"
 		    "Decrypts a 'key' ebox and then re-encrypts it with a new\n"
 		    "template. Can be used to update an ebox after editing\n"
@@ -2052,7 +2099,7 @@ usage_stream(const char *op)
 		    "given template in chunks. Output is binary.\n");
 	} else if (strcmp(op, "decrypt") == 0) {
 		fprintf(stderr,
-		    "usage: pivy-box stream decrypt [-b]\n"
+		    "usage: pivy-box stream decrypt [-b] [file]\n"
 		    "\n"
 		    "Accepts output from 'stream encrypt' on stdin, decrypts\n"
 		    "it and outputs the plaintext. Data is only output after\n"
@@ -2237,6 +2284,8 @@ main(int argc, char *argv[])
 			return (EXIT_USAGE);
 		}
 		tplname = argv[0];
+		argc--;
+		argv++;
 		home = getenv("HOME");
 		if (home == NULL) {
 			errx(EXIT_USAGE, "environment variable HOME not set, "
