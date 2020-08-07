@@ -67,7 +67,8 @@ void release_context(void);
 
 char *piv_token_shortid(struct piv_token *pk);
 const char *pin_type_to_name(enum piv_pin type);
-void assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt);
+void assert_pin(struct piv_token *pk, struct piv_slot *slot,
+    const char *partname, boolean_t prompt);
 
 struct ebox_tpl *read_tpl_file(const char *tpl);
 

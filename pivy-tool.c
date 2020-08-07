@@ -287,11 +287,12 @@ assert_slotid(uint slotid)
 }
 
 static void
-assert_pin(struct piv_token *pk, boolean_t prompt)
+assert_pin(struct piv_token *pk, struct piv_slot *slot, boolean_t prompt)
 {
 	errf_t *er;
 	uint retries = min_retries;
 	enum piv_pin auth = piv_token_default_auth(pk);
+	boolean_t touch = B_FALSE;
 
 #if 0
 	if (pin == NULL && pk == sysk) {
@@ -300,6 +301,14 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 			return;
 	}
 #endif
+
+	if (slot != NULL) {
+		enum piv_slot_auth rauth = piv_slot_get_auth(pk, slot);
+		if (rauth & PIV_SLOT_AUTH_PIN)
+			prompt = B_TRUE;
+		if (rauth & PIV_SLOT_AUTH_TOUCH)
+			touch = B_TRUE;
+	}
 
 	if (pin == NULL && !prompt)
 		return;
@@ -348,6 +357,10 @@ assert_pin(struct piv_token *pk, boolean_t prompt)
 	} else if (er) {
 		piv_txn_end(pk);
 		errfx(EXIT_PIN, er, "failed to verify PIN");
+	}
+
+	if (touch) {
+		fprintf(stderr, "Touch button confirmation may be required.\n");
 	}
 }
 
@@ -584,11 +597,11 @@ try_pinfo_admin_key(struct piv_token *tk)
 	uint tag;
 	struct tlv_state *tlv = NULL;
 
-	assert_pin(tk, B_FALSE);
+	assert_pin(tk, NULL, B_FALSE);
 again:
 	err = piv_read_file(tk, PIV_TAG_PRINTINFO, &data, &dlen);
 	if (err && errf_caused_by(err, "PermissionError")) {
-		assert_pin(tk, B_TRUE);
+		assert_pin(tk, NULL, B_TRUE);
 		goto again;
 	}
 	if (err == ERRF_OK) {
@@ -1225,13 +1238,13 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 
 	hashalg = wantalg;
 
-	assert_pin(selk, B_FALSE);
+	assert_pin(selk, override, B_FALSE);
 
 signagain:
 	err = piv_sign(selk, override, tbs, tbslen, &hashalg, &sig, &siglen);
 
 	if (errf_caused_by(err, "PermissionError")) {
-		assert_pin(selk, B_TRUE);
+		assert_pin(selk, override, B_TRUE);
 		goto signagain;
 	} else if (err) {
 		err = funcerrf(err, "failed to sign cert with key");
@@ -1616,12 +1629,12 @@ cmd_sign(uint slotid)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
-	assert_pin(selk, B_FALSE);
+	assert_pin(selk, cert, B_FALSE);
 again:
 	hashalg = 0;
 	err = piv_sign(selk, cert, buf, inplen, &hashalg, &sig, &siglen);
 	if (errf_caused_by(err, "PermissionError")) {
-		assert_pin(selk, B_TRUE);
+		assert_pin(selk, cert, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);
@@ -1740,11 +1753,11 @@ cmd_unbox(void)
 	if ((err = piv_txn_begin(tk)))
 		return (err);
 	assert_select(tk);
-	assert_pin(tk, B_FALSE);
+	assert_pin(tk, sl, B_FALSE);
 again:
 	err = piv_box_open(tk, sl, box);
 	if (errf_caused_by(err, "PermissionError")) {
-		assert_pin(tk, B_TRUE);
+		assert_pin(tk, sl, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(tk);
@@ -1921,7 +1934,7 @@ cmd_bench(uint slotid)
 	if ((err = piv_txn_begin(selk)))
 		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
-	assert_pin(selk, B_FALSE);
+	assert_pin(selk, cert, B_FALSE);
 	clock_gettime(CLOCK_MONOTONIC, &t1);
 	for (i = 0; i < n; ++i) {
 again:
@@ -1929,7 +1942,7 @@ again:
 			errf_free(err);
 		err = piv_auth_key(selk, cert, pubkey);
 		if (errf_caused_by(err, "PermissionError")) {
-			assert_pin(selk, B_TRUE);
+			assert_pin(selk, cert, B_TRUE);
 			goto again;
 		}
 	}
@@ -2006,11 +2019,11 @@ cmd_auth(uint slotid)
 	if ((err = piv_txn_begin(selk)))
 		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
-	assert_pin(selk, B_FALSE);
+	assert_pin(selk, cert, B_FALSE);
 again:
 	err = piv_auth_key(selk, cert, pubkey);
 	if (errf_caused_by(err, "PermissionError")) {
-		assert_pin(selk, B_TRUE);
+		assert_pin(selk, cert, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);
@@ -2090,11 +2103,11 @@ cmd_ecdh(uint slotid)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
-	assert_pin(selk, B_FALSE);
+	assert_pin(selk, cert, B_FALSE);
 again:
 	err = piv_ecdh(selk, cert, pubkey, &secret, &seclen);
 	if (errf_caused_by(err, "PermissionError")) {
-		assert_pin(selk, B_TRUE);
+		assert_pin(selk, cert, B_TRUE);
 		goto again;
 	}
 	piv_txn_end(selk);

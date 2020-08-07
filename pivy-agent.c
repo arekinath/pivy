@@ -1139,6 +1139,7 @@ process_sign_request2(socket_entry_t *e)
 	int found = 0;
 	enum sshdigest_types hashalg, ohashalg;
 	boolean_t canskip = B_TRUE;
+	enum piv_slot_auth rauth;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -1178,7 +1179,8 @@ process_sign_request2(socket_entry_t *e)
 		goto out;
 	}
 
-	if (piv_slot_id(slot) == PIV_SLOT_SIGNATURE)
+	rauth = piv_slot_get_auth(selk, slot);
+	if (rauth & PIV_SLOT_AUTH_PIN)
 		canskip = B_FALSE;
 
 pin_again:
@@ -1296,6 +1298,7 @@ process_ext_ecdh(socket_entry_t *e, struct sshbuf *buf)
 	uint flags;
 	int found = 0;
 	boolean_t canskip = B_TRUE;
+	enum piv_slot_auth rauth;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -1345,7 +1348,8 @@ process_ext_ecdh(socket_entry_t *e, struct sshbuf *buf)
 		goto out;
 	}
 
-	if (piv_slot_id(slot) == PIV_SLOT_SIGNATURE)
+	rauth = piv_slot_get_auth(selk, slot);
+	if (rauth & PIV_SLOT_AUTH_PIN)
 		canskip = B_FALSE;
 
 pin_again:
@@ -1405,6 +1409,7 @@ process_ext_rebox(socket_entry_t *e, struct sshbuf *buf)
 	uint8_t *secret = NULL, *out = NULL;
 	size_t seclen, outlen;
 	boolean_t canskip = B_TRUE;
+	enum piv_slot_auth rauth;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -1454,6 +1459,10 @@ process_ext_rebox(socket_entry_t *e, struct sshbuf *buf)
 		    "by a disabled key slot");
 		goto out;
 	}
+
+	rauth = piv_slot_get_auth(tk, slot);
+	if (rauth & PIV_SLOT_AUTH_PIN)
+		canskip = B_FALSE;
 
 	if ((err = agent_piv_open()))
 		goto out;

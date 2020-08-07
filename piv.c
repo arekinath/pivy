@@ -169,6 +169,9 @@ struct piv_slot {
 	X509 *ps_x509;
 	const char *ps_subj;
 	struct sshkey *ps_pubkey;
+	enum piv_slot_auth ps_auth;
+
+	boolean_t ps_got_metadata;
 };
 
 struct piv_token {
@@ -1610,6 +1613,8 @@ ins_to_name(enum iso_ins ins)
 		return ("YKPIV_GET_SERIAL");
 	case INS_RESET:
 		return ("YKPIV_RESET");
+	case INS_GET_METADATA:
+		return ("YKPIV_GET_METADATA");
 	default:
 		return ("UNKNOWN");
 	}
@@ -2366,6 +2371,207 @@ piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
 }
 
 /*
+ * Documented at
+ * https://developers.yubico.com/PIV/Introduction/Yubico_extensions.html
+ * under "GET METADATA". Some of the details (like format of policy field) had
+ * to be learned by reading the code in libykcs11.
+ */
+errf_t *
+ykpiv_get_metadata(struct piv_token *pt, struct piv_slot *slot)
+{
+	struct apdu *apdu;
+	struct tlv_state *tlv = NULL;
+	errf_t *err;
+	uint tag;
+	enum ykpiv_pin_policy pinpol;
+	enum ykpiv_touch_policy touchpol;
+	uint8_t v;
+
+	VERIFY(pt->pt_intxn);
+
+	/* Reject if this isn't a YubicoPIV card. */
+	if (!pt->pt_ykpiv)
+		return (argerrf("tk", "a YubicoPIV-compatible token", "not"));
+	if (ykpiv_version_compare(pt, 5, 3, 0) == -1) {
+		return (argerrf("touchpolicy", "GET_METADATA only on YubicoPIV "
+		    "version >=5.3", "not supported by this device (v%d.%d.%d)",
+		    pt->pt_ykver[0], pt->pt_ykver[1], pt->pt_ykver[2]));
+	}
+
+	apdu = piv_apdu_make(CLA_ISO, INS_GET_METADATA, 0x00, slot->ps_slot);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		goto out;
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
+		    apdu->a_reply.b_len);
+		while (!tlv_at_end(tlv)) {
+			if ((err = tlv_read_tag(tlv, &tag)))
+				goto invdata;
+			switch (tag) {
+			case 0x01:
+				if (tlv_rem(tlv) != 1) {
+					err = errf("LengthError", NULL,
+					    "ykpiv metadata tag 0x%02x has "
+					    "incorrect length: %d", tag,
+					    tlv_rem(tlv));
+					goto invdata;
+				}
+				if ((err = tlv_read_u8(tlv, &v)))
+					goto invdata;
+				if ((err = tlv_end(tlv)))
+					goto invdata;
+				slot->ps_alg = v;
+				break;
+			case 0x02:
+				if (tlv_rem(tlv) != 2) {
+					err = errf("LengthError", NULL,
+					    "ykpiv metadata tag 0x%02x has "
+					    "incorrect length: %d", tag,
+					    tlv_rem(tlv));
+					goto invdata;
+				}
+				if ((err = tlv_read_u8(tlv, &v)))
+					goto invdata;
+				pinpol = v;
+				if ((err = tlv_read_u8(tlv, &v)))
+					goto invdata;
+				touchpol = v;
+				if ((err = tlv_end(tlv)))
+					goto invdata;
+				if (pinpol == YKPIV_PIN_ONCE ||
+				    pinpol == YKPIV_PIN_ALWAYS) {
+					slot->ps_auth |= PIV_SLOT_AUTH_PIN;
+				}
+				if (pinpol == YKPIV_PIN_NEVER) {
+					slot->ps_auth &= ~PIV_SLOT_AUTH_PIN;
+				}
+				if (touchpol == YKPIV_TOUCH_ALWAYS ||
+				    touchpol == YKPIV_TOUCH_CACHED) {
+					slot->ps_auth |= PIV_SLOT_AUTH_TOUCH;
+				}
+				if (touchpol == YKPIV_TOUCH_NEVER) {
+					slot->ps_auth &= ~PIV_SLOT_AUTH_TOUCH;
+				}
+				break;
+			default:
+				tlv_skip(tlv);
+			}
+		}
+		err = NULL;
+
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("YK_INS_GET_METADATA", apdu->a_sw),
+		    pt->pt_rdrname, "key slot 0x%02x", slot->ps_slot);
+
+	} else {
+		err = swerrf("YK_INS_GET_METADATA", apdu->a_sw);
+		bunyan_log(BNY_DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pt->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
+	}
+
+out:
+	tlv_free(tlv);
+	piv_apdu_free(apdu);
+	return (err);
+
+invdata:
+	tlv_abort(tlv);
+	err = invderrf(err, pt->pt_rdrname);
+	debug_dump(err, apdu);
+	goto out;
+}
+
+static errf_t *
+ykpiv_attest_metadata(struct piv_token *pt, struct piv_slot *slot)
+{
+	uint8_t *ptr, *buf = NULL;
+	size_t len = 0;
+	X509 *cert;
+	errf_t *err;
+	int nid, idx;
+	X509_EXTENSION *ext;
+	ASN1_OCTET_STRING *octstr;
+	const uint8_t *data;
+	enum ykpiv_pin_policy pinpol;
+	enum ykpiv_touch_policy touchpol;
+
+	err = ykpiv_attest(pt, slot, &buf, &len);
+	if (err != ERRF_OK)
+		return (err);
+
+	nid = OBJ_txt2nid("1.3.6.1.4.1.41482.3.8");
+	if (nid == NID_undef) {
+		nid = OBJ_create("1.3.6.1.4.1.41482.3.8", "ykAttestationPolicy",
+		    "Yubico PIV attestation policy extension");
+	}
+
+	ptr = buf;
+	cert = d2i_X509(NULL, (const uint8_t **)&ptr, len);
+	if (cert == NULL) {
+		make_sslerrf(err, "d2i_X509", "parsing attestation cert %02x",
+		    (uint)slot->ps_slot);
+		return (err);
+	}
+	free(buf);
+	buf = NULL;
+
+	idx = X509_get_ext_by_NID(cert, nid, -1);
+	if (idx == -1) {
+		err = errf("ExtensionMissing", NULL, "YubicoPIV attestation "
+		    "extension for policy not present in attestation cert");
+		return (invderrf(err, pt->pt_rdrname));
+	}
+	ext = X509_get_ext(cert, idx);
+	if (ext == NULL) {
+		err = errf("ExtensionMissing", NULL, "YubicoPIV attestation "
+		    "extension for policy not present in attestation cert");
+		return (invderrf(err, pt->pt_rdrname));
+	}
+
+	octstr = X509_EXTENSION_get_data(ext);
+	if (octstr == NULL || ASN1_STRING_length(octstr) != 2) {
+		err = errf("ExtensionInvalid", NULL, "YubicoPIV attestation "
+		    "extension for policy does not contain valid data");
+		return (invderrf(err, pt->pt_rdrname));
+	}
+
+	data = ASN1_STRING_data(octstr);
+	pinpol = data[0];
+	touchpol = data[1];
+	bunyan_log(BNY_TRACE, "got policy bytes from attestation cert",
+	    "pinpol", BNY_UINT, (uint)pinpol,
+	    "touchpol", BNY_UINT, (uint)touchpol,
+	    NULL);
+
+	if (pinpol == YKPIV_PIN_ONCE ||
+	    pinpol == YKPIV_PIN_ALWAYS) {
+		slot->ps_auth |= PIV_SLOT_AUTH_PIN;
+	}
+	if (pinpol == YKPIV_PIN_NEVER) {
+		slot->ps_auth &= ~PIV_SLOT_AUTH_PIN;
+	}
+	if (touchpol == YKPIV_TOUCH_ALWAYS ||
+	    touchpol == YKPIV_TOUCH_CACHED) {
+		slot->ps_auth |= PIV_SLOT_AUTH_TOUCH;
+	}
+	if (touchpol == YKPIV_TOUCH_NEVER) {
+		slot->ps_auth &= ~PIV_SLOT_AUTH_TOUCH;
+	}
+
+	X509_free(cert);
+
+	return (ERRF_OK);
+}
+
+/*
  * The yubico extensions for generate are documented in [yubico-piv]. They're
  * all extra tags which can be included underneath the 'AC' top-level template.
  */
@@ -2384,8 +2590,7 @@ ykpiv_generate(struct piv_token *pt, enum piv_slotid slotid,
 		return (argerrf("tk", "a YubicoPIV-compatible token", "not"));
 	/* The TOUCH_CACHED option is only supported on versions >=4.3 */
 	if (touchpolicy == YKPIV_TOUCH_CACHED &&
-	    (pt->pt_ykver[0] < 4 ||
-	    (pt->pt_ykver[0] == 4 && pt->pt_ykver[1] < 3))) {
+	    ykpiv_version_compare(pt, 4, 3, 0) == -1) {
 		return (argerrf("touchpolicy", "TOUCH_CACHED only on YubicoPIV "
 		    "version >=4.3", "not supported by this device (v%d.%d.%d)",
 		    pt->pt_ykver[0], pt->pt_ykver[1], pt->pt_ykver[2]));
@@ -2993,6 +3198,14 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			X509_free(pc->ps_x509);
 			sshkey_free(pc->ps_pubkey);
 		}
+		switch (pc->ps_slot) {
+		case PIV_SLOT_CARD_AUTH:
+		case PIV_SLOT_YK_ATTESTATION:
+			break;
+		default:
+			pc->ps_auth |= PIV_SLOT_AUTH_PIN;
+			break;
+		}
 		pc->ps_slot = slotid;
 		pc->ps_x509 = cert;
 		pc->ps_subj = X509_NAME_oneline(
@@ -3048,6 +3261,18 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			    "%s", sshkey_type(pc->ps_pubkey)), pk->pt_rdrname);
 		}
 
+		if (err == NULL && pk->pt_ykpiv &&
+		    ykpiv_version_compare(pk, 5, 3, 0) >= 0) {
+			err = ykpiv_get_metadata(pk, pc);
+			if (err == ERRF_OK) {
+				pc->ps_got_metadata = B_TRUE;
+			} else {
+				/* Ignore it if it fails. */
+				errf_free(err);
+				err = NULL;
+			}
+		}
+
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
 		err = errf("NotFoundError", swerrf("INS_GET_DATA", apdu->a_sw),
 		    "No certificate found for slot %02x in device '%s'",
@@ -3080,6 +3305,47 @@ invdata:
 	debug_dump(err, apdu);
 	tlv_abort(tlv);
 	goto out;
+}
+
+enum piv_slot_auth
+piv_slot_get_auth(struct piv_token *pt, struct piv_slot *slot)
+{
+	errf_t *err;
+
+	if (slot->ps_got_metadata)
+		return (slot->ps_auth);
+
+	if (pt->pt_ykpiv && ykpiv_version_compare(pt, 5, 3, 0) >= 0) {
+		err = ykpiv_get_metadata(pt, slot);
+		if (err == ERRF_OK) {
+			slot->ps_got_metadata = B_TRUE;
+			return (slot->ps_auth);
+		} else {
+			/* Ignore it if it fails. */
+			bunyan_log(BNY_DEBUG, "getting metadata failed",
+			    "error", BNY_ERF, err, NULL);
+			errf_free(err);
+		}
+	}
+
+	if (pt->pt_ykpiv && ykpiv_version_compare(pt, 4, 0, 0) >= 0) {
+		err = ykpiv_attest_metadata(pt, slot);
+		if (err == ERRF_OK) {
+			slot->ps_got_metadata = B_TRUE;
+			return (slot->ps_auth);
+		} else {
+			/* Ignore it if it fails. */
+			bunyan_log(BNY_DEBUG, "getting metadata from "
+			    "attestation cert failed",
+			    "error", BNY_ERF, err, NULL);
+			errf_free(err);
+		}
+	}
+
+	/* Don't bother trying again if everything failed. */
+	slot->ps_got_metadata = B_TRUE;
+
+	return (slot->ps_auth);
 }
 
 static inline int
@@ -3934,6 +4200,8 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 		err = permerrf(swerrf("INS_GEN_AUTH(%x)", apdu->a_sw,
 		    pc->ps_slot), pk->pt_rdrname,
 		    "signing data with key in slot %02x", pc->ps_slot);
+		/* We probably needed a PIN for this. */
+		pc->ps_auth |= PIV_SLOT_AUTH_PIN;
 
 	} else if (apdu->a_sw == SW_WRONG_DATA ||
 	    apdu->a_sw == SW_INCORRECT_P1P2) {
@@ -4044,6 +4312,8 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 		err = permerrf(swerrf("INS_GEN_AUTH(%x)", apdu->a_sw,
 		    slot->ps_slot), pk->pt_rdrname, "performing ECDH for "
 		    "slot %x", slot->ps_slot);
+		/* We probably needed a PIN for this. */
+		slot->ps_auth |= PIV_SLOT_AUTH_PIN;
 
 	} else {
 		err = swerrf("INS_GEN_AUTH(%x)", apdu->a_sw, slot->ps_slot);

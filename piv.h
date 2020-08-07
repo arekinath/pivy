@@ -212,6 +212,12 @@ enum ykpiv_touch_policy {
 	YKPIV_TOUCH_CACHED = 0x03,		/* Cached for 15sec */
 };
 
+enum piv_slot_auth {
+	PIV_SLOT_AUTH_UNKNOWN = 0,
+	PIV_SLOT_AUTH_PIN = 1<<0,
+	PIV_SLOT_AUTH_TOUCH = 1<<1
+};
+
 #define	GUID_LEN	16
 
 struct piv_slot;
@@ -401,6 +407,19 @@ const char *piv_slot_subject(const struct piv_slot *slot);
  * and not freed or modified (it will be freed with the piv_slot).
  */
 struct sshkey *piv_slot_pubkey(const struct piv_slot *slot);
+
+/*
+ * Returns which forms of authentication are required to use a particular
+ * slot's key.
+ *
+ * If ykpiv is not supported, this will be based on the PIV standard criteria
+ * and may be a bit of a guess. It will be amended if a slot returns an
+ * error requiring auth.
+ *
+ * This requires an open txn in case it needs to ask the device.
+ */
+enum piv_slot_auth piv_slot_get_auth(struct piv_token *key,
+    struct piv_slot *slot);
 
 /*
  * Begins a new transaction on the card. Needs to be called before any
@@ -910,6 +929,7 @@ enum iso_ins {
 	INS_GET_VER = 0xFD,
 	INS_SET_PIN_RETRIES = 0xFA,
 	INS_RESET = 0xFB,
+	INS_GET_METADATA = 0xF7,
 	INS_GET_SERIAL = 0xF8,
 	INS_ATTEST = 0xF9,
 };

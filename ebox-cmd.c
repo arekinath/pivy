@@ -150,14 +150,25 @@ pin_type_to_name(enum piv_pin type)
 }
 
 void
-assert_pin(struct piv_token *pk, const char *partname, boolean_t prompt)
+assert_pin(struct piv_token *pk, struct piv_slot *slot, const char *partname,
+    boolean_t prompt)
 {
 	errf_t *er;
 	uint retries;
 	enum piv_pin auth = piv_token_default_auth(pk);
+	boolean_t touch = B_FALSE;
+
 	const char *fmt = "Enter %s for token %s (%s): ";
 	if (partname == NULL)
 		fmt = "Enter %s for token %s: ";
+
+	if (slot != NULL) {
+		enum piv_slot_auth rauth = piv_slot_get_auth(pk, slot);
+		if (rauth & PIV_SLOT_AUTH_PIN)
+			prompt = B_TRUE;
+		if (rauth & PIV_SLOT_AUTH_TOUCH)
+			touch = B_TRUE;
+	}
 
 again:
 	if (ebox_pin == NULL && !prompt)
@@ -216,6 +227,10 @@ again:
 	} else if (er) {
 		piv_txn_end(pk);
 		errfx(EXIT_PIN, er, "failed to verify PIN");
+	}
+
+	if (touch) {
+		fprintf(stderr, "Touch button confirmation may be required.\n");
 	}
 }
 
@@ -317,6 +332,7 @@ local_unlock_agent(struct piv_ecdh_box *box)
 		goto out;
 	}
 
+	fprintf(stderr, "Using key '%s' in ssh-agent...\n", idl->comments[i]);
 	rc = ssh_request_reply(ebox_authfd, req, reply);
 	if (rc) {
 		err = ssherrf("ssh_request_reply", rc);
@@ -481,7 +497,7 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 
 	boolean_t prompt = B_FALSE;
 pin:
-	assert_pin(token, name, prompt);
+	assert_pin(token, slot, name, prompt);
 	err = piv_box_open(token, slot, box);
 	if (errf_caused_by(err, "PermissionError") && !prompt && !ebox_batch) {
 		errf_free(err);
