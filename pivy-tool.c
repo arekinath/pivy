@@ -68,6 +68,7 @@ int PEM_write_X509(FILE *fp, X509 *x);
 
 boolean_t debug = B_FALSE;
 static boolean_t parseable = B_FALSE;
+static boolean_t enum_all_retired = B_FALSE;
 static const char *cn = NULL;
 static const char *upn = NULL;
 static boolean_t save_pinfo_admin = B_TRUE;
@@ -401,6 +402,26 @@ alg_to_string(uint alg)
 }
 
 static errf_t *
+enum_all_retired_slots(struct piv_token *pk)
+{
+	errf_t *err;
+	uint i;
+
+	for (i = PIV_SLOT_RETIRED_1; i <= PIV_SLOT_RETIRED_20; ++i) {
+		err = piv_read_cert(pk, i);
+		if (err && !errf_caused_by(err, "NotFoundError") &&
+		    !errf_caused_by(err, "PermissionError") &&
+		    !errf_caused_by(err, "NotSupportedError")) {
+			return (err);
+		} else if (err) {
+			errf_free(err);
+		}
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
 cmd_list(void)
 {
 	struct piv_token *pk;
@@ -425,6 +446,12 @@ cmd_list(void)
 		if ((err = piv_read_all_certs(pk))) {
 			piv_txn_end(pk);
 			return (err);
+		}
+		if (enum_all_retired) {
+			if ((err = enum_all_retired_slots(pk))) {
+				piv_txn_end(pk);
+				return (err);
+			}
 		}
 		piv_txn_end(pk);
 
@@ -650,7 +677,67 @@ out:
 	if (tlv != NULL)
 		tlv_abort(tlv);
 	freezero(data, dlen);
+	if (err) {
+		err = errf("AdminAuthError", err, "PIV admin auth with "
+		    "default key failed, and failed to retrieve PIN-protected "
+		    "admin key data");
+	}
 	return (err);
+}
+
+static errf_t *
+cmd_update_keyhist(void)
+{
+	uint oncard, offcard;
+	const char *url;
+	struct piv_slot *slot;
+	errf_t *err;
+
+	if ((err = piv_txn_begin(selk)))
+		return (err);
+	assert_select(selk);
+	if ((err = piv_read_all_certs(selk))) {
+		piv_txn_end(selk);
+		return (err);
+	}
+	if ((err = enum_all_retired_slots(selk))) {
+		piv_txn_end(selk);
+		return (err);
+	}
+	oncard = 0;
+	slot = NULL;
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
+		uint slotid = piv_slot_id(slot);
+		if (slotid >= PIV_SLOT_RETIRED_1 &&
+		    slotid <= PIV_SLOT_RETIRED_20) {
+			uint index = (slotid - PIV_SLOT_RETIRED_1) + 1;
+			if (index > oncard)
+				oncard = index;
+		}
+	}
+	offcard = piv_token_keyhistory_offcard(selk);
+	url = piv_token_offcard_url(selk);
+
+admin_again:
+	err = piv_auth_admin(selk, admin_key, 24);
+	if (err && errf_caused_by(err, "PermissionError") &&
+	    admin_key == DEFAULT_ADMIN_KEY) {
+		errf_free(err);
+		err = try_pinfo_admin_key(selk);
+		if (err == ERRF_OK)
+			goto admin_again;
+	}
+	if (err == ERRF_OK) {
+		err = piv_write_keyhistory(selk, oncard, offcard, url);
+	}
+	piv_txn_end(selk);
+
+	if (err) {
+		err = funcerrf(err, "failed to update keyhistory object");
+		return (err);
+	}
+
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -2337,6 +2424,8 @@ usage(void)
 	    "                         Yubikey, once the PIN and PUK are both\n"
 	    "                         locked (max retries used)\n"
 	    "  set-admin <hex|@file>  Sets the admin 3DES key\n"
+	    "  update-keyhist         Scan all retired key slots and then\n"
+	    "                         re-generate the PIV Key History object\n"
 	    "\n"
 	    "  sign <slot>            Signs data on stdin\n"
 	    "  ecdh <slot>            Do ECDH with pubkey on stdin\n"
@@ -2364,6 +2453,8 @@ usage(void)
 	    "                         generate or init)\n"
 	    "  -d                     Output debug info to stderr\n"
 	    "                         (use twice to include APDU trace)\n"
+	    "  -X                     Always enumerate all retired key slots\n"
+	    "                         (ignore the PIV Key History object)\n"
 	    "\n"
 	    "Options for 'list':\n"
 	    "  -p                     Generate parseable output\n"
@@ -2402,7 +2493,7 @@ usage(void)
     "f(force)"
     "K:(admin-key)"
     "k:(key)";*/
-const char *optstring = "dpg:P:a:fK:k:n:t:i:u:R";
+const char *optstring = "dpg:P:a:fK:k:n:t:i:u:RX";
 
 int
 main(int argc, char *argv[])
@@ -2431,6 +2522,9 @@ main(int argc, char *argv[])
 			break;
 		case 'R':
 			save_pinfo_admin = B_FALSE;
+			break;
+		case 'X':
+			enum_all_retired = B_TRUE;
 			break;
 		case 'K':
 			if (strcmp(optarg, "default") == 0) {
@@ -2628,6 +2722,14 @@ main(int argc, char *argv[])
 		}
 		check_select_key();
 		err = cmd_reset_pin();
+
+	} else if (strcmp(op, "update-keyhist") == 0) {
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+		check_select_key();
+		err = cmd_update_keyhist();
 
 	} else if (strcmp(op, "sign") == 0) {
 		uint slotid;
