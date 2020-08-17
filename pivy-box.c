@@ -1448,6 +1448,8 @@ cmd_key_relock(int argc, char *argv[])
 		FILE *file;
 		fname = argv[0];
 		file = fopen(fname, "r");
+		if (file == NULL)
+			err(EXIT_USAGE, "failed to open file %s", fname);
 		buf = read_file_b64(EBOX_MAX_SIZE, file);
 		fclose(file);
 	} else if (argc == 0) {
@@ -1553,6 +1555,8 @@ cmd_key_unlock(int argc, char *argv[])
 		FILE *file;
 		fname = argv[0];
 		file = fopen(fname, "r");
+		if (file == NULL)
+			err(EXIT_USAGE, "failed to open file %s", fname);
 		buf = read_file_b64(EBOX_MAX_SIZE, file);
 		fclose(file);
 	} else if (argc == 0) {
@@ -1667,6 +1671,8 @@ cmd_stream_decrypt(int argc, char *argv[])
 	if (argc == 1) {
 		fname = argv[0];
 		file = fopen(fname, "r");
+		if (file == NULL)
+			err(EXIT_USAGE, "failed to open file %s", fname);
 	} else if (argc == 0) {
 		file = stdin;
 	} else {

@@ -386,14 +386,12 @@ out:
 void
 release_context(void)
 {
-	if (ebox_ctx_init) {
-		if (ebox_enum_tokens != NULL) {
-			piv_release(ebox_enum_tokens);
-			ebox_enum_tokens = NULL;
-		}
+	if (ebox_enum_tokens != NULL)
+		piv_release(ebox_enum_tokens);
+	ebox_enum_tokens = NULL;
+	if (ebox_ctx_init)
 		SCardReleaseContext(ebox_ctx);
-		ebox_ctx_init = B_FALSE;
-	}
+	ebox_ctx_init = B_FALSE;
 }
 
 errf_t *
