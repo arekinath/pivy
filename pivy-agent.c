@@ -226,6 +226,7 @@ typedef struct pid_entry {
 	pid_t pe_pid;
 	uint64_t pe_start_time;
 	uint pe_conn_count;
+	uint64_t pe_last_auth;
 } pid_entry_t;
 
 pid_entry_t *pids = NULL;
@@ -236,6 +237,8 @@ int max_fd = 0;
 const time_t card_probe_interval_nopin = 120;
 const time_t card_probe_interval_pin = 30;
 const uint card_probe_limit = 3;
+
+const uint64_t pid_auth_cache_time = 15000;
 
 time_t card_probe_interval = 120; /* card_probe_interval_nopin */
 uint card_probe_fails = 0;
@@ -672,10 +675,18 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 	if (confirm_mode == C_FORWARDED) {
 		const char *ssh = NULL;
 		const size_t len = strlen(e->se_exepath);
+		const uint64_t now = monotime();
+		const int64_t delta = now - e->se_pid_ent->pe_last_auth;
 		if (len >= 4)
 			ssh = &e->se_exepath[len - 4];
 		if (e->se_pid_idx == 0 || ssh == NULL ||
 		    strcmp(ssh, "/ssh") != 0) {
+			e->se_authz = AUTHZ_ALLOWED;
+			return;
+		}
+		if (pid_auth_cache_time > 0 &&
+		    delta < pid_auth_cache_time) {
+			e->se_pid_ent->pe_last_auth = now;
 			e->se_authz = AUTHZ_ALLOWED;
 			return;
 		}
@@ -741,6 +752,7 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 
 	if (WEXITSTATUS(status) == 0) {
 		e->se_authz = AUTHZ_ALLOWED;
+		e->se_pid_ent->pe_last_auth = monotime();
 	} else {
 		e->se_authz = AUTHZ_DENIED;
 	}
@@ -857,6 +869,7 @@ find_or_make_pid_entry(pid_t pid, uint64_t start_time)
 			pids[i].pe_time = now;
 			pids[i].pe_start_time = start_time;
 			pids[i].pe_conn_count = 0;
+			pids[i].pe_last_auth = 0;
 			return (&pids[i]);
 		}
 		if (pids[i].pe_valid) {
@@ -890,6 +903,7 @@ newpid:
 	pids[i].pe_start_time = start_time;
 	pids[i].pe_time = now;
 	pids[i].pe_conn_count = 0;
+	pids[i].pe_last_auth = 0;
 	return (&pids[i]);
 }
 
