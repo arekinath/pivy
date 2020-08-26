@@ -1,3 +1,14 @@
+pivy (0.7.0-1) UNRELEASED; urgency=medium
+
+  * pivy-box: "key unlock" and "stream decrypt" can now accept a filename arg
+  * pivy-box: can now find templates at multiple paths, including a system dir
+  * pivy-agent: in `-C` mode, PID authorizations are now cached for 15 seconds
+  * pivy-tool: add "update-keyhist" command
+  * all tools: now support using metadata/attestation information
+  * fix for some issues around using multiple local devices in order in recov
+
+ -- Alex Wilson <alex@cooperi.net>  Wed, 26 Aug 2020 10:23:24 +0000
+
 pivy (0.6.1-1) UNRELEASED; urgency=medium
 
   * pivy-agent: fix for parsing errors in pivy-agent -S arguments
