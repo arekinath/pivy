@@ -1232,13 +1232,20 @@ access_tpl_file(const char *tpl, int amode)
 	char *path;
 	const struct ebox_tpl_path_ent *tpe;
 	int r;
+	uint i, len;
 
 	if ((amode & W_OK) == 0) {
+		/*
+		 * If we're not writing, try the name as a full path --
+		 * this is useful in tools like pivy-zfs without a separate
+		 * -f option for tpl path.
+		 */
 		r = access(tpl, amode);
 		if (r == 0)
 			return (strdup(tpl));
 	}
 
+	/* First, see if we can find an actual tpl file with this name. */
 	tpe = ebox_tpl_path;
 	while (tpe != NULL) {
 		path = compose_path(tpe->tpe_segs, tpl);
@@ -1246,16 +1253,58 @@ access_tpl_file(const char *tpl, int amode)
 		if (r == 0)
 			return (path);
 		free(path);
-		if ((amode & W_OK) == W_OK) {
-			path = compose_path(tpe->tpe_segs, "");
-			r = access(path, amode);
-			if (r == 0) {
-				free(path);
-				path = compose_path(tpe->tpe_segs, tpl);
-				return (path);
-			}
+		tpe = tpe->tpe_next;
+	}
+
+	/*
+	 * If we don't have a tpl file with the name and we're not writing,
+	 * give up now.
+	 */
+	if ((amode & W_OK) == 0)
+		return (NULL);
+
+	/*
+	 * Next, look for a dir on the paths list which already exists and is
+	 * writable. If we have one, use that.
+	 */
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		path = compose_path(tpe->tpe_segs, "");
+		r = access(path, amode);
+		if (r == 0) {
 			free(path);
+			path = compose_path(tpe->tpe_segs, tpl);
+			return (path);
 		}
+		free(path);
+		tpe = tpe->tpe_next;
+	}
+
+	/*
+	 * Finally, look for a dir on the paths list which we can recursively
+	 * mkdir. Try to mkdir it now. If it all works, use that one.
+	 */
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		path = compose_path(tpe->tpe_segs, "");
+		len = strlen(path);
+		for (i = 1; i < len; ++i) {
+			if (path[i] != '/')
+				continue;
+			path[i] = '\0';
+			if (mkdir(path, 0755)) {
+				if (errno != EEXIST)
+					break;
+			}
+			path[i] = '/';
+		}
+		r = access(path, amode);
+		if (r == 0) {
+			free(path);
+			path = compose_path(tpe->tpe_segs, tpl);
+			return (path);
+		}
+		free(path);
 		tpe = tpe->tpe_next;
 	}
 
