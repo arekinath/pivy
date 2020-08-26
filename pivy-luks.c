@@ -526,6 +526,9 @@ cmd_format(const char *devname)
 static void
 usage(void)
 {
+	const struct ebox_tpl_path_ent *tpe;
+	char *dpath;
+
 	fprintf(stderr,
 	    "usage: pivy-luks [-d] [-t tplname] operation device\n"
 	    "Options:\n"
@@ -537,8 +540,15 @@ usage(void)
 	    "  unlock <device> <mapper name>         Unlock/activate a LUKS device\n"
 	    "  rekey <device>                        Update LUKS metadata to new template\n"
 	    "  format <device>                       Set up a new LUKS device\n");
-	fprintf(stderr, "\nTemplates are stored in " TPL_DEFAULT_PATH
-	    " (manage them using the `pivy-box' tool)\n", "$HOME", "*");
+	fprintf(stderr, "\nTemplates are stored in:\n");
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		dpath = compose_path(tpe->tpe_segs, "*");
+		fprintf(stderr, "  * %s\n", dpath);
+		free(dpath);
+		tpe = tpe->tpe_next;
+	}
+	fprintf(stderr, "(manage them using the `pivy-box' tool)\n");
 	exit(EXIT_USAGE);
 }
 
@@ -556,6 +566,7 @@ main(int argc, char *argv[])
 	qa_term_setup();
 	bunyan_init();
 	bunyan_set_name("pivy-luks");
+	parse_tpl_path_env();
 
 	while ((c = getopt(argc, argv, optstring)) != -1) {
 		switch (c) {

@@ -1313,46 +1313,60 @@ cmd_tpl_list(int argc, char *argv[])
 {
 	struct dirent *ent;
 	DIR *d;
-	char dpath[PATH_MAX] = { 0 };
-	char fpath[PATH_MAX] = { 0 };
-	const char *home;
+	char *dpath;
+	char *fpath;
+	const struct ebox_tpl_path_ent *tpe;
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *c;
 	struct answer a;
+	errf_t *err = NULL;
+	boolean_t success = B_FALSE;
 
-	home = getenv("HOME");
-	if (home == NULL) {
-		errx(EXIT_USAGE, "environment variable HOME not set, "
-		    "can't list templates");
-	}
-	snprintf(dpath, sizeof (dpath), TPL_DEFAULT_PATH,
-	    home, "");
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		dpath = compose_path(tpe->tpe_segs, "");
 
-	d = opendir(dpath);
-	if (d == NULL)
-		return (errfno("opendir", errno, "%s", dpath));
-
-	printf("ebox templates in %s:\n", dpath);
-
-	while ((ent = readdir(d)) != NULL) {
-		if (ent->d_name[0] == '.')
-			continue;
-
-		strlcpy(fpath, dpath, sizeof (fpath));
-		strlcat(fpath, ent->d_name, sizeof (fpath));
-		tpl = read_tpl_file(fpath);
-
-		printf("\n%s:\n", ent->d_name);
-		c = NULL;
-		while ((c = ebox_tpl_next_config(tpl, c)) != NULL) {
-			bzero(&a, sizeof (a));
-			make_answer_text_for_config(c, &a);
-			printf(" * %s\n", a.a_text);
+		d = opendir(dpath);
+		if (d == NULL) {
+			errf_free(err);
+			err = errfno("opendir", errno, "%s", dpath);
+			goto next;
 		}
-	}
 
-	closedir(d);
-	return (NULL);
+		printf("ebox templates in %s:\n", dpath);
+
+		while ((ent = readdir(d)) != NULL) {
+			if (ent->d_name[0] == '.')
+				continue;
+
+			fpath = compose_path(tpe->tpe_segs, ent->d_name);
+			tpl = read_tpl_file(fpath);
+
+			printf("  %s:\n", ent->d_name);
+			c = NULL;
+			while ((c = ebox_tpl_next_config(tpl, c)) != NULL) {
+				bzero(&a, sizeof (a));
+				make_answer_text_for_config(c, &a);
+				printf("   * %s\n", a.a_text);
+			}
+
+			free(fpath);
+		}
+		success = B_TRUE;
+		printf("\n");
+
+		closedir(d);
+
+		free(dpath);
+
+next:
+		tpe = tpe->tpe_next;
+	}
+	if (success) {
+		errf_free(err);
+		err = NULL;
+	}
+	return (err);
 }
 
 static errf_t *
@@ -1904,6 +1918,9 @@ cmd_challenge_respond(int argc, char *argv[])
 static void
 usage_types(void)
 {
+	const struct ebox_tpl_path_ent *tpe;
+	char *dpath;
+
 	fprintf(stderr,
 	    "usage: pivy-box <type> <operation> [options] [tpl]\n"
 	    "\n");
@@ -1919,9 +1936,14 @@ usage_types(void)
 	    "  -i         interactive mode (for editing etc)\n"
 	    "  -f <path>  full path to tpl file instead of using [tpl] arg\n"
 	    "\n");
-	fprintf(stderr,
-	    "If not using -f, templates are stored in " TPL_DEFAULT_PATH "\n\n",
-	    "$HOME", "*");
+	fprintf(stderr, "If not using -f, templates are stored in:\n");
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		dpath = compose_path(tpe->tpe_segs, "");
+		fprintf(stderr, "  * %s\n", dpath);
+		free(dpath);
+		tpe = tpe->tpe_next;
+	}
 	fprintf(stderr,
 	    "pivy-box <type>:\n"
 	    "  tpl|template          Manage templates which track a set of\n"
@@ -1937,6 +1959,8 @@ usage_types(void)
 static void
 usage_tpl(const char *op)
 {
+	const struct ebox_tpl_path_ent *tpe;
+	char *dpath;
 	if (op == NULL) {
 		goto noop;
 	} else if (strcmp(op, "create") == 0) {
@@ -2012,9 +2036,14 @@ noop:
 		    "  edit                  Edit an existing template\n"
 		    "  show                  Pretty-print a template to stdout\n"
 		    "  list                  List templates in default path\n");
-		fprintf(stderr,
-		    "\nIf not using -f, templates are stored in "
-		    TPL_DEFAULT_PATH "\n", "$HOME", "*");
+		fprintf(stderr, "If not using -f, templates are stored in:\n");
+		tpe = ebox_tpl_path;
+		while (tpe != NULL) {
+			dpath = compose_path(tpe->tpe_segs, "");
+			fprintf(stderr, "  * %s\n", dpath);
+			free(dpath);
+			tpe = tpe->tpe_next;
+		}
 	}
 }
 
@@ -2187,6 +2216,7 @@ main(int argc, char *argv[])
 	char *p;
 
 	qa_term_setup();
+	parse_tpl_path_env();
 
 	if (argc < 2) {
 		warnx("type and operation required");
@@ -2283,22 +2313,25 @@ main(int argc, char *argv[])
 	}
 
 	if (tpl[0] == '\0') {
-		const char *home;
+		char *tmp;
 		if (argc < 1) {
 			warnx("template name or path required");
 			usage(type, op);
 			return (EXIT_USAGE);
 		}
 		tplname = argv[0];
+
 		argc--;
 		argv++;
-		home = getenv("HOME");
-		if (home == NULL) {
-			errx(EXIT_USAGE, "environment variable HOME not set, "
-			    "must use -f to specify full path to template");
+		tmp = access_tpl_file(tplname, F_OK);
+		if (tmp == NULL)
+			tmp = access_tpl_file(tplname, W_OK);
+		if (tmp == NULL) {
+			warnx("no writable template path could be found");
+			return (EXIT_USAGE);
 		}
-		snprintf(tpl, sizeof (tpl), TPL_DEFAULT_PATH,
-		    home, tplname);
+		strlcpy(tpl, tmp, sizeof (tpl));
+		free(tmp);
 	}
 
 	if (strcmp(type, "tpl") == 0 || strcmp(type, "template") == 0) {

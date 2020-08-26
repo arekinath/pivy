@@ -60,6 +60,13 @@
 
 #include "words.h"
 
+#if !defined(EBOX_USER_TPL_PATH)
+#define	EBOX_USER_TPL_PATH	"$HOME/.pivy/tpl/$TPL"
+#endif
+#if !defined(EBOX_SYSTEM_TPL_PATH)
+#define	EBOX_SYSTEM_TPL_PATH	"/etc/pivy/tpl/$TPL"
+#endif
+
 int ebox_authfd = -1;
 SCARDCONTEXT ebox_ctx;
 boolean_t ebox_ctx_init = B_FALSE;
@@ -1058,6 +1065,229 @@ partagain:
 	return (NULL);
 }
 
+struct ebox_tpl_path_ent *ebox_tpl_path = NULL;
+
+static struct ebox_tpl_path_seg *
+parse_tpl_path_segs(const char *path)
+{
+	struct ebox_tpl_path_seg *seg, *first = NULL, *last = NULL;
+	const char *basep, *p;
+	size_t n;
+
+	p = path;
+	basep = NULL;
+
+	while (1) {
+		if (*p == '$' || *p == '\0') {
+			/* end current segment */
+			if (basep != NULL) {
+				seg = calloc(1, sizeof (*seg));
+				seg->tps_type = PATH_SEG_FIXED;
+				n = p - basep;
+				seg->tps_fixed = malloc(n + 1);
+				strncpy(seg->tps_fixed, basep, n);
+				if (first == NULL)
+					first = seg;
+				if (last != NULL)
+					last->tps_next = seg;
+				last = seg;
+				basep = NULL;
+			}
+			if (*p == '$') {
+				if (strncmp(p, "$TPL", 4) == 0) {
+					p += 4;
+					seg = calloc(1, sizeof (*seg));
+					seg->tps_type = PATH_SEG_TPL;
+					if (first == NULL)
+						first = seg;
+					if (last != NULL)
+						last->tps_next = seg;
+					last = seg;
+					continue;
+				}
+				basep = ++p;
+				while (*p != '\0' && (
+				    (*p >= 'A' && *p <= 'Z') ||
+				    (*p >= 'a' && *p <= 'z') ||
+				    (*p >= '0' && *p <= '9'))) {
+					++p;
+				}
+				seg = calloc(1, sizeof (*seg));
+				seg->tps_type = PATH_SEG_ENV;
+				n = p - basep;
+				seg->tps_env = malloc(n + 1);
+				strncpy(seg->tps_fixed, basep, n);
+				if (first == NULL)
+					first = seg;
+				if (last != NULL)
+					last->tps_next = seg;
+				last = seg;
+				basep = NULL;
+			} else {
+				break;
+			}
+		} else {
+			if (basep == NULL)
+				basep = p;
+			++p;
+		}
+	}
+
+	return (first);
+}
+
+void
+parse_tpl_path_env(void)
+{
+	struct ebox_tpl_path_ent *tpe, *last = NULL;
+	const char *env;
+	char *tmp;
+	char *token, *saveptr = NULL;
+
+	tpe = calloc(1, sizeof (*tpe));
+	if (ebox_tpl_path == NULL)
+		ebox_tpl_path = tpe;
+	if (last != NULL)
+		last->tpe_next = tpe;
+	tpe->tpe_path_tpl = strdup(EBOX_USER_TPL_PATH);
+	tpe->tpe_segs = parse_tpl_path_segs(tpe->tpe_path_tpl);
+	last = tpe;
+
+#if !defined(NO_LEGACY_EBOX_TPL_PATH)
+	tpe = calloc(1, sizeof (*tpe));
+	if (ebox_tpl_path == NULL)
+		ebox_tpl_path = tpe;
+	if (last != NULL)
+		last->tpe_next = tpe;
+	tpe->tpe_path_tpl = strdup("$HOME/.ebox/tpl/$TPL");
+	tpe->tpe_segs = parse_tpl_path_segs(tpe->tpe_path_tpl);
+	last = tpe;
+#endif
+
+	env = getenv("PIVY_EBOX_TPL_PATH");
+	if (env != NULL) {
+		tmp = strdup(env);
+
+		while (1) {
+			token = strtok_r(tmp, ":", &saveptr);
+			if (token == NULL)
+				break;
+			tmp = NULL;
+
+			tpe = calloc(1, sizeof (*tpe));
+			if (ebox_tpl_path == NULL)
+				ebox_tpl_path = tpe;
+			if (last != NULL)
+				last->tpe_next = tpe;
+			tpe->tpe_path_tpl = strdup(token);
+			tpe->tpe_segs = parse_tpl_path_segs(tpe->tpe_path_tpl);
+			last = tpe;
+		}
+	}
+
+	tpe = calloc(1, sizeof (*tpe));
+	if (ebox_tpl_path == NULL)
+		ebox_tpl_path = tpe;
+	if (last != NULL)
+		last->tpe_next = tpe;
+	tpe->tpe_path_tpl = strdup(EBOX_SYSTEM_TPL_PATH);
+	tpe->tpe_segs = parse_tpl_path_segs(tpe->tpe_path_tpl);
+	last = tpe;
+}
+
+char *
+compose_path(const struct ebox_tpl_path_seg *segs, const char *tpl)
+{
+	char *buf;
+	const char *tmp;
+	const struct ebox_tpl_path_seg *seg;
+
+	buf = malloc(PATH_MAX);
+	buf[0] = '\0';
+
+	seg = segs;
+	while (seg != NULL) {
+		switch (seg->tps_type) {
+		case PATH_SEG_FIXED:
+			strlcat(buf, seg->tps_fixed, PATH_MAX);
+			break;
+		case PATH_SEG_ENV:
+			tmp = getenv(seg->tps_env);
+			if (tmp != NULL)
+				strlcat(buf, tmp, PATH_MAX);
+			break;
+		case PATH_SEG_TPL:
+			strlcat(buf, tpl, PATH_MAX);
+			break;
+		}
+		seg = seg->tps_next;
+	}
+
+	return (buf);
+}
+
+char *
+access_tpl_file(const char *tpl, int amode)
+{
+	char *path;
+	const struct ebox_tpl_path_ent *tpe;
+	int r;
+
+	if ((amode & W_OK) == 0) {
+		r = access(tpl, amode);
+		if (r == 0)
+			return (strdup(tpl));
+	}
+
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		path = compose_path(tpe->tpe_segs, tpl);
+		r = access(path, amode);
+		if (r == 0)
+			return (path);
+		free(path);
+		if ((amode & W_OK) == W_OK) {
+			path = compose_path(tpe->tpe_segs, "");
+			r = access(path, amode);
+			if (r == 0) {
+				free(path);
+				path = compose_path(tpe->tpe_segs, tpl);
+				return (path);
+			}
+			free(path);
+		}
+		tpe = tpe->tpe_next;
+	}
+
+	return (NULL);
+}
+
+FILE *
+open_tpl_file(const char *tpl, const char *mode)
+{
+	char *path;
+	FILE *f;
+	const struct ebox_tpl_path_ent *tpe;
+
+	if (strchr(mode, 'w') == NULL) {
+		f = fopen(tpl, mode);
+		if (f != NULL)
+			return (f);
+	}
+
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		path = compose_path(tpe->tpe_segs, tpl);
+		f = fopen(path, mode);
+		free(path);
+		if (f != NULL)
+			return (f);
+		tpe = tpe->tpe_next;
+	}
+
+	return (NULL);
+}
+
 struct ebox_tpl *
 read_tpl_file(const char *tpl)
 {
@@ -1069,24 +1299,10 @@ read_tpl_file(const char *tpl)
 	size_t len;
 	int rc;
 	struct ebox_tpl *stpl;
-	char pathTpl[PATH_MAX] = { 0 };
 
-again:
-	tplf = fopen(tpl, "r");
+	tplf = open_tpl_file(tpl, "r");
 	rc = errno;
-	if (tplf == NULL && tpl != pathTpl && errno == ENOENT) {
-		const char *home;
-		home = getenv("HOME");
-		if (home == NULL) {
-			errno = rc;
-			err(EXIT_ERROR, "failed to open template file '%s' "
-			    "for reading", tpl);
-		}
-		snprintf(pathTpl, sizeof (pathTpl), TPL_DEFAULT_PATH,
-		    home, tpl);
-		tpl = pathTpl;
-		goto again;
-	} else if (tplf == NULL) {
+	if (tplf == NULL) {
 		err(EXIT_ERROR, "failed to open template file '%s' for reading",
 		    tpl);
 	}

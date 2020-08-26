@@ -573,6 +573,9 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 static void
 usage(void)
 {
+	const struct ebox_tpl_path_ent *tpe;
+	char *dpath;
+
 	fprintf(stderr,
 	    "usage: pivy-zfs [-d] [-t tplname] operation\n"
 	    "Options:\n"
@@ -588,8 +591,15 @@ usage(void)
 	    "                          new pool\n"
 	    "  rekey <zfs>             Change key configuration for an already\n"
 	    "                          created ZFS filesystem\n");
-	fprintf(stderr, "\nTemplates are stored in " TPL_DEFAULT_PATH
-	    " (manage them using the `pivy-box' tool)\n", "$HOME", "*");
+	fprintf(stderr, "\nTemplates are stored in:\n");
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		dpath = compose_path(tpe->tpe_segs, "*");
+		fprintf(stderr, "  * %s\n", dpath);
+		free(dpath);
+		tpe = tpe->tpe_next;
+	}
+	fprintf(stderr, "(manage them using the `pivy-box' tool)\n");
 	exit(EXIT_USAGE);
 }
 
@@ -606,6 +616,7 @@ main(int argc, char *argv[])
 
 	bunyan_init();
 	bunyan_set_name("piv-zfs");
+	parse_tpl_path_env();
 
 	while ((c = getopt(argc, argv, optstring)) != -1) {
 		switch (c) {

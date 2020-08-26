@@ -67,6 +67,8 @@ ifeq ($(SYSTEM), Linux)
 	PAM_LIBS	= -lpam
 	PAM_PLUGINDIR	?= $(libdir)/security
 	SYSTEMDDIR	?= $(libdir)/systemd/user
+	tpl_user_dir	?= "$$HOME/.config/pivy/tpl/$$TPL"
+	tpl_system_dir	?= "/etc/pivy/tpl/$$TPL"
 endif
 ifeq ($(SYSTEM), OpenBSD)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
@@ -98,6 +100,8 @@ ifeq ($(SYSTEM), Darwin)
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
 	HAVE_PAM	:= no
+	tpl_user_dir	?= "$$HOME/Library/Preferences/pivy/tpl/$$TPL"
+	tpl_system_dir	?= "/Library/Preferences/pivy/tpl/$$TPL"
 endif
 ifeq ($(SYSTEM), SunOS)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
@@ -118,6 +122,12 @@ ifeq ($(SYSTEM), SunOS)
 	HAVE_PAM	:= no
 endif
 LIBCRYPTO	?= $(LIBRESSL_LIB)/libcrypto.a
+
+tpl_user_dir	?= "$$HOME/.pivy/tpl/$$TPL"
+tpl_system_dir	?= "/etc/pivy/tpl/$$TPL"
+
+CONFIG_CFLAGS	=  -DEBOX_USER_TPL_PATH='$(tpl_user_dir)'
+CONFIG_CFLAGS	+= -DEBOX_SYSTEM_TPL_PATH='$(tpl_system_dir)'
 
 _ED25519_SOURCES=		\
 	ed25519.c		\
@@ -194,6 +204,7 @@ PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
+			$(CONFIG_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE \
 			-DPIVY_VERSION='"$(VERSION)"'
 PIVTOOL_LDFLAGS=	$(SYSTEM_LDFLAGS)
@@ -226,6 +237,7 @@ PIVYBOX_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
 PIVYBOX_LDFLAGS=	$(SYSTEM_LDFLAGS)
@@ -263,6 +275,7 @@ PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
 			$(LIBZFS_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
 PIVZFS_LDFLAGS=		$(SYSTEM_LDFLAGS)
@@ -310,6 +323,7 @@ PIVYLUKS_CFLAGS=	$(PCSC_CFLAGS) \
 			$(JSONC_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
 PIVYLUKS_LDFLAGS=	$(SYSTEM_LDFLAGS)
@@ -353,6 +367,7 @@ PAMPIVY_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(PAM_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
 PAMPIVY_LDFLAGS=	$(SYSTEM_LDFLAGS)
@@ -393,6 +408,7 @@ AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE
 AGENT_LDFLAGS=		$(SYSTEM_LDFLAGS)

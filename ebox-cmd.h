@@ -58,11 +58,37 @@ enum ebox_exit_status {
 	EXIT_ALREADY_UNLOCKED = 6,
 };
 
-#define	TPL_DEFAULT_PATH	"%s/.ebox/tpl/%s"
+enum ebox_tpl_path_seg_type {
+	PATH_SEG_FIXED,
+	PATH_SEG_ENV,
+	PATH_SEG_TPL
+};
+
+struct ebox_tpl_path_seg {
+	struct ebox_tpl_path_seg *tps_next;
+	enum ebox_tpl_path_seg_type tps_type;
+	union {
+		char *tps_fixed;
+		char *tps_env;
+	};
+};
+
+struct ebox_tpl_path_ent {
+	struct ebox_tpl_path_ent *tpe_next;
+	char *tpe_path_tpl;
+	struct ebox_tpl_path_seg *tpe_segs;
+};
+
+extern struct ebox_tpl_path_ent *ebox_tpl_path;
+
 #define	TPL_MAX_SIZE		4096
 #define	EBOX_MAX_SIZE		16384
 #define	BASE64_LINE_LEN		65
 
+char *compose_path(const struct ebox_tpl_path_seg *segs, const char *tpl);
+FILE *open_tpl_file(const char *tpl, const char *mode);
+char *access_tpl_file(const char *tpl, int amode);
+void parse_tpl_path_env(void);
 void release_context(void);
 
 char *piv_token_shortid(struct piv_token *pk);
