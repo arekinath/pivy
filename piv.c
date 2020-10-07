@@ -1066,7 +1066,8 @@ piv_read_chuid(struct piv_token *pk)
 		}
 		err = ERRF_OK;
 
-	} else if (apdu->a_sw == SW_FILE_NOT_FOUND) {
+	} else if (apdu->a_sw == SW_FILE_NOT_FOUND ||
+	    apdu->a_sw == SW_WRONG_DATA) {
 		err = errf("NotFoundError", swerrf("INS_GET_DATA", apdu->a_sw),
 		    "PIV CHUID object was not found on device '%s'",
 		    pk->pt_rdrname);
@@ -1851,6 +1852,7 @@ piv_select(struct piv_token *tk)
 	struct apdu *apdu;
 	struct tlv_state *tlv = NULL;
 	uint tag, idx, uval;
+	boolean_t extra_apt = B_FALSE;
 
 	VERIFY(tk->pt_intxn == B_TRUE);
 
@@ -1884,6 +1886,9 @@ piv_select(struct piv_token *tk)
 			if ((rv = tlv_read_tag(tlv, &tag)))
 				goto invdata;
 			switch (tag) {
+			case PIV_TAG_APT:
+				extra_apt = B_TRUE;
+				break;
 			case PIV_TAG_AID:
 			case PIV_TAG_AUTHORITY:
 				/* TODO: validate/store these maybe? */
@@ -1936,6 +1941,8 @@ piv_select(struct piv_token *tk)
 				goto invdata;
 			}
 		}
+		if (extra_apt && (rv = tlv_end(tlv)))
+			goto invdata;
 		if ((rv = tlv_end(tlv)))
 			goto invdata;
 		rv = NULL;
