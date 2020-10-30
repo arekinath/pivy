@@ -1969,7 +1969,8 @@ invdata:
  * see [piv] 800-73-4 part 2 appendix A.1
  */
 errf_t *
-piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
+piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen,
+    enum piv_alg keyalg)
 {
 	errf_t *err;
 	int rv;
@@ -1983,7 +1984,24 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 
 	VERIFY(pt->pt_intxn == B_TRUE);
 
-	cipher = cipher_by_name("3des-cbc");
+	switch (keyalg) {
+		case PIV_ALG_3DES:
+			cipher = cipher_by_name("3des-cbc");
+			break;
+		case PIV_ALG_AES128:
+			cipher = cipher_by_name("aes128-cbc");
+			break;
+		case PIV_ALG_AES256:
+			cipher = cipher_by_name("aes256-cbc");
+			break;
+		case PIV_ALG_AES192:
+			cipher = cipher_by_name("aes192-cbc");
+			break;
+		default:
+			return (argerrf("key", "a supported key algorithm",
+			    "%u", keyalg));
+	}
+
 	VERIFY(cipher != NULL);
 	VERIFY(cipher_authlen(cipher) == 0);
 	if (cipher_keylen(cipher) != keylen) {
@@ -2001,7 +2019,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 	tlv_pop(tlv);
 	tlv_pop(tlv);
 
-	apdu = piv_apdu_make(CLA_ISO, INS_GEN_AUTH, PIV_ALG_3DES,
+	apdu = piv_apdu_make(CLA_ISO, INS_GEN_AUTH, keyalg,
 	    PIV_SLOT_ADMIN);
 	apdu->a_cmd.b_data = tlv_buf(tlv);
 	apdu->a_cmd.b_len = tlv_len(tlv);
@@ -2099,7 +2117,7 @@ piv_auth_admin(struct piv_token *pt, const uint8_t *key, size_t keylen)
 
 	pt->pt_reset = B_TRUE;
 
-	apdu = piv_apdu_make(CLA_ISO, INS_GEN_AUTH, PIV_ALG_3DES,
+	apdu = piv_apdu_make(CLA_ISO, INS_GEN_AUTH, keyalg,
 	    PIV_SLOT_ADMIN);
 	apdu->a_cmd.b_data = tlv_buf(tlv);
 	apdu->a_cmd.b_len = tlv_len(tlv);
@@ -3639,7 +3657,7 @@ ykpiv_set_pin_retries(struct piv_token *pk, uint pintries, uint puktries)
 
 errf_t *
 ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
-    enum ykpiv_touch_policy touchpolicy)
+    enum piv_alg alg, enum ykpiv_touch_policy touchpolicy)
 {
 	errf_t *err;
 	struct apdu *apdu;
@@ -3664,7 +3682,7 @@ ykpiv_set_admin(struct piv_token *pk, const uint8_t *key, size_t keylen,
 
 	databuf = calloc(1, 3 + keylen);
 	VERIFY(databuf != NULL);
-	databuf[0] = 0x03;
+	databuf[0] = alg;
 	databuf[1] = 0x9B;
 	databuf[2] = keylen;
 	bcopy(key, &databuf[3], keylen);
