@@ -372,8 +372,8 @@ static errf_t *
 valid_pin(const char *pin)
 {
 	int i;
-	if (strlen(pin) < 6 || strlen(pin) > 8) {
-		return (errf("InvalidPIN", NULL, "PIN must be 6-8 characters "
+	if (strlen(pin) < 4 || strlen(pin) > 8) {
+		return (errf("InvalidPIN", NULL, "PIN must be 4-8 characters "
 		    "(was given %d)", strlen(pin)));
 	}
 	for (i = 0; pin[i] != 0; ++i) {

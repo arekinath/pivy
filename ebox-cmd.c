@@ -196,11 +196,11 @@ again:
 		} else if (ebox_pin == NULL) {
 			piv_txn_end(pk);
 			err(EXIT_PIN, "failed to read PIN");
-		} else if (strlen(ebox_pin) < 6 || strlen(ebox_pin) > 8) {
+		} else if (strlen(ebox_pin) < 4 || strlen(ebox_pin) > 8) {
 			const char *charType = "digits";
 			if (piv_token_is_ykpiv(pk))
 				charType = "characters";
-			warnx("a valid PIN must be 6-8 %s in length",
+			warnx("a valid PIN must be 4-8 %s in length",
 			    charType);
 			free(ebox_pin);
 			free(guid);

@@ -81,6 +81,7 @@ static const uint8_t DEFAULT_ADMIN_KEY[] = {
 	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
 	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
 	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
 };
 #define DEFAULT_KEY_LENGTH 24
 static const uint8_t *admin_key = DEFAULT_ADMIN_KEY;
@@ -350,11 +351,11 @@ assert_pin(struct piv_token *pk, struct piv_slot *slot, boolean_t prompt)
 		} else if (pin == NULL) {
 			piv_txn_end(pk);
 			err(EXIT_PIN, "failed to read PIN");
-		} else if (strlen(pin) < 6 || strlen(pin) > 8) {
+		} else if (strlen(pin) < 4 || strlen(pin) > 8) {
 			const char *charType = "digits";
 			if (piv_token_is_ykpiv(selk))
 				charType = "characters";
-			errx(EXIT_PIN, "a valid PIN must be 6-8 %s in length",
+			errx(EXIT_PIN, "a valid PIN must be 4-8 %s in length",
 			    charType);
 		}
 		pin = strdup(pin);
@@ -1027,8 +1028,8 @@ again:
 		err = errfno("getpass", errno, "");
 		return (err);
 	}
-	if (strlen(p) < 6 || strlen(p) > 8) {
-		warnx("PIN must be 6-8 %s", charType);
+	if (strlen(p) < 4 || strlen(p) > 8) {
+		warnx("PIN must be 4-8 %s", charType);
 		goto again;
 	}
 	newpin = strdup(p);
@@ -1094,8 +1095,8 @@ again:
 		err = errfno("getpass", errno, "");
 		return (err);
 	}
-	if (strlen(p) < 6 || strlen(p) > 8) {
-		warnx("PIN must be 6-8 %s", charType);
+	if (strlen(p) < 4 || strlen(p) > 8) {
+		warnx("PIN must be 4-8 %s", charType);
 		goto again;
 	}
 	newpin = strdup(p);
