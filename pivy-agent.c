@@ -572,6 +572,7 @@ wrap_pin_error(errf_t *err, int retries)
 
 static const char *askpass = NULL;
 static const char *confirm = NULL;
+static const char *notify = NULL;
 
 static void
 try_askpass(void)
@@ -659,13 +660,57 @@ out:
 }
 
 static void
+send_touch_notify(socket_entry_t *e, enum piv_slotid slotid)
+{
+	int status;
+	pid_t kid, ret;
+	char msg[1024];
+	char title[256];
+	char *guid;
+
+	if (notify == NULL)
+		notify = getenv("SSH_NOTIFY_SEND");
+	if (notify == NULL)
+		return;
+
+	guid = piv_token_shortid(selk);
+	snprintf(title, sizeof (title),
+	    "pivy-agent for token %s", guid);
+	snprintf(msg, sizeof (msg),
+	    "Touch confirmation may be required to use key in slot %02X",
+	    slotid);
+	free(guid);
+	guid = NULL;
+
+	if ((kid = fork()) == -1)
+		return;
+
+	if (kid == 0) {
+		close(STDOUT_FILENO);
+		close(STDIN_FILENO);
+		execlp(notify, notify, title, msg, (char *)NULL);
+		exit(128);
+	}
+	while ((ret = waitpid(kid, &status, 0)) == -1)
+		if (errno != EINTR)
+			break;
+	if (ret == -1 || !WIFEXITED(status) ||
+	    (WEXITSTATUS(status) != 0 && WEXITSTATUS(status) != 1)) {
+		bunyan_log(BNY_WARN, "executing notify failed",
+		    "exit_status", BNY_UINT, (uint)WEXITSTATUS(status),
+		    NULL);
+		return;
+	}
+}
+
+static void
 try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 {
 	int status;
 	pid_t kid, ret;
 	boolean_t add_zenity_args = B_FALSE;
 	char prompt[1024];
-	char *guid = piv_token_shortid(selk);
+	char *guid;
 
 	if (confirm_mode == C_NEVER) {
 		e->se_authz = AUTHZ_ALLOWED;
@@ -708,6 +753,7 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		free(tmp);
 	}
 
+	guid = piv_token_shortid(selk);
 	snprintf(prompt, sizeof (prompt),
 	    "%sA new client is trying to use PIV token %s\n\n"
 	    "Client PID: %d\nClient executable: %s\nClient cmd: %s\n"
@@ -717,6 +763,8 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 	    (e->se_exepath == NULL) ? "(unknown)" : e->se_exepath,
 	    (e->se_exeargs == NULL) ? "(unknown)" : e->se_exeargs,
 	    (uint)slotid);
+	free(guid);
+	guid = NULL;
 
 	if ((kid = fork()) == -1)
 		return;
@@ -1196,6 +1244,8 @@ process_sign_request2(socket_entry_t *e)
 	rauth = piv_slot_get_auth(selk, slot);
 	if (rauth & PIV_SLOT_AUTH_PIN)
 		canskip = B_FALSE;
+	if (rauth & PIV_SLOT_AUTH_TOUCH)
+		send_touch_notify(e, piv_slot_id(slot));
 
 pin_again:
 	if ((err = agent_piv_try_pin(canskip))) {
@@ -1365,6 +1415,8 @@ process_ext_ecdh(socket_entry_t *e, struct sshbuf *buf)
 	rauth = piv_slot_get_auth(selk, slot);
 	if (rauth & PIV_SLOT_AUTH_PIN)
 		canskip = B_FALSE;
+	if (rauth & PIV_SLOT_AUTH_TOUCH)
+		send_touch_notify(e, piv_slot_id(slot));
 
 pin_again:
 	if ((err = agent_piv_try_pin(canskip))) {
@@ -1477,6 +1529,8 @@ process_ext_rebox(socket_entry_t *e, struct sshbuf *buf)
 	rauth = piv_slot_get_auth(tk, slot);
 	if (rauth & PIV_SLOT_AUTH_PIN)
 		canskip = B_FALSE;
+	if (rauth & PIV_SLOT_AUTH_TOUCH)
+		send_touch_notify(e, piv_slot_id(slot));
 
 	if ((err = agent_piv_open()))
 		goto out;

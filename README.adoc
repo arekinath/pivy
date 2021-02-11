@@ -109,6 +109,16 @@ tool if desired -- `pivy-agent` will generate appropriate arguments itself.
 
 If you use agent forwarding (`ssh -A`), use of this mode is highly recommended.
 
+### GUI prompts
+
+`pivy-agent` supports the same `SSH_ASKPASS` environment variable and interface
+that `ssh-add` does for presenting a GUI prompt for the PIN if desired.
+
+If the environment variable `SSH_NOTIFY_SEND` is set to a path to a command
+which acts like `notify-send` (takes two arguments, title and message), then
+`pivy-agent` will also run that command whenever it believes a touch
+confirmation may be required.
+
 ## Using `pivy-tool`
 
 The `pivy-tool` program can perform a variety of operations against PIV tokens
