@@ -1882,6 +1882,7 @@ piv_select(struct piv_token *tk)
 			rv = tagerrf("INS_SELECT", tag);
 			goto invdata;
 		}
+		tk->pt_alg_count = 0;
 		while (!tlv_at_end(tlv)) {
 			if ((rv = tlv_read_tag(tlv, &tag)))
 				goto invdata;
@@ -1909,10 +1910,6 @@ piv_select(struct piv_token *tk)
 					goto invdata;
 				break;
 			case PIV_TAG_ALGS:
-				if (tk->pt_alg_count > 0) {
-					tlv_skip(tlv);
-					break;
-				}
 				while (!tlv_at_end(tlv)) {
 					if ((rv = tlv_read_tag(tlv, &tag)))
 						goto invdata;
