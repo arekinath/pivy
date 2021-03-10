@@ -226,7 +226,8 @@ cmd_unlock(const char *fsname)
 	}
 #endif
 
-	if (nvlist_lookup_nvlist(props, "rfd77:ebox", &prop)) {
+	rc = nvlist_lookup_nvlist(props, "rfd77:ebox", &prop);
+	if (rc) {
 		errx(EXIT_ERROR, "no rfd77:ebox property "
 		    "could be read on dataset %s", fsname);
 	}
@@ -363,11 +364,6 @@ cmd_rekey(const char *fsname)
 	nvlist_t *nprops;
 #endif
 
-	if (zfsebtpl == NULL) {
-		warnx("-t <tplname|path> option is required");
-		usage();
-	}
-
 	ds = zfs_open(zfshdl, fsname, ZFS_TYPE_DATASET);
 	if (ds == NULL)
 		err(EXIT_ERROR, "failed to open dataset %s", fsname);
@@ -378,14 +374,6 @@ cmd_rekey(const char *fsname)
 
 	props = zfs_get_user_props(ds);
 	VERIFY(props != NULL);
-
-#if defined(DMU_OT_ENCRYPTED)
-	kstatus = zfs_prop_get_int(ds, ZFS_PROP_KEYSTATUS);
-
-	if (kstatus == ZFS_KEYSTATUS_AVAILABLE) {
-		goto newkey;
-	}
-#endif
 
 	if (nvlist_lookup_nvlist(props, "rfd77:ebox", &prop)) {
 		errx(EXIT_ERROR, "no rfd77:ebox property "
@@ -409,21 +397,30 @@ cmd_rekey(const char *fsname)
 		    " on %s as a valid ebox", fsname);
 	}
 
-	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
-	if ((error = unlock_or_recover(ebox, description, &recovered)))
-		errfx(EXIT_ERROR, error, "failed to unlock ebox");
-
-	key = ebox_key(ebox, &keylen);
+	if (zfsebtpl == NULL) {
+		zfsebtpl = ebox_tpl_clone(ebox_tpl(ebox));
+	}
 
 #if defined(DMU_OT_ENCRYPTED)
-	rc = lzc_load_key(fsname, B_FALSE, (uint8_t *)key, keylen);
-	if (rc != 0) {
-		errno = rc;
-		err(EXIT_ERROR, "failed to load key material into ZFS for %s",
-		    fsname);
+	kstatus = zfs_prop_get_int(ds, ZFS_PROP_KEYSTATUS);
+
+	if (kstatus != ZFS_KEYSTATUS_AVAILABLE) {
+#endif
+		(void) mlockall(MCL_CURRENT | MCL_FUTURE);
+		if ((error = unlock_or_recover(ebox, description, &recovered)))
+			errfx(EXIT_ERROR, error, "failed to unlock ebox");
+
+		key = ebox_key(ebox, &keylen);
+
+#if defined(DMU_OT_ENCRYPTED)
+		rc = lzc_load_key(fsname, B_FALSE, (uint8_t *)key, keylen);
+		if (rc != 0) {
+			errno = rc;
+			err(EXIT_ERROR, "failed to load key material into "
+			    "ZFS for %s", fsname);
+		}
 	}
 #endif
-newkey:
 
 #if defined(DMU_OT_ENCRYPTED)
 	VERIFY0(nvlist_alloc(&nprops, NV_UNIQUE_NAME, 0));
