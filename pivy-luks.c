@@ -203,11 +203,6 @@ cmd_rekey(const char *devname)
 	struct ebox *ebox, *nebox;
 	errf_t *error;
 
-	if (lukstpl == NULL) {
-		warnx("-t tpl argument is required");
-		usage();
-	}
-
 	rc = crypt_init(&cd, devname);
 	if (rc < 0) {
 		errfx(EXIT_ERROR, lukserrf("crypt_init", rc), "failed to "
@@ -269,6 +264,10 @@ cmd_rekey(const char *devname)
 		errfx(EXIT_ERROR, error, "failed to unlock ebox");
 
 	key = ebox_key(ebox, &keylen);
+
+	if (lukstpl == NULL) {
+		lukstpl = ebox_tpl_clone(ebox_tpl(ebox));
+	}
 
 	error = ebox_create(lukstpl, key, keylen, NULL, 0, &nebox);
 	if (error)
