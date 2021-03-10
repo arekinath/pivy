@@ -227,9 +227,11 @@ cmd_unlock(const char *fsname)
 #endif
 
 	rc = nvlist_lookup_nvlist(props, "rfd77:ebox", &prop);
+	if (rc)
+		rc = nvlist_lookup_nvlist(props, "com.joyent.kbm:ebox", &prop);
 	if (rc) {
-		errx(EXIT_ERROR, "no rfd77:ebox property "
-		    "could be read on dataset %s", fsname);
+		errx(EXIT_ERROR, "no ebox property could be read on "
+		    "dataset %s", fsname);
 	}
 
 	VERIFY0(nvlist_lookup_string(prop, "value", &b64));
@@ -359,6 +361,7 @@ cmd_rekey(const char *fsname)
 	const uint8_t *key = NULL;
 	const uint8_t *nkey;
 	size_t keylen, nkeylen;
+	const char *propname;
 #if defined(DMU_OT_ENCRYPTED)
 	uint64_t kstatus;
 	nvlist_t *nprops;
@@ -375,9 +378,15 @@ cmd_rekey(const char *fsname)
 	props = zfs_get_user_props(ds);
 	VERIFY(props != NULL);
 
-	if (nvlist_lookup_nvlist(props, "rfd77:ebox", &prop)) {
-		errx(EXIT_ERROR, "no rfd77:ebox property "
-		    "could be read on dataset %s", fsname);
+	propname = "rfd77:ebox";
+	rc = nvlist_lookup_nvlist(props, propname, &prop);
+	if (rc) {
+		propname = "com.joyent.kbm:ebox";
+		rc = nvlist_lookup_nvlist(props, propname, &prop);
+	}
+	if (rc) {
+		errx(EXIT_ERROR, "no ebox property could be read on "
+		    "dataset %s", fsname);
 	}
 
 	VERIFY0(nvlist_lookup_string(prop, "value", &b64));
@@ -458,7 +467,7 @@ cmd_rekey(const char *fsname)
 
 	b64 = sshbuf_dtob64(buf);
 
-	rc = zfs_prop_set(ds, "rfd77:ebox", b64);
+	rc = zfs_prop_set(ds, propname, b64);
 	if (rc != 0) {
 		errno = rc;
 		err(EXIT_ERROR, "failed to set ZFS property rfd77:ebox "
