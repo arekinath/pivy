@@ -1,3 +1,15 @@
+pivy (0.8.0-1) UNRELEASED; urgency=medium
+
+  * piv: support for 4-digit PINs
+  * piv: bug fixes for some Gemalto cards
+  * piv: support AES algorithm for admin key
+  * piv: allow multiple 'AC' tags in APT
+  * pivy-agent: add support for SSH_NOTIFY_SEND on touch required
+  * pivy-zfs: allow 'rekey' command without a template
+  * pivy-zfs: add fallback to 'com.joyent.kbm:ebox' property name
+
+ -- Alex Wilson <alex@cooperi.net>  Wed, 10 Mar 2021 06:11:52 +0000
+
 pivy (0.7.1-1) UNRELEASED; urgency=medium
 
   * pivy-box: regression in "tpl create" (not mkdir'ing user dirs)
