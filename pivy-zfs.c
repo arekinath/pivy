@@ -76,6 +76,10 @@
 static libzfs_handle_t *zfshdl = NULL;
 static struct ebox_tpl *zfsebtpl = NULL;
 
+const char *PROP_RFD77 = "rfd77:ebox";
+const char *PROP_RFD77_TEMP = "rfd77:ebox.new";
+const char *PROP_JOYENT = "com.joyent.kbm:ebox";
+
 static void usage(void);
 
 static errf_t *
@@ -206,6 +210,7 @@ cmd_unlock(const char *fsname)
 	int rc;
 	const uint8_t *key;
 	size_t keylen;
+	const char *propname;
 #if defined(DMU_OT_ENCRYPTED)
 	uint64_t kstatus;
 #endif
@@ -226,9 +231,16 @@ cmd_unlock(const char *fsname)
 	}
 #endif
 
-	rc = nvlist_lookup_nvlist(props, "rfd77:ebox", &prop);
-	if (rc)
-		rc = nvlist_lookup_nvlist(props, "com.joyent.kbm:ebox", &prop);
+	propname = PROP_RFD77_TEMP;
+	rc = nvlist_lookup_nvlist(props, propname, &prop);
+	if (rc) {
+		propname = PROP_RFD77;
+		rc = nvlist_lookup_nvlist(props, propname, &prop);
+	}
+	if (rc) {
+		propname = PROP_JOYENT;
+		rc = nvlist_lookup_nvlist(props, propname, &prop);
+	}
 	if (rc) {
 		errx(EXIT_ERROR, "no ebox property could be read on "
 		    "dataset %s", fsname);
@@ -283,6 +295,21 @@ cmd_unlock(const char *fsname)
 		if (pool != NULL) {
 			(void) zpool_enable_datasets(pool, NULL, 0);
 			zpool_close(pool);
+		}
+	}
+
+	if (propname == PROP_RFD77_TEMP) {
+		rc = zfs_prop_set(ds, PROP_RFD77, b64);
+		if (rc != 0) {
+			errno = rc;
+			err(EXIT_ERROR, "failed to set ZFS property rfd77:ebox "
+			    "on dataset %s", fsname);
+		}
+		rc = zfs_prop_inherit(ds, PROP_RFD77_TEMP, B_FALSE);
+		if (rc != 0) {
+			errno = rc;
+			err(EXIT_ERROR, "failed to delete temporary ZFS "
+			    "property on dataset %s", fsname);
 		}
 	}
 
@@ -378,10 +405,14 @@ cmd_rekey(const char *fsname)
 	props = zfs_get_user_props(ds);
 	VERIFY(props != NULL);
 
-	propname = "rfd77:ebox";
+	propname = PROP_RFD77_TEMP;
 	rc = nvlist_lookup_nvlist(props, propname, &prop);
 	if (rc) {
-		propname = "com.joyent.kbm:ebox";
+		propname = PROP_RFD77;
+		rc = nvlist_lookup_nvlist(props, propname, &prop);
+	}
+	if (rc) {
+		propname = PROP_JOYENT;
 		rc = nvlist_lookup_nvlist(props, propname, &prop);
 	}
 	if (rc) {
@@ -431,6 +462,22 @@ cmd_rekey(const char *fsname)
 	}
 #endif
 
+	if (propname == PROP_RFD77_TEMP) {
+		rc = zfs_prop_set(ds, PROP_RFD77, b64);
+		if (rc != 0) {
+			errno = rc;
+			err(EXIT_ERROR, "failed to set ZFS property rfd77:ebox "
+			    "on dataset %s", fsname);
+		}
+		rc = zfs_prop_inherit(ds, PROP_RFD77_TEMP, B_FALSE);
+		if (rc != 0) {
+			errno = rc;
+			err(EXIT_ERROR, "failed to delete temporary ZFS "
+			    "property on dataset %s", fsname);
+		}
+		propname = PROP_RFD77;
+	}
+
 #if defined(DMU_OT_ENCRYPTED)
 	VERIFY0(nvlist_alloc(&nprops, NV_UNIQUE_NAME, 0));
 	VERIFY0(nvlist_add_uint64(nprops,
@@ -442,14 +489,6 @@ cmd_rekey(const char *fsname)
 	nkey = calloc_conceal(1, 32);
 	(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 	arc4random_buf(nkey, nkeylen);
-
-	rc = lzc_change_key(fsname, DCP_CMD_NEW_KEY, nprops, nkey, nkeylen);
-	if (rc != 0) {
-		errno = rc;
-		err(EXIT_ERROR, "failed to load key material into ZFS for %s",
-		    fsname);
-	}
-	nvlist_free(nprops);
 #else
 	warnx("WARN: this ZFS implementation does not support encryption: "
 	    "the existing wrapping key will be re-used");
@@ -467,12 +506,49 @@ cmd_rekey(const char *fsname)
 
 	b64 = sshbuf_dtob64(buf);
 
+	/*
+	 * To change the wrapping key in a way that's safe against us dying or
+	 * the system panic'ing in the middle of the rekey, we need to write
+	 * out the new ebox somewhere first without clobbering the old ebox (
+	 * in case the actual wrapping key change fails), then change the key,
+	 * then remove the old ebox.
+	 *
+	 * We use PROP_RFD77_TEMP to do this: we temporarily write the new ebox
+	 * there, and then after the key change we can replace the contents of
+	 * PROP_RFD77 and delete PROP_RFD77_TEMP.
+	 */
+#if defined(DMU_OT_ENCRYPTED)
+	rc = zfs_prop_set(ds, PROP_RFD77_TEMP, b64);
+	if (rc != 0) {
+		errno = rc;
+		err(EXIT_ERROR, "failed to set temporary ZFS property "
+		    "on dataset %s", fsname);
+	}
+
+	rc = lzc_change_key(fsname, DCP_CMD_NEW_KEY, nprops, nkey, nkeylen);
+	if (rc != 0) {
+		errno = rc;
+		err(EXIT_ERROR, "failed to load key material into ZFS for %s",
+		    fsname);
+	}
+	nvlist_free(nprops);
+#endif
+
 	rc = zfs_prop_set(ds, propname, b64);
 	if (rc != 0) {
 		errno = rc;
-		err(EXIT_ERROR, "failed to set ZFS property rfd77:ebox "
-		    "on dataset %s", fsname);
+		err(EXIT_ERROR, "failed to set ZFS property %s on dataset %s",
+		    propname, fsname);
 	}
+
+#if defined(DMU_OT_ENCRYPTED)
+	rc = zfs_prop_inherit(ds, PROP_RFD77_TEMP, B_FALSE);
+	if (rc != 0) {
+		errno = rc;
+		err(EXIT_ERROR, "failed to delete temporary ZFS property on "
+		    "dataset %s", fsname);
+	}
+#endif
 
 	free(b64);
 
