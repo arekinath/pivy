@@ -595,7 +595,7 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	newargv[newargc++] = subcmd;
 
 	newargv[newargc++] = opt;
-	newargv[newargc++] = "encryption=on";
+	newargv[newargc++] = "encryption=aes-256-gcm";
 	newargv[newargc++] = opt;
 	newargv[newargc++] = "keyformat=raw";
 

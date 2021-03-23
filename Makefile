@@ -135,6 +135,7 @@ ifeq ($(SYSTEM), SunOS)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
 	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto -pthread
+	CRYPTO_LDFLAGS	= -L$(LIBRESSL_LIB)
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	RDLINE_CFLAGS	=
@@ -143,7 +144,7 @@ ifeq ($(SYSTEM), SunOS)
 	SYSTEM_CFLAGS	+= -Du_int8_t=uint8_t -Du_int16_t=uint16_t \
 		-Du_int32_t=uint32_t -Du_int64_t=uint64_t
 	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib/64 -lssp -lsocket -lnsl
-	SYSTEM_LDFLAGS	= -m64
+	SYSTEM_LDFLAGS	= -m64 -L$(PROTO_AREA)/usr/lib/64
 	HAVE_ZFS	:= $(USE_ZFS)
 	LIBZFS_CFLAGS	= -I$(ILLUMOS_SRC)/uts/common/fs/zfs	# for spa_impl.h
 	LIBZFS_CFLAGS	+= -I$(ILLUMOS_SRC)/common/zfs		# for zfeature_common.h
