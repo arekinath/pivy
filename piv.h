@@ -167,6 +167,12 @@ enum piv_alg {
 	PIV_ALG_ECCP384 = 0x14,
 
 	/*
+	 * Proprietary extension for SoloKeys PIV.
+	 */
+	PIV_ALG_ED25519 = 0x22,
+	PIV_ALG_X25519 = 0x23,
+
+	/*
 	 * Proprietary hack for Javacards running PivApplet -- they don't
 	 * support bare ECDSA so instead we have to give them the full input
 	 * data and they hash it on the card.
