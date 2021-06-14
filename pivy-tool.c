@@ -408,6 +408,21 @@ alg_to_string(uint alg)
 		return ("ECCP256");
 	case PIV_ALG_ECCP384:
 		return ("ECCP384");
+
+	case EXT_ALG_ECCP521:
+		return ("ECCP521");
+	case EXT_ALG_RSA3072:
+		return ("RSA3072");
+	case EXT_ALG_RSA4096:
+		return ("RSA4096");
+	case EXT_ALG_ED25519:
+		return ("Ed25519");
+	case EXT_ALG_X25519:
+		return ("X25519");
+	case EXT_ALG_ED448:
+		return ("Ed448");
+	case EXT_ALG_X448:
+		return ("X448");
 	case PIV_ALG_ECCP256_SHA1:
 		return ("ECCP256-SHA1");
 	case PIV_ALG_ECCP256_SHA256:

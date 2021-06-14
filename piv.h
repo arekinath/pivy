@@ -167,6 +167,18 @@ enum piv_alg {
 	PIV_ALG_ECCP384 = 0x14,
 
 	/*
+	 * Extension / hack for SoloKeys PIV / "Open PIV".
+	 * P-521 is listed as 0x15 in GP ISO framework, which extends PIV.
+	 */
+	EXT_ALG_ECCP521 = 0x15,
+	EXT_ALG_RSA3072 = 0xe0,
+	EXT_ALG_RSA4096 = 0xe1,
+	EXT_ALG_ED25519 = 0xe2,
+	EXT_ALG_X25519 = 0xe3,
+	EXT_ALG_ED448 = 0xe4,
+	EXT_ALG_X448 = 0xe5,
+
+	/*
 	 * Proprietary hack for Javacards running PivApplet -- they don't
 	 * support bare ECDSA so instead we have to give them the full input
 	 * data and they hash it on the card.
