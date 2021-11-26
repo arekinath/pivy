@@ -21,6 +21,7 @@
 #include <limits.h>
 #include <err.h>
 #include <dirent.h>
+#include <ctype.h>
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -1057,6 +1058,60 @@ out:
 	return (error);
 }
 
+static char *
+strip_lines(const char *buf)
+{
+	const size_t len = strlen(buf);
+	char *out = malloc(len);
+	const char *line = buf, *l;
+	const char *eol;
+	size_t off = 0;
+
+	*out = '\0';
+
+	while (*line != '\0') {
+		eol = strchr(line, '\n');
+		if (eol == NULL) {
+			off = strlcat(out, line, len);
+			if (off >= len) {
+				free(out);
+				return (NULL);
+			}
+			break;
+		}
+		const size_t llen = eol - line;
+		for (l = line; isspace(*l); )
+			++l;
+		if (strncasecmp(l, "-- end ", 7) == 0 &&
+		    eol[-1] == '-' && eol[-2] == '-') {
+			/* Ignore everything after an end banner */
+			break;
+		}
+		if (strncasecmp(l, "-- begin ", 9) == 0 &&
+		    eol[-1] == '-' && eol[-2] == '-') {
+			/* Ignore everything before a begin banner */
+			off = 0;
+			*out = '\0';
+			line = eol + 1;
+			continue;
+		}
+		if (strncmp(l, "--", 2) == 0) {
+			/* Ignore any other lines starting with -- */
+			line = eol + 1;
+			continue;
+		}
+		if (off + llen >= len) {
+			free(out);
+			return (NULL);
+		}
+		bcopy(line, &out[off], llen);
+		off += llen;
+		out[off] = '\0';
+		line = eol + 1;
+	}
+	return (out);
+}
+
 static struct sshbuf *
 read_file_b64(size_t limit, FILE *file)
 {
@@ -1079,7 +1134,7 @@ read_file_b64(size_t limit, FILE *file)
 
 	if (!ebox_raw_in) {
 		buf[n] = '\0';
-		rc = sshbuf_b64tod(sbuf, buf);
+		rc = sshbuf_b64tod(sbuf, strip_lines(buf));
 		if (rc) {
 			errf_t *error = ssherrf("sshbuf_b64tod", rc);
 			errfx(EXIT_ERROR, error, "error parsing input as "
