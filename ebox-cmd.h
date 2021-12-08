@@ -21,7 +21,7 @@
 #include "piv.h"
 #include "ebox.h"
 #include "utils.h"
-#include "libssh/digest.h"
+#include "openssh/digest.h"
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>

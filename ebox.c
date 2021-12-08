@@ -18,13 +18,13 @@
 #include <inttypes.h>
 #include <sys/errno.h>
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/digest.h"
-#include "libssh/cipher.h"
-#include "libssh/hmac.h"
-#include "libssh/ssherr.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/digest.h"
+#include "openssh/cipher.h"
+#include "openssh/hmac.h"
+#include "openssh/ssherr.h"
 
 #include "sss/hazmat.h"
 

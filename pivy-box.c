@@ -41,11 +41,11 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/ssherr.h"
-#include "libssh/authfd.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/ssherr.h"
+#include "openssh/authfd.h"
 
 #include "sss/hazmat.h"
 
@@ -175,19 +175,11 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 				    "'slot' keyword requires argument");
 				goto out;
 			}
-			errno = 0;
-			parsed = strtoul(argv[i], &p, 16);
-			if (errno != 0 || *p != '\0') {
-				error = errf("SyntaxError",
-				    errfno("strtoul", errno, NULL),
+			error = piv_slotid_from_string(argv[i], &slotid);
+			if (error != ERRF_OK) {
+				error = errf("SyntaxError", error,
 				    "error parsing argument to 'slot' "
 				    "keyword: '%s'", argv[i]);
-				goto out;
-			}
-			if (parsed > 0xFF) {
-				error = errf("SyntaxError", NULL,
-				    "'slot' keyword argument must be a valid "
-				    "PIV slot ID");
 				goto out;
 			}
 			slotid = parsed;
@@ -646,30 +638,21 @@ again:
 			free(line);
 			goto again;
 		}
-		line = readline("Slot ID (hex)? [9D] ");
+		line = readline("Slot ID (hex or name)? [key-mgmt] ");
 		if (line == NULL)
 			exit(EXIT_ERROR);
 		if (line[0] == '\0') {
-			parsed = 0x9D;
+			slotid = PIV_SLOT_KEY_MGMT;
 		} else {
-			errno = 0;
-			parsed = strtoul(line, &p, 16);
-			if (errno != 0 || *p != '\0') {
-				error = errfno("strtoul", errno, NULL);
-				warnfx(error, "error parsing '%s' as hex "
-				    "number", line);
+			error = piv_slotid_from_string(line, &slotid);
+			if (error != ERRF_OK) {
+				warnfx(error, "error parsing '%s' as slotid",
+				    line);
 				errf_free(error);
 				free(line);
 				goto again;
 			}
-			if (parsed > 0xFF) {
-				warnx("slot '%02X' is not a valid PIV slot id",
-				    (uint)parsed);
-				free(line);
-				goto again;
-			}
 		}
-		slotid = parsed;
 		free(line);
 		line = readline("Key? ");
 		if (line == NULL)
@@ -1050,7 +1033,7 @@ cmd_tpl_create(const char *tplfile, int argc, char *argv[])
 		return (errfno("fopen", errno, "opening template file '%s' "
 		    "for writing", tplfile));
 	}
-	printwrap(file, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+	printwrap(file, sshbuf_dtob64_string(buf, 0), BASE64_LINE_LEN);
 	fclose(file);
 
 out:
@@ -1279,7 +1262,7 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 		return (errfno("fopen", errno, "opening template file '%s' "
 		    "for writing", tplfile));
 	}
-	printwrap(file, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+	printwrap(file, sshbuf_dtob64_string(buf, 0), BASE64_LINE_LEN);
 	fclose(file);
 
 out:
@@ -1454,7 +1437,7 @@ cmd_key_generate(int argc, char *argv[])
 	if (ebox_raw_out) {
 		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
 	} else {
-		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+		printwrap(stdout, sshbuf_dtob64_string(buf, 0), BASE64_LINE_LEN);
 	}
 
 	ebox_free(ebox);
@@ -1493,7 +1476,8 @@ cmd_key_lock(int argc, char *argv[])
 	if (ebox_raw_out) {
 		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
 	} else {
-		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+		printwrap(stdout, sshbuf_dtob64_string(buf, 0),
+		    BASE64_LINE_LEN);
 	}
 
 	sshbuf_free(buf);
@@ -1555,7 +1539,8 @@ cmd_key_relock(int argc, char *argv[])
 	if (ebox_raw_out) {
 		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
 	} else {
-		printwrap(stdout, sshbuf_dtob64(buf), BASE64_LINE_LEN);
+		printwrap(stdout, sshbuf_dtob64_string(buf, 0),
+		    BASE64_LINE_LEN);
 	}
 
 	ebox_free(ebox);
@@ -1655,7 +1640,7 @@ cmd_key_unlock(int argc, char *argv[])
 	if (ebox_raw_out) {
 		fwrite(sshbuf_ptr(buf), sshbuf_len(buf), 1, stdout);
 	} else {
-		b64 = sshbuf_dtob64(buf);
+		b64 = sshbuf_dtob64_string(buf, 0);
 		printwrap(stdout, b64, BASE64_LINE_LEN);
 		free(b64);
 	}
@@ -1962,7 +1947,7 @@ cmd_challenge_respond(int argc, char *argv[])
 	}
 
 	fprintf(stdout, "-- Begin response --\n");
-	printwrap(stdout, sshbuf_dtob64(sbuf), BASE64_LINE_LEN);
+	printwrap(stdout, sshbuf_dtob64_string(sbuf, 0), BASE64_LINE_LEN);
 	fprintf(stdout, "-- End response --\n");
 
 	sshbuf_free(sbuf);
@@ -2451,4 +2436,10 @@ out:
 	if (error)
 		errfx(EXIT_ERROR, error, "'%s %s' command failed", type, op);
 	return (0);
+}
+
+void
+cleanup_exit(int i)
+{
+	exit(i);
 }

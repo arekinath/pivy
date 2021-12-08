@@ -88,11 +88,11 @@
 #include <unistd.h>
 #include <libgen.h>
 
-#include "libssh/ssh2.h"
-#include "libssh/sshbuf.h"
-#include "libssh/sshkey.h"
-#include "libssh/authfd.h"
-#include "libssh/ssherr.h"
+#include "openssh/ssh2.h"
+#include "openssh/sshbuf.h"
+#include "openssh/sshkey.h"
+#include "openssh/authfd.h"
+#include "openssh/ssherr.h"
 
 #include "utils.h"
 #include "bunyan.h"
@@ -120,9 +120,9 @@
 #include <libproc.h>
 #endif
 
-#include "libssh/digest.h"
-#include "libssh/cipher.h"
-#include "libssh/ssherr.h"
+#include "openssh/digest.h"
+#include "openssh/cipher.h"
+#include "openssh/ssherr.h"
 
 #define	MINIMUM(a,b) (((a) < (b)) ? (a) : (b))
 
@@ -1070,7 +1070,7 @@ send_extfail(socket_entry_t *e)
 	int r;
 
 	if ((r = sshbuf_put_u32(e->se_output, 1)) != 0 ||
-	    (r = sshbuf_put_u8(e->se_output, SSH2_AGENT_EXT_FAILURE)) != 0)
+	    (r = sshbuf_put_u8(e->se_output, SSH_AGENT_EXT_FAILURE)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 }
 
@@ -1089,7 +1089,7 @@ parse_slot_spec(const char *instr)
 	char *str;
 	char *tmp, *token;
 	char *saveptr = NULL;
-	char *p;
+	errf_t *err;
 
 	str = strdup(instr);
 	tmp = str;
@@ -1099,6 +1099,7 @@ parse_slot_spec(const char *instr)
 		boolean_t invert = B_FALSE;
 		uint64_t mask = 0;
 		unsigned long int parsed;
+		enum piv_slotid slotid;
 
 		token = strtok_r(tmp, ",", &saveptr);
 		if (token == NULL)
@@ -1115,13 +1116,14 @@ parse_slot_spec(const char *instr)
 			goto maskout;
 		}
 
-		errno = 0;
-		parsed = strtoul(token, &p, 16);
-		if (errno != 0 || *p != '\0') {
+		err = piv_slotid_from_string(token, &slotid);
+		if (err != ERRF_OK) {
 			free(str);
-			return (errf("ParseError", NULL,
+			return (errf("ParseError", err,
 			    "Failed to parse slot id: '%s'", token));
 		}
+
+		parsed = slotid;
 		parsed &= 0x7f;
 		if (parsed > 63) {
 			free(str);
@@ -1906,7 +1908,7 @@ msg_type_to_name(int msg)
 		return ("ADD_SMARTCARD_KEY");
 	case SSH_AGENTC_REMOVE_SMARTCARD_KEY:
 		return ("REMOVE_SMARTCARD_KEY");
-	case SSH2_AGENTC_EXTENSION:
+	case SSH_AGENTC_EXTENSION:
 		return ("EXTENSION");
 	default:
 		return ("UNKNOWN");
@@ -1979,7 +1981,7 @@ process_message(u_int socknum)
 	case SSH2_AGENTC_REMOVE_ALL_IDENTITIES:
 		err = process_remove_all_identities(e);
 		break;
-	case SSH2_AGENTC_EXTENSION:
+	case SSH_AGENTC_EXTENSION:
 		err = process_extension(e);
 		break;
 	default:
@@ -2383,7 +2385,7 @@ void
 cleanup_exit(int i)
 {
 	cleanup_socket();
-	_exit(i);
+	exit(i);
 }
 
 /*ARGSUSED*/

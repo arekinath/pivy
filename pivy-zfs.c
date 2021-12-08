@@ -56,11 +56,11 @@
 
 #define USING_SPL
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/ssherr.h"
-#include "libssh/authfd.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/ssherr.h"
+#include "openssh/authfd.h"
 
 #include "sss/hazmat.h"
 
@@ -354,7 +354,7 @@ newprimary:
 		if (error)
 			errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-		b64 = sshbuf_dtob64(buf);
+		b64 = sshbuf_dtob64_string(buf, 0);
 
 		rc = zfs_prop_set(ds, "rfd77:ebox", b64);
 		if (rc != 0) {
@@ -504,7 +504,7 @@ cmd_rekey(const char *fsname)
 	if (error)
 		errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-	b64 = sshbuf_dtob64(buf);
+	b64 = sshbuf_dtob64_string(buf, 0);
 
 	/*
 	 * To change the wrapping key in a way that's safe against us dying or
@@ -609,7 +609,7 @@ cmd_genopt(const char *cmd, const char *subcmd, const char *opt,
 	if (error)
 		errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-	b64 = sshbuf_dtob64(buf);
+	b64 = sshbuf_dtob64_string(buf, 0);
 	sshbuf_reset(buf);
 	if ((rc = sshbuf_putf(buf, "rfd77:ebox=%s", b64)) ||
 	    (rc = sshbuf_put_u8(buf, 0))) {
@@ -779,4 +779,10 @@ main(int argc, char *argv[])
 	libzfs_fini(zfshdl);
 
 	return (0);
+}
+
+void
+cleanup_exit(int i)
+{
+	exit(i);
 }

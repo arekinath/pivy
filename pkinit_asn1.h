@@ -62,5 +62,6 @@ PKINIT_PRINC *d2i_PKINIT_PRINC(PKINIT_PRINC **, const unsigned char **, long);
 ASN1_STRING *pack_PKINIT_PRINC(PKINIT_PRINC *, ASN1_STRING **);
 
 PKINIT_PRINC *v2i_PKINIT_PRINC(PKINIT_PRINC **, const char *);
+char *i2v_PKINIT_PRINC(PKINIT_PRINC *princ);
 
 #endif

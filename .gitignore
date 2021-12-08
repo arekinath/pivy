@@ -1,11 +1,14 @@
 *.o
+*.a
 .dist
 /libressl/
+/openssh/
 /pivy-agent
 /pivy-tool
 /pivy-zfs
 /pivy-box
 /pivy-luks
+/pivy-ca
 /pam_pivy.so
 /macosx/*.pkg
 /macosx/root
@@ -13,3 +16,6 @@
 /docs/.asciidoctor
 /docs/*.html
 /.vscode
+/.ccls-cache
+/.openssh.*
+/.libressl.*

@@ -27,7 +27,7 @@
 #include <openssl/x509v3.h>
 
 #include "errf.h"
-#include "libssh/digest.h"
+#include "openssh/digest.h"
 
 /*
  * This is the "public" interface of our PIV client implementation, backed by
@@ -111,6 +111,24 @@ enum piv_slotid {
 	PIV_SLOT_9E = 0x9E,
 
 	PIV_SLOT_82 = 0x82,
+	PIV_SLOT_83 = 0x83,
+	PIV_SLOT_84 = 0x84,
+	PIV_SLOT_85 = 0x85,
+	PIV_SLOT_86 = 0x86,
+	PIV_SLOT_87 = 0x87,
+	PIV_SLOT_88 = 0x88,
+	PIV_SLOT_89 = 0x89,
+	PIV_SLOT_8A = 0x8A,
+	PIV_SLOT_8B = 0x8B,
+	PIV_SLOT_8C = 0x8C,
+	PIV_SLOT_8D = 0x8D,
+	PIV_SLOT_8E = 0x8E,
+	PIV_SLOT_8F = 0x8F,
+	PIV_SLOT_90 = 0x90,
+	PIV_SLOT_91 = 0x91,
+	PIV_SLOT_92 = 0x92,
+	PIV_SLOT_93 = 0x93,
+	PIV_SLOT_94 = 0x94,
 	PIV_SLOT_95 = 0x95,
 
 	PIV_SLOT_F9 = 0xF9,
@@ -1005,5 +1023,17 @@ errf_t *piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu);
  * including sensitive information! Be careful!
  */
 extern boolean_t piv_full_apdu_debug;
+
+/*
+ * Utilities for converting PIV algorithm and slot IDs to/from string versions.
+ */
+const char *piv_alg_to_string(enum piv_alg alg);
+
+errf_t *piv_alg_from_string(const char *str, enum piv_alg *out);
+
+/* Note: return value is owned by caller and should be freed. */
+char *piv_slotid_to_string(enum piv_slotid slot);
+
+errf_t *piv_slotid_from_string(const char *str, enum piv_slotid *out);
 
 #endif

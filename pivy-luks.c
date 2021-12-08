@@ -38,11 +38,11 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/ssherr.h"
-#include "libssh/authfd.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/ssherr.h"
+#include "openssh/authfd.h"
 
 #include "sss/hazmat.h"
 
@@ -277,7 +277,7 @@ cmd_rekey(const char *devname)
 	if (error)
 		errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-	b64 = sshbuf_dtob64(buf);
+	b64 = sshbuf_dtob64_string(buf, 0);
 
 	json_object_object_add(obj, "ebox", json_object_new_string(b64));
 
@@ -430,7 +430,7 @@ newprimary:
 		if (error)
 			errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-		b64 = sshbuf_dtob64(buf);
+		b64 = sshbuf_dtob64_string(buf, 0);
 
 		json_object_object_add(obj, "ebox",
 		    json_object_new_string(b64));
@@ -497,7 +497,7 @@ cmd_format(const char *devname)
 	if (error)
 		errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-	b64 = sshbuf_dtob64(buf);
+	b64 = sshbuf_dtob64_string(buf, 0);
 
 	rc = crypt_format(cd, CRYPT_LUKS2, "aes", "xts-plain64", NULL,
 	    (char *)key, keylen, &params);
@@ -632,4 +632,10 @@ main(int argc, char *argv[])
 	}
 
 	return (0);
+}
+
+void
+cleanup_exit(int i)
+{
+	exit(i);
 }

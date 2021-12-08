@@ -38,18 +38,16 @@
 #endif
 #include <sys/wait.h>
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/ssherr.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/ssherr.h"
 
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
 int PEM_write_X509(FILE *fp, X509 *x);
-
-#include "ed25519/crypto_api.h"
 
 #include "utils.h"
 #include "tlv.h"
@@ -58,6 +56,7 @@ int PEM_write_X509(FILE *fp, X509 *x);
 #include "utils.h"
 #include "debug.h"
 #include "pkinit_asn1.h"
+#include "piv-ca.h"
 
 /* We need the piv_cert_comp enum */
 #include "piv-internal.h"
@@ -72,9 +71,6 @@ int PEM_write_X509(FILE *fp, X509 *x);
 boolean_t debug = B_FALSE;
 static boolean_t parseable = B_FALSE;
 static boolean_t enum_all_retired = B_FALSE;
-static const char *cn = NULL;
-static const char *upn = NULL;
-static const char *krbpn = NULL;
 static boolean_t save_pinfo_admin = B_TRUE;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
@@ -102,6 +98,9 @@ static struct piv_token *selk = NULL;
 //static struct piv_token *sysk = NULL;
 static struct piv_slot *override = NULL;
 
+static struct cert_var_scope *cvroot = NULL;
+const char *cvtpl_name = NULL;
+
 SCARDCONTEXT ctx;
 
 #ifndef LINT
@@ -111,6 +110,8 @@ SCARDCONTEXT ctx;
     errf("PCSCError", NULL, call " failed: %d (%s)", \
     rv, pcsc_stringify_error(rv))
 #endif
+
+static errf_t *set_default_slot_cert_vars(uint slotid);
 
 enum pivtool_exit_status {
 	EXIT_OK = 0,
@@ -392,42 +393,6 @@ assert_pin(struct piv_token *pk, struct piv_slot *slot, boolean_t prompt)
 	}
 }
 
-
-static const char *
-alg_to_string(uint alg)
-{
-	switch (alg) {
-	case PIV_ALG_3DES:
-		return ("3DES");
-	case PIV_ALG_RSA1024:
-		return ("RSA1024");
-	case PIV_ALG_RSA2048:
-		return ("RSA2048");
-	case PIV_ALG_AES128:
-		return ("AES128");
-	case PIV_ALG_AES192:
-		return ("AES192");
-	case PIV_ALG_AES256:
-		return ("AES256");
-	case PIV_ALG_ECCP256:
-		return ("ECCP256");
-	case PIV_ALG_ECCP384:
-		return ("ECCP384");
-	case PIV_ALG_ECCP256_SHA1:
-		return ("ECCP256-SHA1");
-	case PIV_ALG_ECCP256_SHA256:
-		return ("ECCP256-SHA256");
-	case PIV_ALG_ECCP384_SHA1:
-		return ("ECCP384-SHA1");
-	case PIV_ALG_ECCP384_SHA256:
-		return ("ECCP384-SHA256");
-	case PIV_ALG_ECCP384_SHA384:
-		return ("ECCP384-SHA384");
-	default:
-		return ("?");
-	}
-}
-
 static errf_t *
 enum_all_retired_slots(struct piv_token *pk)
 {
@@ -497,7 +462,7 @@ cmd_list(void)
 			    ykpiv_token_serial(pk) : 0);
 			for (i = 0; i < piv_token_nalgs(pk); ++i) {
 				enum piv_alg alg = piv_token_alg(pk, i);
-				printf("%s%s", alg_to_string(alg),
+				printf("%s%s", piv_alg_to_string(alg),
 				    (i + 1 < piv_token_nalgs(pk)) ? "," : "");
 			}
 			for (i = 0x9A; i < 0x9F; ++i) {
@@ -596,7 +561,7 @@ cmd_list(void)
 		if (piv_token_nalgs(pk) > 0) {
 			printf("%10s: ", "algos");
 			for (i = 0; i < piv_token_nalgs(pk); ++i) {
-				printf("%s ", alg_to_string(
+				printf("%s ", piv_alg_to_string(
 				    piv_token_alg(pk, i)));
 			}
 			printf("\n");
@@ -1152,274 +1117,52 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	int rv;
 	errf_t *err;
 	X509 *cert;
-	EVP_PKEY *pkey;
-	X509_NAME *subj;
-	const char *ku, *basic, *eku = NULL;
-	char *name;
-	enum sshdigest_types wantalg, hashalg;
-	int nid;
-	ASN1_TYPE null_parameter;
-	uint8_t *tbs = NULL, *sig, *cdata = NULL;
-	size_t tbslen, siglen, cdlen;
+	uint8_t *cdata = NULL;
+	size_t cdlen;
 	uint flags;
-	uint i;
 	BIGNUM *serial;
 	ASN1_INTEGER *serial_asn1;
-	X509_EXTENSION *ext;
-	X509V3_CTX x509ctx;
 	const char *guidhex;
-	const char *myupn = upn;
-	const char *mycn = cn;
-	const char *mykrbpn = krbpn;
+	struct cert_var_scope *scope;
+	const struct cert_tpl *tpl;
 
 	guidhex = piv_token_shortid(selk);
+	(void) scope_set(cvroot, "guid", guidhex);
 
-	name = calloc(1, 64);
-
-	switch (slotid) {
-	case 0x9A:
-		snprintf(name, 64, "piv-auth@%s", guidhex);
-		basic = "critical,CA:FALSE";
-		ku = "critical,digitalSignature,nonRepudiation";
-		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
-		if (myupn == NULL)
-			myupn = getenv("LOGNAME");
-		break;
-	case 0x9C:
-		snprintf(name, 64, "piv-sign@%s", guidhex);
-		basic = "critical,CA:TRUE";
-		ku = "critical,digitalSignature,nonRepudiation,"
-		    "keyCertSign,cRLSign";
-		break;
-	case 0x9D:
-		snprintf(name, 64, "piv-key-mgmt@%s", guidhex);
-		basic = "critical,CA:FALSE";
-		ku = "critical,keyAgreement,keyEncipherment,dataEncipherment";
-		break;
-	case 0x9E:
-		snprintf(name, 64, "piv-card-auth@%s", guidhex);
-		basic = "critical,CA:FALSE";
-		ku = "critical,digitalSignature,nonRepudiation";
-		eku = "clientAuth";
-		break;
-	case 0x82:
-	case 0x83:
-	case 0x84:
-	case 0x85:
-	case 0x86:
-	case 0x87:
-	case 0x88:
-	case 0x89:
-	case 0x8A:
-	case 0x8B:
-	case 0x8C:
-	case 0x8D:
-	case 0x8E:
-	case 0x8F:
-	case 0x90:
-	case 0x91:
-	case 0x92:
-	case 0x93:
-	case 0x94:
-	case 0x95:
-		snprintf(name, 64, "piv-retired-%u@%s", slotid - 0x81, guidhex);
-		basic = "critical,CA:FALSE";
-		ku = "critical,digitalSignature,nonRepudiation";
-		if (slotid - 0x82 > piv_token_keyhistory_oncard(selk)) {
-			err = funcerrf(NULL, "next available key history "
-			    "slot is %02X (must be used in order)",
-			    0x82 + piv_token_keyhistory_oncard(selk));
-			return (err);
-		}
-		break;
-	default:
-		err = funcerrf(NULL, "PIV slot %02X cannot be "
-		    "used for asymmetric crypto\n", slotid);
+	err = set_default_slot_cert_vars(slotid);
+	if (err != ERRF_OK)
 		return (err);
+
+	tpl = cert_tpl_find(cvtpl_name);
+	if (tpl == NULL) {
+		return (errf("TemplateNotFound", NULL, "No such certificate "
+		    "template: %s", cvtpl_name));
 	}
-
-	if (myupn != NULL && eku == NULL) {
-		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
-	}
-
-	pkey = EVP_PKEY_new();
-	VERIFY(pkey != NULL);
-	if (pub->type == KEY_RSA) {
-		RSA *copy = RSA_new();
-		VERIFY(copy != NULL);
-		copy->e = BN_dup(pub->rsa->e);
-		VERIFY(copy->e != NULL);
-		copy->n = BN_dup(pub->rsa->n);
-		VERIFY(copy->n != NULL);
-		rv = EVP_PKEY_assign_RSA(pkey, copy);
-		VERIFY(rv == 1);
-		nid = NID_sha256WithRSAEncryption;
-		wantalg = SSH_DIGEST_SHA256;
-	} else if (pub->type == KEY_ECDSA) {
-		boolean_t haveSha256 = B_FALSE;
-		boolean_t haveSha1 = B_FALSE;
-
-		EC_KEY *copy = EC_KEY_dup(pub->ecdsa);
-		rv = EVP_PKEY_assign_EC_KEY(pkey, copy);
-		VERIFY(rv == 1);
-
-		for (i = 0; i < piv_token_nalgs(selk); ++i) {
-			enum piv_alg alg = piv_token_alg(selk, i);
-			if (alg == PIV_ALG_ECCP256_SHA256) {
-				haveSha256 = B_TRUE;
-			} else if (alg == PIV_ALG_ECCP256_SHA1) {
-				haveSha1 = B_TRUE;
-			}
-		}
-		if (haveSha1 && !haveSha256) {
-			nid = NID_ecdsa_with_SHA1;
-			wantalg = SSH_DIGEST_SHA1;
-		} else {
-			nid = NID_ecdsa_with_SHA256;
-			wantalg = SSH_DIGEST_SHA256;
-		}
-	} else {
-		return (funcerrf(NULL, "invalid key type"));
-	}
+	scope = scope_new_for_tpl(cvroot, tpl);
 
 	serial = BN_new();
 	serial_asn1 = ASN1_INTEGER_new();
 	VERIFY(serial != NULL);
-	VERIFY(BN_pseudo_rand(serial, 64, 0, 0) == 1);
+	VERIFY(BN_pseudo_rand(serial, 160, 0, 0) == 1);
 	VERIFY(BN_to_ASN1_INTEGER(serial, serial_asn1) != NULL);
 
 	cert = X509_new();
 	VERIFY(cert != NULL);
 	VERIFY(X509_set_version(cert, 2) == 1);
 	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
-	VERIFY(X509_gmtime_adj(X509_get_notBefore(cert), 0) != NULL);
-	VERIFY(X509_gmtime_adj(X509_get_notAfter(cert), 315360000L) != NULL);
 
-	subj = X509_NAME_new();
-	VERIFY(subj != NULL);
-	if (mycn == NULL) {
-		mycn = name;
-	}
-	VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
-	    MBSTRING_ASC, (unsigned char *)mycn, -1, -1, 0) == 1);
-	/*VERIFY(X509_NAME_add_entry_by_NID(subj, NID_organizationalUnitName,
-	    MBSTRING_ASC, (unsigned char *)"tokens", -1, -1, 0) == 1);
-	VERIFY(X509_NAME_add_entry_by_NID(subj, NID_organizationName,
-	    MBSTRING_ASC, (unsigned char *)"triton", -1, -1, 0) == 1);*/
-	VERIFY(X509_set_subject_name(cert, subj) == 1);
-	VERIFY(X509_set_issuer_name(cert, subj) == 1);
-
-	X509V3_set_ctx_nodb(&x509ctx);
-	X509V3_set_ctx(&x509ctx, cert, cert, NULL, NULL, 0);
-
-	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_basic_constraints,
-	    (char *)basic);
-	VERIFY(ext != NULL);
-	X509_add_ext(cert, ext, -1);
-	X509_EXTENSION_free(ext);
-
-	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_key_usage, (char *)ku);
-	VERIFY(ext != NULL);
-	X509_add_ext(cert, ext, -1);
-	X509_EXTENSION_free(ext);
-
-	if (eku != NULL) {
-		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_ext_key_usage,
-		    (char *)eku);
-		VERIFY(ext != NULL);
-		X509_add_ext(cert, ext, -1);
-		X509_EXTENSION_free(ext);
+	err = cert_tpl_populate(tpl, scope, cert);
+	if (err != ERRF_OK) {
+		return (funcerrf(err, "Error populating certificate "
+		    "attributes"));
 	}
 
-	if (myupn != NULL || mykrbpn != NULL) {
-		ASN1_STRING *xdata;
-		STACK_OF(GENERAL_NAME) *gns;
-		GENERAL_NAME *gn;
-		ASN1_OBJECT *obj;
-		PKINIT_PRINC *princ;
-		ASN1_TYPE *typ;
-
-		gns = sk_GENERAL_NAME_new_null();
-		VERIFY(gns != NULL);
-
-		if (myupn != NULL) {
-			ASN1_UTF8STRING *str;
-
-			obj = OBJ_txt2obj("1.3.6.1.4.1.311.20.2.3", 1);
-			VERIFY(obj != NULL);
-
-			str = ASN1_UTF8STRING_new();
-			VERIFY(str != NULL);
-			VERIFY(ASN1_STRING_set(str, myupn, strlen(myupn)) == 1);
-
-			typ = ASN1_TYPE_new();
-			VERIFY(typ != NULL);
-			ASN1_TYPE_set(typ, V_ASN1_UTF8STRING, str);
-
-			gn = GENERAL_NAME_new();
-			VERIFY(gn != NULL);
-			VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
-			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
-		}
-
-		if (mykrbpn != NULL) {
-			obj = OBJ_txt2obj("1.3.6.1.5.2.2", 1);
-			VERIFY(obj != NULL);
-
-			princ = v2i_PKINIT_PRINC(NULL, mykrbpn);
-			if (princ == NULL) {
-				return (funcerrf(NULL, "failed to parse krb5 "
-				    "principal name: %s", mykrbpn));
-			}
-
-			xdata = pack_PKINIT_PRINC(princ, NULL);
-			VERIFY(xdata != NULL);
-
-			typ = ASN1_TYPE_new();
-			VERIFY(typ != NULL);
-			ASN1_TYPE_set(typ, V_ASN1_SEQUENCE, xdata);
-
-			gn = GENERAL_NAME_new();
-			VERIFY(gn != NULL);
-			GENERAL_NAME_set0_othername(gn, obj, typ);
-			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
-		}
-
-		ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, gns);
-		VERIFY(ext != NULL);
-		X509_add_ext(cert, ext, -1);
-		X509_EXTENSION_free(ext);
-
-		sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
-	}
-
-	VERIFY(X509_set_pubkey(cert, pkey) == 1);
-
-	cert->sig_alg->algorithm = OBJ_nid2obj(nid);
-	cert->cert_info->signature->algorithm = cert->sig_alg->algorithm;
-	if (pub->type == KEY_RSA) {
-		bzero(&null_parameter, sizeof (null_parameter));
-		null_parameter.type = V_ASN1_NULL;
-		null_parameter.value.ptr = NULL;
-		cert->sig_alg->parameter = &null_parameter;
-		cert->cert_info->signature->parameter = &null_parameter;
-	}
-
-	cert->cert_info->enc.modified = 1;
-	rv = i2d_X509_CINF(cert->cert_info, &tbs);
-	if (tbs == NULL || rv <= 0) {
-		make_sslerrf(err, "i2d_X509_CINF", "generating cert");
-		err = funcerrf(err, "failed to generate new cert");
-		return (err);
-	}
-	tbslen = (size_t)rv;
-
-	hashalg = wantalg;
+	VERIFY(X509_set_issuer_name(cert, X509_get_subject_name(cert)) == 1);
 
 	assert_pin(selk, override, B_FALSE);
 
 signagain:
-	err = piv_sign(selk, override, tbs, tbslen, &hashalg, &sig, &siglen);
+	err = piv_selfsign_cert(selk, override, pub, cert);
 
 	if (errf_caused_by(err, "PermissionError")) {
 		assert_pin(selk, override, B_TRUE);
@@ -1428,15 +1171,6 @@ signagain:
 		err = funcerrf(err, "failed to sign cert with key");
 		return (err);
 	}
-
-	if (hashalg != wantalg) {
-		err = funcerrf(NULL, "card could not sign with the "
-		    "requested hash algorithm");
-		return (err);
-	}
-
-	ASN1_STRING_set(cert->signature, sig, siglen);
-	cert->signature->flags = ASN1_STRING_FLAG_BITS_LEFT;
 
 	rv = i2d_X509(cert, &cdata);
 	if (cdata == NULL || rv <= 0) {
@@ -1848,37 +1582,121 @@ admin_again:
 }
 
 static errf_t *
+set_default_slot_cert_vars(uint slotid)
+{
+	char name[64];
+	errf_t *err;
+
+	switch (slotid) {
+	case 0x9A:
+		err = scope_set(cvroot, "slot", "piv-auth");
+		break;
+	case 0x9C:
+		err = scope_set(cvroot, "slot", "piv-sign");
+		break;
+	case 0x9D:
+		err = scope_set(cvroot, "slot", "piv-key-mgmt");
+		break;
+	case 0x9E:
+		err = scope_set(cvroot, "slot", "piv-card-auth");
+		break;
+	case 0x82:
+	case 0x83:
+	case 0x84:
+	case 0x85:
+	case 0x86:
+	case 0x87:
+	case 0x88:
+	case 0x89:
+	case 0x8A:
+	case 0x8B:
+	case 0x8C:
+	case 0x8D:
+	case 0x8E:
+	case 0x8F:
+	case 0x90:
+	case 0x91:
+	case 0x92:
+	case 0x93:
+	case 0x94:
+	case 0x95:
+		snprintf(name, sizeof (name), "piv-retired-%u",
+		    slotid - 0x81);
+		err = scope_set(cvroot, "slot", name);
+		break;
+	default:
+		err = funcerrf(NULL, "PIV slot %02X cannot be "
+		    "used for asymmetric crypto\n", slotid);
+	}
+
+	if (err != ERRF_OK)
+		return (err);
+
+	if (cvtpl_name == NULL) {
+		switch (slotid) {
+		case 0x9A:
+			cvtpl_name = "user-auth";
+			break;
+		case 0x9C:
+			cvtpl_name = "user-email";
+			break;
+		case 0x9D:
+			cvtpl_name = "user-key-mgmt";
+			break;
+		case 0x9E:
+			cvtpl_name = "user-auth";
+			break;
+		case 0x82:
+		case 0x83:
+		case 0x84:
+		case 0x85:
+		case 0x86:
+		case 0x87:
+		case 0x88:
+		case 0x89:
+		case 0x8A:
+		case 0x8B:
+		case 0x8C:
+		case 0x8D:
+		case 0x8E:
+		case 0x8F:
+		case 0x90:
+		case 0x91:
+		case 0x92:
+		case 0x93:
+		case 0x94:
+		case 0x95:
+			cvtpl_name = "user-auth";
+			break;
+		}
+	}
+	return (err);
+}
+
+static errf_t *
 cmd_req_cert(uint slotid)
 {
 	errf_t *err = ERRF_OK;
 	struct piv_slot *slot;
-	EVP_PKEY *pkey;
 	X509_REQ *req;
-	X509_NAME *subj;
-	X509_EXTENSION *ext;
-	int nid;
-	int rv;
-	ASN1_TYPE null_parameter;
-	enum sshdigest_types wantalg, hashalg;
-	X509V3_CTX x509ctx;
-	uint8_t *tbs = NULL, *sig;
-	size_t tbslen, siglen;
 	struct sshkey *pub;
-	const char *mycn = cn;
-	const char *myupn = upn;
-	const char *mykrbpn = krbpn;
-	STACK_OF(X509_EXTENSION) *exts;
-	uint i;
+	struct cert_var_scope *scope;
+	const struct cert_tpl *tpl;
+	const char *guidhex;
 
-	if (myupn == NULL)
-		myupn = getenv("UPN");
-	if (myupn == NULL)
-		myupn = getenv("LOGNAME");
+	guidhex = piv_token_shortid(selk);
+	(void) scope_set(cvroot, "guid", guidhex);
 
-	if (mycn == NULL)
-		mycn = getenv("CN");
-	if (mycn == NULL)
-		mycn = getenv("LOGNAME");
+	err = set_default_slot_cert_vars(slotid);
+	if (err != ERRF_OK)
+		return (err);
+
+	tpl = cert_tpl_find(cvtpl_name);
+	if (tpl == NULL) {
+		return (errf("TemplateNotFound", NULL, "No such certificate "
+		    "template: %s", cvtpl_name));
+	}
+	scope = scope_new_for_tpl(cvroot, tpl);
 
 	if (override == NULL) {
 		if ((err = piv_txn_begin(selk)))
@@ -1900,166 +1718,16 @@ cmd_req_cert(uint slotid)
 
 	pub = piv_slot_pubkey(slot);
 
-	pkey = EVP_PKEY_new();
-	VERIFY(pkey != NULL);
-	if (pub->type == KEY_RSA) {
-		RSA *copy = RSA_new();
-		VERIFY(copy != NULL);
-		copy->e = BN_dup(pub->rsa->e);
-		VERIFY(copy->e != NULL);
-		copy->n = BN_dup(pub->rsa->n);
-		VERIFY(copy->n != NULL);
-		rv = EVP_PKEY_assign_RSA(pkey, copy);
-		VERIFY(rv == 1);
-		nid = NID_sha256WithRSAEncryption;
-		wantalg = SSH_DIGEST_SHA256;
-	} else if (pub->type == KEY_ECDSA) {
-		boolean_t haveSha256 = B_FALSE;
-		boolean_t haveSha1 = B_FALSE;
-
-		EC_KEY *copy = EC_KEY_dup(pub->ecdsa);
-		rv = EVP_PKEY_assign_EC_KEY(pkey, copy);
-		VERIFY(rv == 1);
-
-		for (i = 0; i < piv_token_nalgs(selk); ++i) {
-			enum piv_alg alg = piv_token_alg(selk, i);
-			if (alg == PIV_ALG_ECCP256_SHA256) {
-				haveSha256 = B_TRUE;
-			} else if (alg == PIV_ALG_ECCP256_SHA1) {
-				haveSha1 = B_TRUE;
-			}
-		}
-		if (haveSha1 && !haveSha256) {
-			nid = NID_ecdsa_with_SHA1;
-			wantalg = SSH_DIGEST_SHA1;
-		} else {
-			nid = NID_ecdsa_with_SHA256;
-			wantalg = SSH_DIGEST_SHA256;
-		}
-	} else {
-		return (funcerrf(NULL, "invalid key type"));
-	}
-
 	req = X509_REQ_new();
 	VERIFY(req != NULL);
 
 	VERIFY(X509_REQ_set_version(req, 1) == 1);
-	VERIFY(X509_REQ_set_pubkey(req, pkey) == 1);
 
-	subj = X509_NAME_new();
-	VERIFY(subj != NULL);
-
-	VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
-	    MBSTRING_ASC, (unsigned char *)mycn, -1, -1, 0) == 1);
-
-	VERIFY(X509_REQ_set_subject_name(req, subj) == 1);
-
-	X509V3_set_ctx_nodb(&x509ctx);
-	X509V3_set_ctx(&x509ctx, NULL, NULL, req, NULL, 0);
-
-	exts = sk_X509_EXTENSION_new_null();
-	VERIFY(exts != NULL);
-
-	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_basic_constraints,
-	    (char *)"critical,CA:FALSE");
-	VERIFY(ext != NULL);
-	VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
-
-	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_key_usage,
-	    (char *)"critical,digitalSignature,nonRepudiation");
-	VERIFY(ext != NULL);
-	VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
-
-	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_ext_key_usage,
-	    (char *)"clientAuth,1.3.6.1.4.1.311.20.2.2");
-	VERIFY(ext != NULL);
-	VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
-
-	{
-		ASN1_STRING *xdata;
-		STACK_OF(GENERAL_NAME) *gns;
-		GENERAL_NAME *gn;
-		ASN1_OBJECT *obj;
-		uint gnc = 0;
-		PKINIT_PRINC *princ;
-		ASN1_TYPE *typ;
-
-		gns = sk_GENERAL_NAME_new_null();
-		VERIFY(gns != NULL);
-
-		if (myupn != NULL) {
-			ASN1_UTF8STRING *str;
-
-			obj = OBJ_txt2obj("1.3.6.1.4.1.311.20.2.3", 1);
-			VERIFY(obj != NULL);
-
-			str = ASN1_UTF8STRING_new();
-			VERIFY(str != NULL);
-			VERIFY(ASN1_STRING_set(str, myupn, strlen(myupn)) == 1);
-
-			typ = ASN1_TYPE_new();
-			VERIFY(typ != NULL);
-			ASN1_TYPE_set(typ, V_ASN1_UTF8STRING, str);
-
-			gn = GENERAL_NAME_new();
-			VERIFY(gn != NULL);
-			VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
-			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
-			++gnc;
-		}
-
-		if (mykrbpn != NULL) {
-			obj = OBJ_txt2obj("1.3.6.1.5.2.2", 1);
-			VERIFY(obj != NULL);
-
-			princ = v2i_PKINIT_PRINC(NULL, mykrbpn);
-			if (princ == NULL) {
-				return (funcerrf(NULL, "failed to parse krb5 "
-				    "principal name: %s", mykrbpn));
-			}
-
-			xdata = pack_PKINIT_PRINC(princ, NULL);
-			VERIFY(xdata != NULL);
-
-			typ = ASN1_TYPE_new();
-			VERIFY(typ != NULL);
-			ASN1_TYPE_set(typ, V_ASN1_SEQUENCE, xdata);
-
-			gn = GENERAL_NAME_new();
-			VERIFY(gn != NULL);
-			GENERAL_NAME_set0_othername(gn, obj, typ);
-			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
-			++gnc;
-		}
-
-		if (gnc > 0) {
-			ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, gns);
-			VERIFY(ext != NULL);
-			VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
-		}
-		sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
+	err = cert_tpl_populate_req(tpl, scope, req);
+	if (err != ERRF_OK) {
+		return (funcerrf(err, "Error populating certificate "
+		    "attributes"));
 	}
-
-	VERIFY(X509_REQ_add_extensions(req, exts) == 1);
-	sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
-
-	req->sig_alg->algorithm = OBJ_nid2obj(nid);
-	if (pub->type == KEY_RSA) {
-		bzero(&null_parameter, sizeof (null_parameter));
-		null_parameter.type = V_ASN1_NULL;
-		null_parameter.value.ptr = NULL;
-		req->sig_alg->parameter = &null_parameter;
-	}
-
-	rv = i2d_X509_REQ_INFO(req->req_info, &tbs);
-	if (tbs == NULL || rv <= 0) {
-		make_sslerrf(err, "i2d_X509_REQ_INFO", "generating req");
-		err = funcerrf(err, "failed to generate new req");
-		return (err);
-	}
-	tbslen = (size_t)rv;
-
-	hashalg = wantalg;
 
 	if ((err = piv_txn_begin(selk)))
 		return (err);
@@ -2068,7 +1736,7 @@ cmd_req_cert(uint slotid)
 	assert_pin(selk, slot, B_FALSE);
 
 signagain:
-	err = piv_sign(selk, slot, tbs, tbslen, &hashalg, &sig, &siglen);
+	err = piv_sign_cert_req(selk, slot, pub, req);
 
 	if (errf_caused_by(err, "PermissionError")) {
 		assert_pin(selk, slot, B_TRUE);
@@ -2081,15 +1749,6 @@ signagain:
 		err = funcerrf(err, "failed to sign cert req with key");
 		return (err);
 	}
-
-	if (hashalg != wantalg) {
-		err = funcerrf(NULL, "card could not sign with the "
-		    "requested hash algorithm");
-		return (err);
-	}
-
-	ASN1_STRING_set(req->signature, sig, siglen);
-	req->signature->flags = ASN1_STRING_FLAG_BITS_LEFT;
 
 	VERIFY(i2d_X509_REQ_fp(stdout, req) == 1);
 
@@ -2892,6 +2551,8 @@ usage(void)
 	    "                         the new slot's certificate\n"
 	    "  -r <principal>         Set a KRB5 PKINIT principal name to be\n"
 	    "                         used on the new slot's certificate\n"
+	    "  -D <param>=<value>     Define a certificate parameter\n"
+	    "  -T <tplname>           Set certificate template\n"
 	    "  -t <never|always|cached>\n"
 	    "                         Set the touch policy. Only supported\n"
 	    "                         with YubiKeys\n"
@@ -2911,7 +2572,7 @@ usage(void)
 	exit(EXIT_BAD_ARGS);
 }
 
-const char *optstring = "dpg:P:a:fK:k:n:t:i:u:RXA:N:r:";
+const char *optstring = "dpg:P:a:fK:k:n:t:i:u:RXA:N:r:D:T:";
 
 int
 main(int argc, char *argv[])
@@ -2931,8 +2592,29 @@ main(int argc, char *argv[])
 	bunyan_init();
 	bunyan_set_name("pivy-tool");
 
+	cvroot = scope_new_root();
+	(void) scope_set(cvroot, "lifetime", "3650d");
+	(void) scope_set(cvroot, "dn", "CN=%{cn}");
+	(void) scope_set(cvroot, "cn", "%{slot}@%{guid}");
+
 	while ((c = getopt(argc, argv, optstring)) != -1) {
 		switch (c) {
+		case 'T':
+			cvtpl_name = optarg;
+			break;
+		case 'D':
+			ptr = strchr(optarg, '=');
+			if (ptr == NULL) {
+				errx(EXIT_BAD_ARGS, "invalid cert var: '%s'",
+				    optarg);
+			}
+			*ptr = '\0';
+			err = scope_set(cvroot, optarg, ptr+1);
+			if (err != ERRF_OK) {
+				errfx(EXIT_BAD_ARGS, err, "error while parsing "
+				    "-D arg: %s", optarg);
+			}
+			break;
 		case 'd':
 			bunyan_set_level(BNY_TRACE);
 			if (++d_level > 1)
@@ -2945,33 +2627,15 @@ main(int argc, char *argv[])
 			enum_all_retired = B_TRUE;
 			break;
 		case 'A':
-			if (strcasecmp(optarg, "3des") == 0) {
-				key_alg = PIV_ALG_3DES;
-			} else if (strcasecmp(optarg, "aes128") == 0) {
-				key_alg = PIV_ALG_AES128;
-			} else if (strcasecmp(optarg, "aes192") == 0) {
-				key_alg = PIV_ALG_AES192;
-			} else if (strcasecmp(optarg, "aes256") == 0) {
-				key_alg = PIV_ALG_AES256;
-			} else {
-				errx(EXIT_BAD_ARGS, "invalid algorithm: '%s'",
-					optarg);
-			}
+			err = piv_alg_from_string(optarg, &key_alg);
+			if (err != ERRF_OK)
+				errfx(EXIT_BAD_ARGS, err, "failed to parse -A");
 			key_length = len_for_admin_alg(key_alg);
 			break;
 		case 'N':
-			if (strcasecmp(optarg, "3des") == 0) {
-				key_new_alg = PIV_ALG_3DES;
-			} else if (strcasecmp(optarg, "aes128") == 0) {
-				key_new_alg = PIV_ALG_AES128;
-			} else if (strcasecmp(optarg, "aes192") == 0) {
-				key_new_alg = PIV_ALG_AES192;
-			} else if (strcasecmp(optarg, "aes256") == 0) {
-				key_new_alg = PIV_ALG_AES256;
-			} else {
-				errx(EXIT_BAD_ARGS, "invalid algorithm: '%s'",
-					optarg);
-			}
+			err = piv_alg_from_string(optarg, &key_new_alg);
+			if (err != ERRF_OK)
+				errfx(EXIT_BAD_ARGS, err, "failed to parse -N");
 			break;
 		case 'K':
 			if (strcmp(optarg, "default") == 0) {
@@ -2994,13 +2658,26 @@ main(int argc, char *argv[])
 			}
 			break;
 		case 'u':
-			upn = optarg;
+			err = scope_set(cvroot, "ad_upn", optarg);
+			if (err != ERRF_OK) {
+				errfx(EXIT_BAD_ARGS, err, "error while parsing "
+				    "-u: %s", optarg);
+			}
 			break;
 		case 'n':
-			cn = optarg;
+			(void) scope_set(cvroot, "dn", "cn = %{cn}");
+			err = scope_set(cvroot, "cn", optarg);
+			if (err != ERRF_OK) {
+				errfx(EXIT_BAD_ARGS, err, "error while parsing "
+				    "-n: %s", optarg);
+			}
 			break;
 		case 'r':
-			krbpn = optarg;
+			err = scope_set(cvroot, "krb5_principal", optarg);
+			if (err != ERRF_OK) {
+				errfx(EXIT_BAD_ARGS, err, "error while parsing "
+				    "-r: %s", optarg);
+			}
 			break;
 		case 'f':
 			min_retries = 0;
@@ -3025,20 +2702,9 @@ main(int argc, char *argv[])
 			break;
 		case 'a':
 			hasover = B_TRUE;
-			if (strcasecmp(optarg, "rsa1024") == 0) {
-				overalg = PIV_ALG_RSA1024;
-			} else if (strcasecmp(optarg, "rsa2048") == 0) {
-				overalg = PIV_ALG_RSA2048;
-			} else if (strcasecmp(optarg, "eccp256") == 0) {
-				overalg = PIV_ALG_ECCP256;
-			} else if (strcasecmp(optarg, "eccp384") == 0) {
-				overalg = PIV_ALG_ECCP384;
-			} else if (strcasecmp(optarg, "3des") == 0) {
-				overalg = PIV_ALG_3DES;
-			} else {
-				errx(EXIT_BAD_ARGS, "invalid algorithm: '%s'",
-				    optarg);
-			}
+			err = piv_alg_from_string(optarg, &overalg);
+			if (err != ERRF_OK)
+				errfx(EXIT_BAD_ARGS, err, "failed to parse -a");
 			/* ps_slot will be set after we've parsed the slot */
 			break;
 		case 'g':
@@ -3194,13 +2860,15 @@ main(int argc, char *argv[])
 		err = cmd_update_keyhist();
 
 	} else if (strcmp(op, "sign") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s", op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3213,13 +2881,15 @@ main(int argc, char *argv[])
 		err = cmd_sign(slotid);
 
 	} else if (strcmp(op, "bench") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s", op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3232,14 +2902,16 @@ main(int argc, char *argv[])
 		err = cmd_bench(slotid);
 
 	} else if (strcmp(op, "pubkey") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3250,14 +2922,16 @@ main(int argc, char *argv[])
 		err = cmd_pubkey(slotid);
 
 	} else if (strcmp(op, "attest") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3284,14 +2958,16 @@ main(int argc, char *argv[])
 		err = cmd_factory_reset();
 
 	} else if (strcmp(op, "cert") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3302,14 +2978,16 @@ main(int argc, char *argv[])
 		err = cmd_cert(slotid);
 
 	} else if (strcmp(op, "ecdh") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3322,14 +3000,16 @@ main(int argc, char *argv[])
 		err = cmd_ecdh(slotid);
 
 	} else if (strcmp(op, "auth") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3342,13 +3022,18 @@ main(int argc, char *argv[])
 		err = cmd_auth(slotid);
 
 	} else if (strcmp(op, "box") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (opubkey == NULL) {
 			if (optind >= argc) {
 				slotid = PIV_SLOT_KEY_MGMT;
 			} else {
-				slotid = strtol(argv[optind++], NULL, 16);
+				err = piv_slotid_from_string(argv[optind++],
+				    &slotid);
+				if (err != ERRF_OK) {
+					errfx(EXIT_BAD_ARGS, err,
+					    "failed to parse slot id");
+				}
 			}
 			check_select_key();
 		} else {
@@ -3385,14 +3070,16 @@ main(int argc, char *argv[])
 		err = cmd_sgdebug();
 
 	} else if (strcmp(op, "generate") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3410,14 +3097,16 @@ main(int argc, char *argv[])
 		err = cmd_generate(slotid, overalg);
 
 	} else if (strcmp(op, "import") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3428,14 +3117,16 @@ main(int argc, char *argv[])
 		err = cmd_import(slotid);
 
 	} else if (strcmp(op, "write-cert") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3448,14 +3139,16 @@ main(int argc, char *argv[])
 		err = cmd_write_cert(slotid);
 
 	} else if (strcmp(op, "req-cert") == 0) {
-		uint slotid;
+		enum piv_slotid slotid;
 
 		if (optind >= argc) {
 			warnx("not enough arguments for %s (slot required)",
 			    op);
 			usage();
 		}
-		slotid = strtol(argv[optind++], NULL, 16);
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
 
 		if (optind < argc) {
 			warnx("too many arguments for %s", op);
@@ -3479,4 +3172,10 @@ main(int argc, char *argv[])
 		errfx(1, err, "error occurred while executing '%s'", op);
 
 	return (0);
+}
+
+void
+cleanup_exit(int i)
+{
+	exit(i);
 }

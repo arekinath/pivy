@@ -29,7 +29,7 @@
 
 #include "errf.h"
 #include "piv.h"
-#include "libssh/digest.h"
+#include "openssh/digest.h"
 
 /*
  * This file contains the API for dealing with ebox structures, as well as

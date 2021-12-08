@@ -16,7 +16,7 @@
 #include "utils.h"
 #include "tlv.h"
 #include "debug.h"
-#include "libssh/sshbuf.h"
+#include "openssh/sshbuf.h"
 
 enum tlv_tag_bits {
 	TLV_TYPE_MASK = (1 << 7 | 1 << 6 | 1 << 5),

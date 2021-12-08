@@ -1,8 +1,13 @@
 all: pivy-tool pivy-agent pivy-box
 
-LIBRESSL_VER	= 3.1.0
+LIBRESSL_VER	= 3.5.0
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
+OPENSSH_VER	= 8.9p1
+OPENSSH_URL	= https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-$(OPENSSH_VER).tar.gz
+
+OPENSSH		= $(CURDIR)/openssh
+LIBRESSL	= $(CURDIR)/libressl
 LIBRESSL_INC	= $(CURDIR)/libressl/include
 LIBRESSL_LIB	= $(CURDIR)/libressl/crypto/.libs
 
@@ -12,9 +17,11 @@ HAVE_LUKS	:= no
 USE_LUKS	?= no
 HAVE_PAM	:= no
 USE_PAM		?= no
+HAVE_JSONC	:= no
+USE_JSONC	?= no
 
 TAR		= tar
-CURL		= curl -k
+CURL		= curl
 
 prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
@@ -26,21 +33,26 @@ VERSION		= 0.8.0
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
-	-D_FORTIFY_SOURCE=2 -Wall
+	-D_FORTIFY_SOURCE=2 -Wall -g -O0 -gdwarf-2
 
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
-	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a -pthread
+	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto -pthread
 	ZLIB_CFLAGS	= $(shell pkg-config --cflags zlib)
 	ZLIB_LIBS	= $(shell pkg-config --libs zlib)
 	RDLINE_CFLAGS	= $(shell pkg-config --cflags libedit)
 	RDLINE_LIBS	= $(shell pkg-config --libs libedit)
 	SYSTEM_CFLAGS	= $(shell pkg-config --cflags libbsd-overlay)
+	SYSTEM_CFLAGS	+=		\
+		-DHAVE_USER_FROM_UID	\
+		-DHAVE_STRMODE		\
+		-DHAVE_GROUP_FROM_GID
+	OPTIM_CFLAGS	= -flto
+	OPTIM_LDFLAGS	= -O0 -flto
 	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
-	SYSTEM_LDFLAGS	=
 	LIBZFS_VER	= $(shell pkg-config --modversion libzfs --silence-errors || true)
 	ifneq (,$(LIBZFS_VER))
 		HAVE_ZFS	:= $(USE_ZFS)
@@ -54,10 +66,16 @@ ifeq ($(SYSTEM), Linux)
 		HAVE_LUKS	:= $(USE_LUKS)
 		CRYPTSETUP_CFLAGS = $(shell pkg-config --cflags libcryptsetup)
 		CRYPTSETUP_LIBS	= $(shell pkg-config --libs libcryptsetup)
+	else
+		HAVE_LUKS	:= no
+	endif
+	JSONC_VER	= $(shell pkg-config --modversion json-c --silence-errors || true)
+	ifneq (,$(JSONC_VER))
+		HAVE_JSONC	:= $(USE_JSONC)
 		JSONC_CFLAGS	= $(shell pkg-config --cflags json-c)
 		JSONC_LIBS	= $(shell pkg-config --libs json-c)
 	else
-		HAVE_LUKS	:= no
+		HAVE_JSONC	:= no
 	endif
 	ifeq (yes,$(USE_PAM))
 		SYSTEM_CFLAGS	+= -fPIC
@@ -78,19 +96,27 @@ ifeq ($(SYSTEM), OpenBSD)
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
-	SYSTEM_LIBS	=
+	SYSTEM_LIBS	= -lutil
 	SYSTEM_LDFLAGS	=
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no
 	LIBCRYPTO	= /usr/lib/libcrypto.a
 	HAVE_PAM	:= no
+	JSONC_VER	= $(shell pkg-config --modversion json-c --silence-errors || true)
+	ifneq (,$(JSONC_VER))
+		HAVE_JSONC	:= $(USE_JSONC)
+		JSONC_CFLAGS	= $(shell pkg-config --cflags json-c)
+		JSONC_LIBS	= $(shell pkg-config --libs json-c)
+	else
+		HAVE_JSONC	:= no
+	endif
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
 	PCSC_LIBS	= -framework PCSC
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
-	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a
+	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
@@ -107,21 +133,33 @@ ifeq ($(SYSTEM), SunOS)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
-	CRYPTO_LIBS	= $(LIBRESSL_LIB)/libcrypto.a -pthread
+	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto -pthread
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ltecla
 	SYSTEM_CFLAGS	= -gdwarf-2 -isystem $(PROTO_AREA)/usr/include -m64 -msave-args
-	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib -lssp -lsocket -lnsl
+	SYSTEM_CFLAGS	+= -Du_int8_t=uint8_t -Du_int16_t=uint16_t \
+		-Du_int32_t=uint32_t -Du_int64_t=uint64_t
+	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib/64 -lssp -lsocket -lnsl
 	SYSTEM_LDFLAGS	= -m64
 	HAVE_ZFS	:= $(USE_ZFS)
-	LIBZFS_CFLAGS	=
+	LIBZFS_CFLAGS	= -I$(ILLUMOS_SRC)/uts/common/fs/zfs	# for spa_impl.h
+	LIBZFS_CFLAGS	+= -I$(ILLUMOS_SRC)/common/zfs		# for zfeature_common.h
 	LIBZFS_LIBS	= -lzfs -lzfs_core -lnvpair
 	TAR		= gtar
 	HAVE_PAM	:= no
+	JSONC_VER	= $(shell pkg-config --modversion json-c --silence-errors || true)
+	ifneq (,$(JSONC_VER))
+		HAVE_JSONC	:= $(USE_JSONC)
+		JSONC_CFLAGS	= $(shell pkg-config --cflags json-c)
+		JSONC_LIBS	= $(shell pkg-config --libs json-c)
+	else
+		HAVE_JSONC	:= no
+	endif
 endif
 LIBCRYPTO	?= $(LIBRESSL_LIB)/libcrypto.a
+LIBSSH		?= $(OPENSSH)/libssh.a
 
 tpl_user_dir	?= "$$HOME/.pivy/tpl/$$TPL"
 tpl_system_dir	?= "/etc/pivy/tpl/$$TPL"
@@ -134,34 +172,74 @@ _ED25519_SOURCES=		\
 	fe25519.c		\
 	ge25519.c		\
 	sc25519.c		\
-	hash.c			\
-	blocks.c
-ED25519_SOURCES=$(_ED25519_SOURCES:%=ed25519/%)
+	hash.c
 
 _CHAPOLY_SOURCES=		\
 	chacha.c		\
 	poly1305.c
-CHAPOLY_SOURCES=$(_CHAPOLY_SOURCES:%=chapoly/%)
+
+_OBSD_COMPAT=			\
+	blowfish.c		\
+	bcrypt_pbkdf.c		\
+	base64.c		\
+	bsd-setres_id.c		\
+	vis.c
 
 _LIBSSH_SOURCES=		\
 	sshbuf.c		\
+	sshbuf-getput-basic.c	\
+	sshbuf-getput-crypto.c	\
+	sshbuf-misc.c		\
 	sshkey.c		\
 	ssh-ed25519.c		\
 	ssh-ecdsa.c		\
 	ssh-rsa.c		\
+	ssh-dss.c		\
 	cipher.c		\
+	cipher-chachapoly.c	\
+	cipher-chachapoly-libcrypto.c \
 	digest-openssl.c	\
-	bcrypt-pbkdf.c		\
-	blowfish.c		\
-	rsa.c			\
-	base64.c		\
 	atomicio.c		\
 	hmac.c			\
-	authfd.c
+	authfd.c		\
+	misc.c			\
+	match.c			\
+	ssh-sk.c		\
+	log.c			\
+	verify.c		\
+	fatal.c			\
+	xmalloc.c		\
+	addrmatch.c		\
+	addr.c			\
+	$(_ED25519_SOURCES)	\
+	$(_CHAPOLY_SOURCES)	\
+	$(_OBSD_COMPAT:%=openbsd-compat/%)
 LIBSSH_SOURCES=				\
-	$(_LIBSSH_SOURCES:%=libssh/%)	\
-	$(ED25519_SOURCES)		\
-	$(CHAPOLY_SOURCES)
+	$(_LIBSSH_SOURCES:%=$(OPENSSH)/%)
+
+LIBSSH_OBJS=		$(LIBSSH_SOURCES:%.c=%.o)
+LIBSSH_CFLAGS=		$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(JSONC_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			$(SECURITY_CFLAGS) \
+			$(CONFIG_CFLAGS) \
+			-O2 -g -D_GNU_SOURCE \
+			-I$(OPENSSH) \
+			-DPIVY_VERSION='"$(VERSION)"'
+LIBSSH_LDFLAGS=		$(SYSTEM_LDFLAGS) \
+			$(CRYPTO_LDFLAGS)
+LIBSSH_HEADERS=
+
+$(LIBSSH):		CFLAGS=		$(LIBSSH_CFLAGS)
+$(LIBSSH):		LDFLAGS+=	$(LIBSSH_LDFLAGS)
+$(LIBSSH):		HEADERS=	$(LIBSSH_HEADERS)
+$(LIBSSH): $(LIBSSH_OBJS)
+	$(AR) rcs $@ $(LIBSSH_OBJS)
+
+$(LIBSSH_SOURCES): .openssh.configure
+$(LIBSSH_OBJS): .openssh.configure
 
 _SSS_SOURCES=			\
 	hazmat.c		\
@@ -182,7 +260,14 @@ PIV_COMMON_HEADERS=		\
 	errf.h			\
 	piv-internal.h		\
 	debug.h			\
-	utils.h
+	utils.h			\
+
+PIV_CA_SOURCES=			\
+	piv-ca.c		\
+	pkinit_asn1.c
+PIV_CA_HEADERS=			\
+	piv-ca.h		\
+	pkinit_asn1.h
 
 EBOX_COMMON_SOURCES=		\
 	ebox.c			\
@@ -193,25 +278,28 @@ EBOX_COMMON_HEADERS=		\
 
 PIVTOOL_SOURCES=		\
 	pivy-tool.c		\
-	pkinit_asn1.c		\
 	$(PIV_COMMON_SOURCES)	\
-	$(LIBSSH_SOURCES)
+	$(PIV_CA_SOURCES)
 PIVTOOL_HEADERS=		\
-	pkinit_asn1.h		\
-	$(PIV_COMMON_HEADERS)
+	$(PIV_COMMON_HEADERS)	\
+	$(PIV_CA_HEADERS)
 
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)
 PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
 			$(ZLIB_CFLAGS) \
+			$(JSONC_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			$(CONFIG_CFLAGS) \
+			$(OPTIM_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE \
 			-DPIVY_VERSION='"$(VERSION)"'
-PIVTOOL_LDFLAGS=	$(SYSTEM_LDFLAGS)
+PIVTOOL_LDFLAGS=	$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS)
 PIVTOOL_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
+			$(JSONC_LIBS) \
 			$(ZLIB_LIBS) \
 			$(SYSTEM_LIBS)
 
@@ -220,14 +308,65 @@ pivy-tool :		LIBS+=		$(PIVTOOL_LIBS)
 pivy-tool :		LDFLAGS+=	$(PIVTOOL_LDFLAGS)
 pivy-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 
-pivy-tool: $(PIVTOOL_OBJS) $(LIBCRYPTO)
-	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBS)
+pivy-tool: $(PIVTOOL_OBJS) $(LIBSSH) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBSSH) $(LIBS)
+
+ifeq (yes, $(HAVE_JSONC))
+
+PIVYCA_SOURCES=			\
+	pivy-ca.c		\
+	$(PIV_COMMON_SOURCES)	\
+	$(PIV_CA_SOURCES)	\
+	$(EBOX_COMMON_SOURCES)	\
+	$(SSS_SOURCES)
+PIVYCA_HEADERS=			\
+	$(EBOX_COMMON_HEADERS)	\
+	$(PIV_COMMON_HEADERS)	\
+	$(PIV_CA_HEADERS)
+
+PIVYCA_OBJS=		$(PIVYCA_SOURCES:%.c=%.o)
+
+PIVYCA_CFLAGS=		$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(RDLINE_CFLAGS) \
+			$(JSONC_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			$(OPTIM_CFLAGS) \
+			$(SECURITY_CFLAGS) \
+			$(CONFIG_CFLAGS) \
+			-O0 -g -gdwarf-2 -D_GNU_SOURCE \
+			-DPIVY_VERSION='"$(VERSION)"'
+PIVYCA_LDFLAGS=		$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS)
+PIVYCA_LIBS=		$(PCSC_LIBS) \
+			$(CRYPTO_LIBS) \
+			$(ZLIB_LIBS) \
+			$(RDLINE_LIBS) \
+			$(JSONC_LIBS) \
+			$(SYSTEM_LIBS)
+
+pivy-ca :		CFLAGS=		$(PIVYCA_CFLAGS)
+pivy-ca :		LIBS+=		$(PIVYCA_LIBS)
+pivy-ca :		LDFLAGS+=	$(PIVYCA_LDFLAGS)
+pivy-ca :		HEADERS=	$(PIVYCA_HEADERS)
+
+pivy-ca: $(PIVYCA_OBJS) $(LIBSSH) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(PIVYCA_OBJS) $(LIBSSH) $(LIBS)
+
+all: pivy-ca
+
+install_pivyca: pivy-ca install_common
+	install -o $(binowner) -g $(bingroup) -m 0755 pivy-ca $(DESTDIR)$(bindir)
+install: install_pivyca
+.PHONY: install_pivyca
+
+endif
 
 PIVYBOX_SOURCES=		\
 	pivy-box.c		\
 	$(EBOX_COMMON_SOURCES)	\
 	$(PIV_COMMON_SOURCES)	\
-	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
 PIVYBOX_HEADERS=		\
 	$(EBOX_COMMON_HEADERS)	\
@@ -239,10 +378,12 @@ PIVYBOX_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(OPTIM_CFLAGS) \
 			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
-PIVYBOX_LDFLAGS=	$(SYSTEM_LDFLAGS)
+PIVYBOX_LDFLAGS=	$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS)
 PIVYBOX_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -254,15 +395,14 @@ pivy-box :		LIBS+=		$(PIVYBOX_LIBS)
 pivy-box :		LDFLAGS+=	$(PIVYBOX_LDFLAGS)
 pivy-box :		HEADERS=	$(PIVYBOX_HEADERS)
 
-pivy-box: $(PIVYBOX_OBJS) $(LIBCRYPTO)
-	$(CC) $(LDFLAGS) -o $@ $(PIVYBOX_OBJS) $(LIBS)
+pivy-box: $(PIVYBOX_OBJS) $(LIBSSH) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(PIVYBOX_OBJS) $(LIBSSH) $(LIBS)
 
 
 PIVZFS_SOURCES=			\
 	pivy-zfs.c		\
 	$(EBOX_COMMON_SOURCES)	\
 	$(PIV_COMMON_SOURCES)	\
-	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
 PIVZFS_HEADERS=			\
 	$(PIV_COMMON_HEADERS)	\
@@ -277,10 +417,12 @@ PIVZFS_CFLAGS=		$(PCSC_CFLAGS) \
 			$(LIBZFS_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(OPTIM_CFLAGS) \
 			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
-PIVZFS_LDFLAGS=		$(SYSTEM_LDFLAGS)
+PIVZFS_LDFLAGS=		$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS)
 PIVZFS_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -293,8 +435,8 @@ pivy-zfs :		LIBS+=		$(PIVZFS_LIBS)
 pivy-zfs :		LDFLAGS+=	$(PIVZFS_LDFLAGS)
 pivy-zfs :		HEADERS=	$(PIVZFS_HEADERS)
 
-pivy-zfs: $(PIVZFS_OBJS) $(LIBCRYPTO)
-	$(CC) $(LDFLAGS) -o $@ $(PIVZFS_OBJS) $(LIBS)
+pivy-zfs: $(PIVZFS_OBJS) $(LIBSSH) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(PIVZFS_OBJS) $(LIBSSH) $(LIBS)
 
 all: pivy-zfs
 
@@ -309,7 +451,6 @@ PIVYLUKS_SOURCES=		\
 	pivy-luks.c		\
 	$(EBOX_COMMON_SOURCES)	\
 	$(PIV_COMMON_SOURCES)	\
-	$(LIBSSH_SOURCES)	\
 	$(SSS_SOURCES)
 PIVYLUKS_HEADERS=		\
 	$(PIV_COMMON_HEADERS)	\
@@ -325,10 +466,12 @@ PIVYLUKS_CFLAGS=	$(PCSC_CFLAGS) \
 			$(JSONC_CFLAGS) \
 			$(RDLINE_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(OPTIM_CFLAGS) \
 			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
-PIVYLUKS_LDFLAGS=	$(SYSTEM_LDFLAGS)
+PIVYLUKS_LDFLAGS=	$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS)
 PIVYLUKS_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -342,8 +485,8 @@ pivy-luks :		LIBS+=		$(PIVYLUKS_LIBS)
 pivy-luks :		LDFLAGS+=	$(PIVYLUKS_LDFLAGS)
 pivy-luks :		HEADERS=	$(PIVYLUKS_HEADERS)
 
-pivy-luks: $(PIVYLUKS_OBJS) $(LIBCRYPTO)
-	$(CC) $(LDFLAGS) -o $@ $(PIVYLUKS_OBJS) $(LIBS)
+pivy-luks: $(PIVYLUKS_OBJS) $(LIBSSH) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(PIVYLUKS_OBJS) $(LIBSSH) $(LIBS)
 
 all: pivy-luks
 
@@ -356,8 +499,7 @@ endif
 
 PAMPIVY_SOURCES=		\
 	pam_pivy.c		\
-	$(PIV_COMMON_SOURCES)	\
-	$(LIBSSH_SOURCES)
+	$(PIV_COMMON_SOURCES)
 PAMPIVY_HEADERS=		\
 	$(PIV_COMMON_HEADERS)	\
 
@@ -369,10 +511,12 @@ PAMPIVY_CFLAGS=		$(PCSC_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(PAM_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(OPTIM_CFLAGS) \
 			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE -std=gnu99
-PAMPIVY_LDFLAGS=	$(SYSTEM_LDFLAGS)
+PAMPIVY_LDFLAGS=	$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS)
 PAMPIVY_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -384,8 +528,8 @@ pam_pivy.so :		LIBS+=		$(PAMPIVY_LIBS)
 pam_pivy.so :		LDFLAGS+=	$(PAMPIVY_LDFLAGS)
 pam_pivy.so :		HEADERS=	$(PAMPIVY_HEADERS)
 
-pam_pivy.so: $(PAMPIVY_OBJS) $(LIBCRYPTO)
-	$(CC) -shared -o $@ $(LDFLAGS) $(LIBS) \
+pam_pivy.so: $(PAMPIVY_OBJS) $(LIBSSH) $(LIBCRYPTO)
+	$(CC) -shared -o $@ $(LDFLAGS) $(LIBSSH) $(LIBS) \
 	    -Wl,--version-script=pam_pivy.version $(PAMPIVY_OBJS) $(LIBCRYPTO)
 
 all: pam_pivy.so
@@ -400,8 +544,7 @@ endif
 
 AGENT_SOURCES=			\
 	pivy-agent.c		\
-	$(PIV_COMMON_SOURCES)	\
-	$(LIBSSH_SOURCES)
+	$(PIV_COMMON_SOURCES)
 AGENT_HEADERS=			\
 	$(PIV_COMMON_HEADERS)
 
@@ -410,10 +553,12 @@ AGENT_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CRYPTO_CFLAGS) \
 			$(ZLIB_CFLAGS) \
 			$(SYSTEM_CFLAGS) \
+			$(OPTIM_CFLAGS) \
 			$(CONFIG_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE
-AGENT_LDFLAGS=		$(SYSTEM_LDFLAGS)
+AGENT_LDFLAGS=		$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS)
 AGENT_LIBS=		$(PCSC_LIBS) \
 			$(CRYPTO_LIBS) \
 			$(ZLIB_LIBS) \
@@ -424,10 +569,10 @@ pivy-agent :		LIBS+=		$(AGENT_LIBS)
 pivy-agent :		LDFLAGS+=	$(AGENT_LDFLAGS)
 pivy-agent :		HEADERS=	$(AGENT_HEADERS)
 
-pivy-agent: $(AGENT_OBJS) $(LIBCRYPTO)
-	$(CC) $(LDFLAGS) -o $@ $(AGENT_OBJS) $(LIBS)
+pivy-agent: $(AGENT_OBJS) $(LIBSSH) $(LIBCRYPTO)
+	$(CC) $(LDFLAGS) -o $@ $(AGENT_OBJS) $(LIBSSH) $(LIBS)
 
-%.o: %.c $(HEADERS) $(LIBRESSL_INC) $(LIBCRYPTO)
+%.o: %.c $(HEADERS) .openssh.configure $(LIBCRYPTO)
 	$(CC) $(CFLAGS) -o $@ -c $<
 
 clean:
@@ -436,24 +581,63 @@ clean:
 	rm -f pivy-box $(PIVYBOX_OBJS)
 	rm -f pivy-zfs $(PIVZFS_OBJS)
 	rm -f pivy-luks $(PIVYLUKS_OBJS)
+	rm -f pivy-ca $(PIVYCA_OBJS)
 	rm -f pam_pivy.so $(PAMPIVY_OBJS)
 	rm -fr .dist
 	rm -fr macosx/root macosx/*.pkg
 
 distclean: clean
-	rm -fr libressl
+	rm -fr libressl .libressl.extract .libressl.patch .libressl.configure
+	rm -fr openssh .openssh.extract .openssh.patch .openssh.configure
+
+.openssh.extract:
+	$(CURL) $(OPENSSH_URL) | $(TAR) -zxf - && \
+	    mv openssh-$(OPENSSH_VER) openssh && \
+	    touch $(CURDIR)/$@
+
+.openssh.patch: .openssh.extract
+	patch -p0 <openssh.patch && \
+	    touch $(CURDIR)/$@
+
+OPENSSH_CONFIG_ARGS=	\
+	--disable-security-key \
+	--disable-pkcs11 \
+	--without-openssl-header-check
+
+.openssh.configure: .openssh.patch $(LIBCRYPTO)
+	cd openssh && \
+	    CFLAGS="$(LIBSSH_CFLAGS)" LDFLAGS="$(LIBSSH_LDFLAGS)" \
+	    ./configure $(OPENSSH_CONFIG_ARGS) && \
+	    touch $(CURDIR)/$@
 
 ifeq ($(SYSTEM), OpenBSD)
 # use system libressl
 else
-$(LIBRESSL_INC):
+.libressl.extract:
 	$(CURL) $(LIBRESSL_URL) | $(TAR) -zxf - && \
-	    mv libressl-$(LIBRESSL_VER) libressl
+	    mv libressl-$(LIBRESSL_VER) libressl && \
+	    touch $(CURDIR)/$@
 
-$(LIBRESSL_LIB)/libcrypto.a: $(LIBRESSL_INC)
+.libressl.patch: .libressl.extract
+	patch -p0 <libressl-x509-namecons.patch && \
+	    touch $(CURDIR)/$@
+
+LIBRESSL_CONFIG_ARGS=	\
+	--enable-static
+OPENSSH_CONFIG_ARGS+=	\
+	--with-ssl-dir=$(LIBRESSL)
+
+.libressl.configure: .libressl.patch
 	cd libressl && \
-	    CFLAGS=-fPIC ./configure --enable-static && \
-	    cd crypto && $(MAKE)
+	    CFLAGS="-fPIC $(SYSTEM_CFLAGS)" LDFLAGS="$(SYSTEM_LDFLAGS)" \
+	    ./configure $(LIBRESSL_CONFIG_ARGS) && \
+	    touch $(CURDIR)/$@
+
+$(LIBRESSL_LIB)/libcrypto.a: .libressl.configure
+	cd libressl/crypto && \
+	    $(MAKE) && \
+	    rm -f $(LIBRESSL_LIB)/*.so $(LIBRESSL_LIB)/*.so.*
+
 endif
 
 .PHONY: install install_common setup

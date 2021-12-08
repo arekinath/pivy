@@ -39,11 +39,11 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/ssherr.h"
-#include "libssh/authfd.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/ssherr.h"
+#include "openssh/authfd.h"
 
 #include "sss/hazmat.h"
 
@@ -300,7 +300,7 @@ local_unlock_agent(struct piv_ecdh_box *box)
 		goto out;
 	}
 
-	if ((rc = sshbuf_put_u8(req, SSH2_AGENTC_EXTENSION))) {
+	if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
 		err = ssherrf("sshbuf_put_u8", rc);
 		goto out;
 	}
@@ -483,6 +483,7 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 			if (err) {
 				err = errf("CardAuthenticationError", err,
 				    "Failed to validate CAK");
+				piv_txn_end(token);
 				goto out;
 			}
 			cakslot = piv_get_slot(token, PIV_SLOT_CARD_AUTH);
@@ -490,12 +491,14 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 		if (cakslot == NULL) {
 			err = errf("CardAuthenticationError", NULL,
 			    "Failed to validate CAK");
+			piv_txn_end(token);
 			goto out;
 		}
 		err = piv_auth_key(token, cakslot, cak);
 		if (err) {
 			err = errf("CardAuthenticationError", err,
 			    "Failed to validate CAK");
+			piv_txn_end(token);
 			goto out;
 		}
 	}
@@ -883,7 +886,7 @@ interactive_recovery(struct ebox_config *config, const char *what)
 	struct part_state *state;
 	struct question *q;
 	struct answer *a, *adone;
-	struct sshbuf *buf;
+	struct sshbuf *buf, *b64buf;
 	struct piv_ecdh_box *box;
 	const struct ebox_challenge *chal;
 	char k = '0';
@@ -894,6 +897,7 @@ interactive_recovery(struct ebox_config *config, const char *what)
 	errf_t *error;
 	const uint8_t *words;
 	size_t wordlen;
+	int rc;
 
 	tconfig = ebox_config_tpl(config);
 	n = ebox_tpl_config_n(tconfig);
@@ -1014,7 +1018,16 @@ partagain:
 			sshbuf_free(buf);
 			return (error);
 		}
-		b64 = sshbuf_dtob64(buf);
+		b64buf = sshbuf_new();
+		VERIFY(b64buf != NULL);
+		rc = sshbuf_dtob64(buf, b64buf, 0);
+		if (rc != 0) {
+			error = ssherrf("sshbuf_dtob64", rc);
+			sshbuf_free(buf);
+			return (error);
+		}
+		b64 = sshbuf_dup_string(b64buf);
+		sshbuf_free(b64buf);
 		VERIFY(b64 != NULL);
 		fprintf(stderr, "-- Begin challenge for remote device %s --\n",
 		    state->ps_ans->a_text);
@@ -1085,7 +1098,7 @@ parse_tpl_path_segs(const char *path)
 				seg->tps_type = PATH_SEG_FIXED;
 				n = p - basep;
 				seg->tps_fixed = malloc(n + 1);
-				strncpy(seg->tps_fixed, basep, n);
+				strlcpy(seg->tps_fixed, basep, n + 1);
 				if (first == NULL)
 					first = seg;
 				if (last != NULL)
@@ -1116,7 +1129,7 @@ parse_tpl_path_segs(const char *path)
 				seg->tps_type = PATH_SEG_ENV;
 				n = p - basep;
 				seg->tps_env = malloc(n + 1);
-				strncpy(seg->tps_fixed, basep, n);
+				strlcpy(seg->tps_fixed, basep, n + 1);
 				if (first == NULL)
 					first = seg;
 				if (last != NULL)
@@ -1474,26 +1487,18 @@ again:
 		piv_release(tokens);
 		goto reenum;
 	} else if (a->a_key == 's') {
-		line = readline("Slot ID (hex)? ");
+		line = readline("Slot ID (hex or name)? ");
 		if (line == NULL)
 			exit(EXIT_ERROR);
 		errno = 0;
-		parsed = strtoul(line, &p, 16);
-		if (errno != 0 || *p != '\0') {
-			error = errfno("strtoul", errno, NULL);
-			warnfx(error, "error parsing '%s' as hex number",
+		error = piv_slotid_from_string(line, &slotid);
+		if (error != ERRF_OK) {
+			warnfx(error, "error parsing '%s' as slot id",
 			    line);
 			errf_free(error);
 			free(line);
 			goto again;
 		}
-		if (parsed > 0xFF) {
-			warnx("slot '%02X' is not a valid PIV slot id",
-			    (uint)parsed);
-			free(line);
-			goto again;
-		}
-		slotid = parsed;
 		a->a_used = 0;
 		answer_printf(a, "change key slot (%02X)", slotid);
 		free(line);

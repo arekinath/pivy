@@ -181,6 +181,52 @@ d2i_PKINIT_PRINC(PKINIT_PRINC **out, const unsigned char **in, long len)
 	    &PKINIT_PRINC_it);
 }
 
+char *
+i2v_PKINIT_PRINC(PKINIT_PRINC *princ)
+{
+	char *out;
+	char *p;
+	PKINIT_PRINC_NAME *n;
+	ASN1_GENERALSTRING *gs;
+	STACK_OF(ASN1_GENERALSTRING) *gss;
+	int len;
+	size_t outlen = 1024;
+
+	out = malloc(outlen);
+	if (out == NULL)
+		return (NULL);
+	out[0] = '\0';
+
+	gss = sk_ASN1_GENERALSTRING_new_null();
+	if (gss == NULL)
+		return (NULL);
+
+	n = princ->name;
+	while ((gs = sk_ASN1_GENERALSTRING_shift(n->parts)) != NULL) {
+		len = ASN1_STRING_length(gs);
+		p = malloc(len + 1);
+		bcopy(ASN1_STRING_get0_data(gs), p, len);
+		p[len] = '\0';
+		if (*out != '\0')
+			strlcat(out, "/", outlen);
+		strlcat(out, p, outlen);
+		free(p);
+		sk_ASN1_GENERALSTRING_push(gss, gs);
+	}
+	sk_ASN1_GENERALSTRING_free(n->parts);
+	n->parts = gss;
+
+	len = ASN1_STRING_length(princ->realm);
+	p = malloc(len + 1);
+	bcopy(ASN1_STRING_get0_data(princ->realm), p, len);
+	p[len] = '\0';
+	strlcat(out, "@", outlen);
+	strlcat(out, p, outlen);
+	free(p);
+
+	return (out);
+}
+
 PKINIT_PRINC *
 v2i_PKINIT_PRINC(PKINIT_PRINC **out, const char *inp)
 {

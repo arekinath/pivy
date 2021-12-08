@@ -43,11 +43,11 @@
 #include <sys/un.h>
 #include <sys/socket.h>
 
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/ssherr.h"
-#include "libssh/authfd.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/ssherr.h"
+#include "openssh/authfd.h"
 
 #include <openssl/err.h>
 #include <openssl/x509.h>

@@ -53,4 +53,19 @@ void *reallocarray(void *, size_t, size_t);
 void explicit_bzero(void *, size_t);
 #endif
 
+/* Can't use errf_t here (errf.h #includes this first) */
+struct errf;
+struct sshbuf;
+struct errf *sshbuf_b16tod(const char *str, struct sshbuf *buf);
+
+int timingsafe_bcmp(const void *, const void *, size_t);
+
+#define	jsonerrf(func, ...)	\
+    errf("JSONError", NULL, func " returned error: %s", \
+    ##__VA_ARGS__, json_util_get_last_err())
+
+#define	jtokerrf(func, jerr, ...)	\
+    errf("JSONError", NULL, func " returned error: %s", \
+    ##__VA_ARGS__, json_tokener_error_desc(jerr))
+
 #endif

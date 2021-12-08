@@ -13,6 +13,10 @@
 
 #include "utils.h"
 #include "debug.h"
+#include "errf.h"
+
+#include "openssh/sshbuf.h"
+#include "openssh/ssherr.h"
 
 void
 set_no_dump(void *ptr, size_t size)
@@ -79,4 +83,71 @@ buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces)
 	}
 	out[j] = 0;
 	return (out);
+}
+
+struct errf *
+sshbuf_b16tod(const char *str, struct sshbuf *buf)
+{
+	const uint len = strlen(str);
+	uint idx = 0;
+	uint shift = 4;
+	uint i;
+	int rc;
+	uint8_t v = 0;
+	for (i = 0; i < len; ++i) {
+		const char c = str[i];
+		if (c >= '0' && c <= '9') {
+			v |= (c - '0') << shift;
+		} else if (c >= 'a' && c <= 'f') {
+			v |= (c - 'a' + 0xa) << shift;
+		} else if (c >= 'A' && c <= 'F') {
+			v |= (c - 'A' + 0xA) << shift;
+		} else if (c == ':' || c == ' ' || c == '\t' ||
+		    c == '\n' || c == '\r') {
+			continue;
+		} else {
+			return (errf("HexParseError", NULL,
+			    "invalid hex digit: '%c'", c));
+		}
+		if (shift == 4) {
+			shift = 0;
+		} else if (shift == 0) {
+			rc = sshbuf_put_u8(buf, v);
+			if (rc != 0)
+				return (ssherrf("sshbuf_put_u8", rc, NULL));
+			v = 0;
+			shift = 4;
+		}
+	}
+	if (shift == 0) {
+		return (errf("HexParseError", NULL, "odd number of hex digits "
+		    "(incomplete)"));
+	}
+	return (ERRF_OK);
+}
+
+int
+platform_sys_dir_uid(uid_t uid)
+{
+	if (uid == 0)
+		return 1;
+	return 0;
+}
+
+char *
+sys_get_rdomain(int fd)
+{
+	return NULL;
+}
+
+int
+sys_set_rdomain(int fd, const char *name)
+{
+	return -1;
+}
+
+int
+sys_tun_open(int tun, int mode, char **ifname)
+{
+	return -1;
 }

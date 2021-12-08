@@ -42,11 +42,11 @@
 
 #include <zlib.h>
 
-#include "libssh/ssherr.h"
-#include "libssh/sshkey.h"
-#include "libssh/sshbuf.h"
-#include "libssh/digest.h"
-#include "libssh/cipher.h"
+#include "openssh/ssherr.h"
+#include "openssh/sshkey.h"
+#include "openssh/sshbuf.h"
+#include "openssh/digest.h"
+#include "openssh/cipher.h"
 
 #include <openssl/err.h>
 #include <openssl/x509.h>
@@ -566,7 +566,7 @@ piv_auth_key(struct piv_token *tk, struct piv_slot *slot, struct sshkey *pubkey)
 	}
 
 	rv = sshkey_verify(pubkey, sshbuf_ptr(b), sshbuf_len(b),
-	    chal, challen, 0);
+	    chal, challen, NULL, 0, NULL);
 	if (rv != 0) {
 		err = errf("KeyAuthError", ssherrf("sshkey_verify", rv),
 		    "Failed to authenticate key in slot %02x of PIV "
@@ -2237,6 +2237,8 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 	int rv;
 	uint tag;
 	struct sshkey *k = NULL;
+	BIGNUM *mod = NULL, *exp = NULL;
+	EC_POINT *point = NULL;
 
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
@@ -2285,21 +2287,43 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 				goto invdata;
 			if (alg == PIV_ALG_RSA1024 || alg == PIV_ALG_RSA2048) {
 				if (tag == 0x81) {		/* Modulus */
-					VERIFY(BN_bin2bn(tlv_ptr(tlv),
-					    tlv_rem(tlv), k->rsa->n) != NULL);
-					tlv_skip(tlv);
-					continue;
+					mod = BN_bin2bn(tlv_ptr(tlv),
+					    tlv_rem(tlv), NULL);
+					if (mod == NULL) {
+						make_sslerrf(err, "BN_bin2bn",
+						    "parsing RSA key");
+						goto invdata;
+					}
 				} else if (tag == 0x82) {	/* Exponent */
-					VERIFY(BN_bin2bn(tlv_ptr(tlv),
-					    tlv_rem(tlv), k->rsa->e) != NULL);
+					exp = BN_bin2bn(tlv_ptr(tlv),
+					    tlv_rem(tlv), NULL);
+					if (exp == NULL) {
+						make_sslerrf(err, "BN_bin2bn",
+						    "parsing RSA key");
+						goto invdata;
+					}
+				} else {
+					err = tagerrf("INS_GEN_ASYM", tag);
+					goto invdata;
+				}
+				if (mod == NULL || exp == NULL) {
 					tlv_skip(tlv);
 					continue;
 				}
+				rv = RSA_set0_key(k->rsa, mod, exp, NULL);
+				if (rv != 1) {
+					make_sslerrf(err, "RSA_set0_key",
+					    "parsing RSA key");
+					goto invdata;
+				}
+				mod = NULL;
+				exp = NULL;
+				tlv_skip(tlv);
+				continue;
 			} else if (alg == PIV_ALG_ECCP256 ||
 			    alg == PIV_ALG_ECCP384) {
 				if (tag == 0x86) {
 					const EC_GROUP *g;
-					EC_POINT *point;
 
 					g = EC_KEY_get0_group(k->ecdsa);
 					VERIFY(g != NULL);
@@ -2330,7 +2354,6 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 						    "parsing pubkey");
 						goto invdata;
 					}
-					EC_POINT_free(point);
 
 					tlv_skip(tlv);
 					continue;
@@ -2355,6 +2378,9 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 	}
 
 out:
+	BN_free(mod);
+	BN_free(exp);
+	EC_POINT_free(point);
 	tlv_free(tlv);
 	piv_apdu_free(apdu);
 	return (err);
@@ -2700,11 +2726,11 @@ ykpiv_import(struct piv_token *pt, enum piv_slotid slotid, struct sshkey *key,
 			    sshkey_size(key));
 			goto out;
 		}
-		tlv_write_bignum(tlv, 0x01, key->rsa->p);
-		tlv_write_bignum(tlv, 0x02, key->rsa->q);
-		tlv_write_bignum(tlv, 0x03, key->rsa->dmp1);
-		tlv_write_bignum(tlv, 0x04, key->rsa->dmq1);
-		tlv_write_bignum(tlv, 0x05, key->rsa->iqmp);
+		tlv_write_bignum(tlv, 0x01, RSA_get0_p(key->rsa));
+		tlv_write_bignum(tlv, 0x02, RSA_get0_q(key->rsa));
+		tlv_write_bignum(tlv, 0x03, RSA_get0_dmp1(key->rsa));
+		tlv_write_bignum(tlv, 0x04, RSA_get0_dmq1(key->rsa));
+		tlv_write_bignum(tlv, 0x05, RSA_get0_iqmp(key->rsa));
 		break;
 	case KEY_ECDSA:
 		switch (sshkey_size(key)) {
@@ -3917,7 +3943,7 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
     size_t datalen, enum sshdigest_types *hashalgo, uint8_t **signature,
     size_t *siglen)
 {
-	int i;
+	int i, rc;
 	errf_t *err;
 	struct ssh_digest_ctx *hctx;
 	uint8_t *buf;
@@ -4062,8 +4088,12 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 
 		hctx = ssh_digest_start(*hashalgo);
 		VERIFY(hctx != NULL);
-		VERIFY0(ssh_digest_update(hctx, data, datalen));
-		VERIFY0(ssh_digest_final(hctx, buf, dglen));
+		if ((rc = ssh_digest_update(hctx, data, datalen)) ||
+		    (rc = ssh_digest_final(hctx, buf, dglen))) {
+			ssh_digest_free(hctx);
+			err = ssherrf("ssh_digest_update/final", rc);
+			return (err);
+		}
 		ssh_digest_free(hctx);
 	} else {
 		bunyan_log(BNY_TRACE, "doing hash on card", NULL);
@@ -4085,10 +4115,9 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		 * Roll up your sleeves, folks, we're going in (to the dank
 		 * and musty corners of OpenSSL where few dare tread)
 		 */
-		X509_SIG digestInfo;
-		X509_ALGOR algor;
-		ASN1_TYPE parameter;
-		ASN1_OCTET_STRING digest;
+		X509_SIG *digestInfo;
+		X509_ALGOR *algor;
+		ASN1_OCTET_STRING *digest;
 		uint8_t *tmp, *out;
 
 		tmp = calloc(1, inplen);
@@ -4114,15 +4143,17 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 			nid = -1;
 		}
 		bcopy(buf, tmp, dglen);
-		digestInfo.algor = &algor;
-		digestInfo.algor->algorithm = OBJ_nid2obj(nid);
-		digestInfo.algor->parameter = &parameter;
-		digestInfo.algor->parameter->type = V_ASN1_NULL;
-		digestInfo.algor->parameter->value.ptr = NULL;
-		digestInfo.digest = &digest;
-		digestInfo.digest->data = tmp;
-		digestInfo.digest->length = (int)dglen;
-		nread = i2d_X509_SIG(&digestInfo, &out);
+
+		digestInfo = X509_SIG_new();
+		VERIFY(digestInfo != NULL);
+
+		X509_SIG_getm(digestInfo, &algor, &digest);
+
+		VERIFY(X509_ALGOR_set0(algor, OBJ_nid2obj(nid), V_ASN1_NULL,
+		    NULL) == 1);
+		VERIFY(ASN1_OCTET_STRING_set(digest, tmp, (int)dglen) == 1);
+
+		nread = i2d_X509_SIG(digestInfo, &out);
 
 		/*
 		 * There is another undocumented openssl function that does
@@ -4137,6 +4168,7 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 
 		free(tmp);
 		OPENSSL_free(out);
+		X509_SIG_free(digestInfo);
 	}
 
 	err = piv_sign_prehash(tk, slot, buf, inplen, signature, siglen);
@@ -5585,4 +5617,224 @@ out:
 	free(box->pdb_enc.b_data);
 	free(box);
 	return (rv);
+}
+
+errf_t *
+piv_alg_from_string(const char *str, enum piv_alg *out)
+{
+	if (strcasecmp(str, "3des") == 0) {
+		*out = PIV_ALG_3DES;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "aes128") == 0) {
+		*out = PIV_ALG_AES128;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "aes192") == 0) {
+		*out = PIV_ALG_AES192;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "aes256") == 0) {
+		*out = PIV_ALG_AES256;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "rsa1024") == 0) {
+		*out = PIV_ALG_RSA1024;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "rsa2048") == 0) {
+		*out = PIV_ALG_RSA2048;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "eccp256") == 0) {
+		*out = PIV_ALG_ECCP256;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "eccp384") == 0) {
+		*out = PIV_ALG_ECCP384;
+		return (ERRF_OK);
+	}
+	return (errf("InvalidAlgorithm", NULL, "Invalid/unknown algorithm "
+	    "name: '%s'", str));
+}
+
+const char *
+piv_alg_to_string(enum piv_alg alg)
+{
+	switch (alg) {
+	case PIV_ALG_3DES:
+		return ("3DES");
+	case PIV_ALG_RSA1024:
+		return ("RSA1024");
+	case PIV_ALG_RSA2048:
+		return ("RSA2048");
+	case PIV_ALG_AES128:
+		return ("AES128");
+	case PIV_ALG_AES192:
+		return ("AES192");
+	case PIV_ALG_AES256:
+		return ("AES256");
+	case PIV_ALG_ECCP256:
+		return ("ECCP256");
+	case PIV_ALG_ECCP384:
+		return ("ECCP384");
+	case PIV_ALG_ECCP256_SHA1:
+		return ("ECCP256-SHA1");
+	case PIV_ALG_ECCP256_SHA256:
+		return ("ECCP256-SHA256");
+	case PIV_ALG_ECCP384_SHA1:
+		return ("ECCP384-SHA1");
+	case PIV_ALG_ECCP384_SHA256:
+		return ("ECCP384-SHA256");
+	case PIV_ALG_ECCP384_SHA384:
+		return ("ECCP384-SHA384");
+	default:
+		return (NULL);
+	}
+}
+
+char *
+piv_slotid_to_string(enum piv_slotid slotid)
+{
+	char name[64];
+
+	switch (slotid) {
+	case 0x9A:
+		strlcpy(name, "piv-auth", sizeof (name));
+		break;
+	case 0x9C:
+		strlcpy(name, "piv-sign", sizeof (name));
+		break;
+	case 0x9D:
+		strlcpy(name, "key-mgmt", sizeof (name));
+		break;
+	case 0x9E:
+		strlcpy(name, "card-auth", sizeof (name));
+		break;
+	case 0x82:
+	case 0x83:
+	case 0x84:
+	case 0x85:
+	case 0x86:
+	case 0x87:
+	case 0x88:
+	case 0x89:
+	case 0x8A:
+	case 0x8B:
+	case 0x8C:
+	case 0x8D:
+	case 0x8E:
+	case 0x8F:
+	case 0x90:
+	case 0x91:
+	case 0x92:
+	case 0x93:
+	case 0x94:
+	case 0x95:
+		snprintf(name, sizeof (name), "retired-%u",
+		    slotid - 0x81);
+		break;
+	default:
+		snprintf(name, sizeof (name), "0x%02x", slotid);
+	}
+
+	return (strdup(name));
+}
+
+errf_t *
+piv_slotid_from_string(const char *str, enum piv_slotid *out)
+{
+	if (strcasecmp(str, "piv-auth") == 0 ||
+	    strcasecmp(str, "auth") == 0) {
+		*out = PIV_SLOT_PIV_AUTH;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "piv-sign") == 0 ||
+	    strcasecmp(str, "sign") == 0 ||
+	    strcasecmp(str, "signature") == 0) {
+		*out = PIV_SLOT_SIGNATURE;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "piv-key-mgmt") == 0 ||
+	    strcasecmp(str, "key-mgmt") == 0) {
+		*out = PIV_SLOT_KEY_MGMT;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "piv-card-auth") == 0 ||
+	    strcasecmp(str, "card-auth") == 0) {
+		*out = PIV_SLOT_CARD_AUTH;
+		return (ERRF_OK);
+	}
+	if (strncasecmp(str, "retired-", 8) == 0) {
+		uint n;
+		const char *p = str + 8;
+		errno = 0;
+		n = strtoul(str + 8, &p, 10);
+		if (errno != 0 || *p != '\0') {
+			return (errf("InvalidSlotID", NULL, "Failed to parse "
+			    "retired slot id '%s'", str));
+		}
+		n = PIV_SLOT_RETIRED_1 + (n - 1);
+		if (n > PIV_SLOT_RETIRED_20) {
+			return (errf("InvalidSlotID", NULL, "Retired slot "
+			    "index too large: '%s'", str));
+		}
+		*out = n;
+		return (ERRF_OK);
+	}
+	if (strncasecmp(str, "piv-retired-", 12) == 0) {
+		uint n;
+		const char *p = str + 12;
+		errno = 0;
+		n = strtoul(str + 12, &p, 10);
+		if (errno != 0 || *p != '\0') {
+			return (errf("InvalidSlotID", NULL, "Failed to parse "
+			    "retired slot id '%s'", str));
+		}
+		n = PIV_SLOT_RETIRED_1 + (n - 1);
+		if (n > PIV_SLOT_RETIRED_20) {
+			return (errf("InvalidSlotID", NULL, "Retired slot "
+			    "index too large: '%s'", str));
+		}
+		*out = n;
+		return (ERRF_OK);
+	}
+	if (strncmp(str, "0x", 2) == 0) {
+		uint n;
+		const char *p = str + 2;
+		errno = 0;
+		n = strtoul(str + 2, &p, 16);
+		if (errno != 0 || *p != '\0') {
+			return (errf("InvalidSlotID", NULL, "Failed to parse "
+			    "hex slot id '%s'", str));
+		}
+		if (n < 0x82 ||
+		    (n > 0x95 && n < 0x9A) ||
+		    (n > 0x9E && n != 0xF9)) {
+			return (errf("InvalidSlotID", NULL, "Slot ID "
+			    "out of range: '%s'", str));
+		}
+		*out = n;
+		return (ERRF_OK);
+	}
+	if (strlen(str) == 2) {
+		uint n;
+		const char *p = str;
+		errno = 0;
+		n = strtoul(str, &p, 16);
+		if (errno != 0 || *p != '\0') {
+			return (errf("InvalidSlotID", NULL, "Failed to parse "
+			    "hex slot id '%s'", str));
+		}
+		if (n < 0x82 ||
+		    (n > 0x95 && n < 0x9A) ||
+		    (n > 0x9E && n != 0xF9)) {
+			return (errf("InvalidSlotID", NULL, "Slot ID "
+			    "out of range: '%s'", str));
+		}
+		*out = n;
+		return (ERRF_OK);
+	}
+	return (errf("InvalidSlotID", NULL, "Invalid or unsupported PIV "
+	    "slot ID: '%s'", str));
 }
