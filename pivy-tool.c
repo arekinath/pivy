@@ -1715,6 +1715,79 @@ cmd_cert(uint slotid)
 }
 
 static errf_t *
+cmd_write_cert(uint slotid)
+{
+	errf_t *err;
+	uint8_t *cbuf;
+	const unsigned char *p;
+	size_t clen;
+	X509 *x;
+
+	assert_slotid(slotid);
+
+	cbuf = read_stdin(16384, &clen);
+	VERIFY(cbuf != NULL);
+
+	p = cbuf;
+	x = d2i_X509(NULL, &p, clen);
+	if (x == NULL) {
+		make_sslerrf(err, "d2i_X509", "parsing X509 certificate");
+		err = errf("write_cert", err,
+		    "Invalid certificate input provided (expected DER on "
+		    "stdin)");
+		return (err);
+	}
+	X509_free(x);
+
+	if ((err = piv_txn_begin(selk)))
+		errfx(1, err, "failed to open transaction");
+	assert_select(selk);
+admin_again:
+	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
+	if (err && (errf_caused_by(err, "PermissionError") ||
+	    errf_caused_by(err, "ArgumentError")) &&
+	    admin_key == DEFAULT_ADMIN_KEY) {
+		errf_free(err);
+		err = try_pinfo_admin_key(selk);
+		if (err == ERRF_OK)
+			goto admin_again;
+	}
+
+	if (err == ERRF_OK)
+		err = piv_write_cert(selk, slotid, cbuf, clen, PIV_COMP_NONE);
+
+	if (err == ERRF_OK && slotid >= 0x82 && slotid <= 0x95 &&
+	    piv_token_keyhistory_oncard(selk) <= slotid - 0x82) {
+		uint oncard, offcard;
+		const char *url;
+
+		oncard = piv_token_keyhistory_oncard(selk);
+		offcard = piv_token_keyhistory_offcard(selk);
+		url = piv_token_offcard_url(selk);
+
+		++oncard;
+
+		err = piv_write_keyhistory(selk, oncard, offcard, url);
+
+		if (err) {
+			warnfx(err, "failed to update key "
+			    "history object with new cert, trying to "
+			    "continue anyway...");
+			err = ERRF_OK;
+		}
+	}
+
+	piv_txn_end(selk);
+
+	if (err) {
+		err = errf("write_cert", err, "failed to write new cert");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
 cmd_sign(uint slotid)
 {
 	struct piv_slot *cert;
@@ -2451,6 +2524,8 @@ usage(void)
 	    "  import <slot>          Accept a SSH private key on stdin\n"
 	    "                         and import it to a Yubikey (generates\n"
 	    "                         a self-signed cert to go with it)\n"
+	    "  write-cert <slot>      Takes a DER X.509 certificate on stdin\n"
+	    "                         and replaces the cert in the given slot\n"
 	    "  change-pin             Changes the PIV PIN\n"
 	    "  change-puk             Changes the PIV PUK\n"
 	    "  reset-pin              Resets the PIN using the PUK\n"
@@ -3037,6 +3112,26 @@ main(int argc, char *argv[])
 
 		check_select_key();
 		err = cmd_import(slotid);
+
+	} else if (strcmp(op, "write-cert") == 0) {
+		uint slotid;
+
+		if (optind >= argc) {
+			warnx("not enough arguments for %s (slot required)",
+			    op);
+			usage();
+		}
+		slotid = strtol(argv[optind++], NULL, 16);
+
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+
+		check_select_key();
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_write_cert(slotid);
 
 	} else if (strcmp(op, "version") == 0) {
 		fprintf(stdout, "%s\n", PIVY_VERSION);
