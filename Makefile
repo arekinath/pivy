@@ -193,9 +193,11 @@ EBOX_COMMON_HEADERS=		\
 
 PIVTOOL_SOURCES=		\
 	pivy-tool.c		\
+	pkinit_asn1.c		\
 	$(PIV_COMMON_SOURCES)	\
 	$(LIBSSH_SOURCES)
 PIVTOOL_HEADERS=		\
+	pkinit_asn1.h		\
 	$(PIV_COMMON_HEADERS)
 
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)

@@ -4,7 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  * Copyright (c) 2017, Joyent Inc
- * Author: Alex Wilson <alex.wilson@joyent.com>
+ * Copyright 2021 The University of Queensland
+ *
+ * Author: Alex Wilson <alex@uq.edu.au>
  */
 
 #include <stdio.h>
@@ -55,6 +57,7 @@ int PEM_write_X509(FILE *fp, X509 *x);
 #include "bunyan.h"
 #include "utils.h"
 #include "debug.h"
+#include "pkinit_asn1.h"
 
 /* We need the piv_cert_comp enum */
 #include "piv-internal.h"
@@ -71,6 +74,7 @@ static boolean_t parseable = B_FALSE;
 static boolean_t enum_all_retired = B_FALSE;
 static const char *cn = NULL;
 static const char *upn = NULL;
+static const char *krbpn = NULL;
 static boolean_t save_pinfo_admin = B_TRUE;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
@@ -1158,6 +1162,7 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	const char *guidhex;
 	const char *myupn = upn;
 	const char *mycn = cn;
+	const char *mykrbpn = krbpn;
 
 	guidhex = piv_token_shortid(selk);
 
@@ -1227,13 +1232,6 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 
 	if (myupn != NULL && eku == NULL) {
 		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
-	}
-
-	if (myupn != NULL) {
-		char *newupn = calloc(1, 128);
-		snprintf(newupn, 128,
-		    "otherName:1.3.6.1.4.1.311.20.2.3;UTF8:%s", myupn);
-		myupn = newupn;
 	}
 
 	pkey = EVP_PKEY_new();
@@ -1325,12 +1323,66 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 		X509_EXTENSION_free(ext);
 	}
 
-	if (myupn != NULL) {
-		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_subject_alt_name,
-		    (char *)myupn);
+	if (myupn != NULL || mykrbpn != NULL) {
+		ASN1_STRING *xdata;
+		STACK_OF(GENERAL_NAME) *gns;
+		GENERAL_NAME *gn;
+		ASN1_OBJECT *obj;
+		PKINIT_PRINC *princ;
+		ASN1_TYPE *typ;
+
+		gns = sk_GENERAL_NAME_new_null();
+		VERIFY(gns != NULL);
+
+		if (myupn != NULL) {
+			ASN1_UTF8STRING *str;
+
+			obj = OBJ_txt2obj("1.3.6.1.4.1.311.20.2.3", 1);
+			VERIFY(obj != NULL);
+
+			str = ASN1_UTF8STRING_new();
+			VERIFY(str != NULL);
+			VERIFY(ASN1_STRING_set(str, myupn, strlen(myupn)) == 1);
+
+			typ = ASN1_TYPE_new();
+			VERIFY(typ != NULL);
+			ASN1_TYPE_set(typ, V_ASN1_UTF8STRING, str);
+
+			gn = GENERAL_NAME_new();
+			VERIFY(gn != NULL);
+			VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
+			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
+		}
+
+		if (mykrbpn != NULL) {
+			obj = OBJ_txt2obj("1.3.6.1.5.2.2", 1);
+			VERIFY(obj != NULL);
+
+			princ = v2i_PKINIT_PRINC(NULL, mykrbpn);
+			if (princ == NULL) {
+				return (funcerrf(NULL, "failed to parse krb5 "
+				    "principal name: %s", mykrbpn));
+			}
+
+			xdata = pack_PKINIT_PRINC(princ, NULL);
+			VERIFY(xdata != NULL);
+
+			typ = ASN1_TYPE_new();
+			VERIFY(typ != NULL);
+			ASN1_TYPE_set(typ, V_ASN1_SEQUENCE, xdata);
+
+			gn = GENERAL_NAME_new();
+			VERIFY(gn != NULL);
+			GENERAL_NAME_set0_othername(gn, obj, typ);
+			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
+		}
+
+		ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, gns);
 		VERIFY(ext != NULL);
 		X509_add_ext(cert, ext, -1);
 		X509_EXTENSION_free(ext);
+
+		sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
 	}
 
 	VERIFY(X509_set_pubkey(cert, pkey) == 1);
@@ -1785,6 +1837,255 @@ admin_again:
 	}
 
 	return (ERRF_OK);
+}
+
+static errf_t *
+cmd_req_cert(uint slotid)
+{
+	errf_t *err = ERRF_OK;
+	struct piv_slot *slot;
+	EVP_PKEY *pkey;
+	X509_REQ *req;
+	X509_NAME *subj;
+	X509_EXTENSION *ext;
+	int nid;
+	int rv;
+	ASN1_TYPE null_parameter;
+	enum sshdigest_types wantalg, hashalg;
+	X509V3_CTX x509ctx;
+	uint8_t *tbs = NULL, *sig;
+	size_t tbslen, siglen;
+	struct sshkey *pub;
+	const char *mycn = cn;
+	const char *myupn = upn;
+	const char *mykrbpn = krbpn;
+	STACK_OF(X509_EXTENSION) *exts;
+	uint i;
+
+	if (myupn == NULL)
+		myupn = getenv("UPN");
+	if (myupn == NULL)
+		myupn = getenv("LOGNAME");
+
+	if (mycn == NULL)
+		mycn = getenv("CN");
+	if (mycn == NULL)
+		mycn = getenv("LOGNAME");
+
+	if (override == NULL) {
+		if ((err = piv_txn_begin(selk)))
+			return (err);
+		assert_select(selk);
+		err = piv_read_cert(selk, slotid);
+		piv_txn_end(selk);
+
+		slot = piv_get_slot(selk, slotid);
+	} else {
+		slot = override;
+	}
+
+	if (slot == NULL || err) {
+		err = funcerrf(err, "failed to read cert for signing key in "
+		    "slot %02X", slotid);
+		return (err);
+	}
+
+	pub = piv_slot_pubkey(slot);
+
+	pkey = EVP_PKEY_new();
+	VERIFY(pkey != NULL);
+	if (pub->type == KEY_RSA) {
+		RSA *copy = RSA_new();
+		VERIFY(copy != NULL);
+		copy->e = BN_dup(pub->rsa->e);
+		VERIFY(copy->e != NULL);
+		copy->n = BN_dup(pub->rsa->n);
+		VERIFY(copy->n != NULL);
+		rv = EVP_PKEY_assign_RSA(pkey, copy);
+		VERIFY(rv == 1);
+		nid = NID_sha256WithRSAEncryption;
+		wantalg = SSH_DIGEST_SHA256;
+	} else if (pub->type == KEY_ECDSA) {
+		boolean_t haveSha256 = B_FALSE;
+		boolean_t haveSha1 = B_FALSE;
+
+		EC_KEY *copy = EC_KEY_dup(pub->ecdsa);
+		rv = EVP_PKEY_assign_EC_KEY(pkey, copy);
+		VERIFY(rv == 1);
+
+		for (i = 0; i < piv_token_nalgs(selk); ++i) {
+			enum piv_alg alg = piv_token_alg(selk, i);
+			if (alg == PIV_ALG_ECCP256_SHA256) {
+				haveSha256 = B_TRUE;
+			} else if (alg == PIV_ALG_ECCP256_SHA1) {
+				haveSha1 = B_TRUE;
+			}
+		}
+		if (haveSha1 && !haveSha256) {
+			nid = NID_ecdsa_with_SHA1;
+			wantalg = SSH_DIGEST_SHA1;
+		} else {
+			nid = NID_ecdsa_with_SHA256;
+			wantalg = SSH_DIGEST_SHA256;
+		}
+	} else {
+		return (funcerrf(NULL, "invalid key type"));
+	}
+
+	req = X509_REQ_new();
+	VERIFY(req != NULL);
+
+	VERIFY(X509_REQ_set_version(req, 1) == 1);
+	VERIFY(X509_REQ_set_pubkey(req, pkey) == 1);
+
+	subj = X509_NAME_new();
+	VERIFY(subj != NULL);
+
+	VERIFY(X509_NAME_add_entry_by_NID(subj, NID_commonName,
+	    MBSTRING_ASC, (unsigned char *)mycn, -1, -1, 0) == 1);
+
+	VERIFY(X509_REQ_set_subject_name(req, subj) == 1);
+
+	X509V3_set_ctx_nodb(&x509ctx);
+	X509V3_set_ctx(&x509ctx, NULL, NULL, req, NULL, 0);
+
+	exts = sk_X509_EXTENSION_new_null();
+	VERIFY(exts != NULL);
+
+	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_basic_constraints,
+	    (char *)"critical,CA:FALSE");
+	VERIFY(ext != NULL);
+	VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
+
+	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_key_usage,
+	    (char *)"critical,digitalSignature,nonRepudiation");
+	VERIFY(ext != NULL);
+	VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
+
+	ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_ext_key_usage,
+	    (char *)"clientAuth,1.3.6.1.4.1.311.20.2.2");
+	VERIFY(ext != NULL);
+	VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
+
+	{
+		ASN1_STRING *xdata;
+		STACK_OF(GENERAL_NAME) *gns;
+		GENERAL_NAME *gn;
+		ASN1_OBJECT *obj;
+		uint gnc = 0;
+		PKINIT_PRINC *princ;
+		ASN1_TYPE *typ;
+
+		gns = sk_GENERAL_NAME_new_null();
+		VERIFY(gns != NULL);
+
+		if (myupn != NULL) {
+			ASN1_UTF8STRING *str;
+
+			obj = OBJ_txt2obj("1.3.6.1.4.1.311.20.2.3", 1);
+			VERIFY(obj != NULL);
+
+			str = ASN1_UTF8STRING_new();
+			VERIFY(str != NULL);
+			VERIFY(ASN1_STRING_set(str, myupn, strlen(myupn)) == 1);
+
+			typ = ASN1_TYPE_new();
+			VERIFY(typ != NULL);
+			ASN1_TYPE_set(typ, V_ASN1_UTF8STRING, str);
+
+			gn = GENERAL_NAME_new();
+			VERIFY(gn != NULL);
+			VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
+			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
+			++gnc;
+		}
+
+		if (mykrbpn != NULL) {
+			obj = OBJ_txt2obj("1.3.6.1.5.2.2", 1);
+			VERIFY(obj != NULL);
+
+			princ = v2i_PKINIT_PRINC(NULL, mykrbpn);
+			if (princ == NULL) {
+				return (funcerrf(NULL, "failed to parse krb5 "
+				    "principal name: %s", mykrbpn));
+			}
+
+			xdata = pack_PKINIT_PRINC(princ, NULL);
+			VERIFY(xdata != NULL);
+
+			typ = ASN1_TYPE_new();
+			VERIFY(typ != NULL);
+			ASN1_TYPE_set(typ, V_ASN1_SEQUENCE, xdata);
+
+			gn = GENERAL_NAME_new();
+			VERIFY(gn != NULL);
+			GENERAL_NAME_set0_othername(gn, obj, typ);
+			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
+			++gnc;
+		}
+
+		if (gnc > 0) {
+			ext = X509V3_EXT_i2d(NID_subject_alt_name, 0, gns);
+			VERIFY(ext != NULL);
+			VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
+		}
+		sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
+	}
+
+	VERIFY(X509_REQ_add_extensions(req, exts) == 1);
+	sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
+
+	req->sig_alg->algorithm = OBJ_nid2obj(nid);
+	if (pub->type == KEY_RSA) {
+		bzero(&null_parameter, sizeof (null_parameter));
+		null_parameter.type = V_ASN1_NULL;
+		null_parameter.value.ptr = NULL;
+		req->sig_alg->parameter = &null_parameter;
+	}
+
+	rv = i2d_X509_REQ_INFO(req->req_info, &tbs);
+	if (tbs == NULL || rv <= 0) {
+		make_sslerrf(err, "i2d_X509_REQ_INFO", "generating req");
+		err = funcerrf(err, "failed to generate new req");
+		return (err);
+	}
+	tbslen = (size_t)rv;
+
+	hashalg = wantalg;
+
+	if ((err = piv_txn_begin(selk)))
+		return (err);
+
+	assert_select(selk);
+	assert_pin(selk, slot, B_FALSE);
+
+signagain:
+	err = piv_sign(selk, slot, tbs, tbslen, &hashalg, &sig, &siglen);
+
+	if (errf_caused_by(err, "PermissionError")) {
+		assert_pin(selk, slot, B_TRUE);
+		goto signagain;
+	}
+
+	piv_txn_end(selk);
+
+	if (err) {
+		err = funcerrf(err, "failed to sign cert req with key");
+		return (err);
+	}
+
+	if (hashalg != wantalg) {
+		err = funcerrf(NULL, "card could not sign with the "
+		    "requested hash algorithm");
+		return (err);
+	}
+
+	ASN1_STRING_set(req->signature, sig, siglen);
+	req->signature->flags = ASN1_STRING_FLAG_BITS_LEFT;
+
+	VERIFY(i2d_X509_REQ_fp(stdout, req) == 1);
+
+	return (NULL);
 }
 
 static errf_t *
@@ -2526,6 +2827,8 @@ usage(void)
 	    "                         a self-signed cert to go with it)\n"
 	    "  write-cert <slot>      Takes a DER X.509 certificate on stdin\n"
 	    "                         and replaces the cert in the given slot\n"
+	    "  req-cert <slot>        Generates an X.509 CSR for the key in\n"
+	    "                         the given slot (for user auth)\n"
 	    "  change-pin             Changes the PIV PIN\n"
 	    "  change-puk             Changes the PIV PUK\n"
 	    "  reset-pin              Resets the PIN using the PUK\n"
@@ -2571,7 +2874,7 @@ usage(void)
 	    "Options for 'list':\n"
 	    "  -p                     Generate parseable output\n"
 	    "\n"
-	    "Options for 'generate':\n"
+	    "Options for 'generate'/'req-cert':\n"
 	    "  -a <algo>              Choose algorithm of new key\n"
 	    "                         EC algos: eccp256, eccp384\n"
 	    "                         RSA algos: rsa1024, rsa2048, rsa4096\n"
@@ -2579,6 +2882,8 @@ usage(void)
 	    "                         the new slot's certificate\n"
 	    "  -u <upn>               Set a UPN= attribute to be used on\n"
 	    "                         the new slot's certificate\n"
+	    "  -r <principal>         Set a KRB5 PKINIT principal name to be\n"
+	    "                         used on the new slot's certificate\n"
 	    "  -t <never|always|cached>\n"
 	    "                         Set the touch policy. Only supported\n"
 	    "                         with YubiKeys\n"
@@ -2598,16 +2903,7 @@ usage(void)
 	exit(EXIT_BAD_ARGS);
 }
 
-/*const char *optstring =
-    "d(debug)"
-    "p(parseable)"
-    "g:(guid)"
-    "P:(pin)"
-    "a:(algorithm)"
-    "f(force)"
-    "K:(admin-key)"
-    "k:(key)";*/
-const char *optstring = "dpg:P:a:fK:k:n:t:i:u:RXA:N:";
+const char *optstring = "dpg:P:a:fK:k:n:t:i:u:RXA:N:r:";
 
 int
 main(int argc, char *argv[])
@@ -2694,6 +2990,9 @@ main(int argc, char *argv[])
 			break;
 		case 'n':
 			cn = optarg;
+			break;
+		case 'r':
+			krbpn = optarg;
 			break;
 		case 'f':
 			min_retries = 0;
@@ -3132,6 +3431,26 @@ main(int argc, char *argv[])
 		if (hasover)
 			override = piv_force_slot(selk, slotid, overalg);
 		err = cmd_write_cert(slotid);
+
+	} else if (strcmp(op, "req-cert") == 0) {
+		uint slotid;
+
+		if (optind >= argc) {
+			warnx("not enough arguments for %s (slot required)",
+			    op);
+			usage();
+		}
+		slotid = strtol(argv[optind++], NULL, 16);
+
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+
+		check_select_key();
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_req_cert(slotid);
 
 	} else if (strcmp(op, "version") == 0) {
 		fprintf(stdout, "%s\n", PIVY_VERSION);
