@@ -81,6 +81,7 @@ static size_t guid_len = 0;
 static uint min_retries = 1;
 static struct sshkey *opubkey = NULL;
 static const char *pin = NULL;
+static const char *newpin = NULL;
 static const uint8_t DEFAULT_ADMIN_KEY[] = {
 	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
 	0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
@@ -1005,7 +1006,7 @@ cmd_change_pin(enum piv_pin pintype)
 {
 	errf_t *err;
 	char prompt[64];
-	char *p, *newpin, *guidhex;
+	char *p, *guidhex;
 	const char *charType = "digits";
 	if (piv_token_is_ykpiv(selk))
 		charType = "characters";
@@ -1024,35 +1025,42 @@ cmd_change_pin(enum piv_pin pintype)
 		}
 		pin = strdup(p);
 	}
+
+	if (newpin == NULL) {
 again:
-	snprintf(prompt, 64, "Enter new %s (%s): ",
-	    pin_type_to_name(pintype), guidhex);
-	do {
-		p = getpass(prompt);
-	} while (p == NULL && errno == EINTR);
-	if (p == NULL) {
-		err = errfno("getpass", errno, "");
-		return (err);
+		snprintf(prompt, 64, "Enter new %s (%s): ",
+		    pin_type_to_name(pintype), guidhex);
+		do {
+			p = getpass(prompt);
+		} while (p == NULL && errno == EINTR);
+		if (p == NULL) {
+			err = errfno("getpass", errno, "");
+			return (err);
+		}
+		if (strlen(p) < 4 || strlen(p) > 8) {
+			warnx("PIN must be 4-8 %s", charType);
+			goto again;
+		}
+		newpin = strdup(p);
+		snprintf(prompt, 64, "Confirm new %s (%s): ",
+		    pin_type_to_name(pintype), guidhex);
+		do {
+			p = getpass(prompt);
+		} while (p == NULL && errno == EINTR);
+		if (p == NULL) {
+			err = errfno("getpass", errno, "");
+			return (err);
+		}
+		if (strcmp(p, newpin) != 0) {
+			warnx("PINs do not match");
+			goto again;
+		}
+		free(guidhex);
 	}
-	if (strlen(p) < 4 || strlen(p) > 8) {
+	if (strlen(newpin) < 4 || strlen(newpin) > 8) {
 		warnx("PIN must be 4-8 %s", charType);
 		goto again;
 	}
-	newpin = strdup(p);
-	snprintf(prompt, 64, "Confirm new %s (%s): ",
-	    pin_type_to_name(pintype), guidhex);
-	do {
-		p = getpass(prompt);
-	} while (p == NULL && errno == EINTR);
-	if (p == NULL) {
-		err = errfno("getpass", errno, "");
-		return (err);
-	}
-	if (strcmp(p, newpin) != 0) {
-		warnx("PINs do not match");
-		goto again;
-	}
-	free(guidhex);
 
 	if ((err = piv_txn_begin(selk)))
 		return (err);
@@ -3042,8 +3050,15 @@ main(int argc, char *argv[])
 			}
 			break;
 		case 'P':
-			pin = optarg;
-			break;
+			if (pin == NULL) {
+				pin = optarg;
+				break;
+			}
+			if (newpin == NULL) {
+				newpin = optarg;
+				break;
+			}
+			errx(EXIT_BAD_ARGS, "too many -P options given");
 		case 'p':
 			parseable = B_TRUE;
 			break;
