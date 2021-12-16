@@ -988,7 +988,7 @@ cmd_tpl_create(const char *tplfile, int argc, char *argv[])
 
 	tpl = ebox_tpl_alloc();
 
-	for (i = 1; i < argc; ++i) {
+	for (i = 0; i < argc; ++i) {
 		if (strcmp(argv[i], "primary") == 0) {
 			if (++i > argc) {
 				error = errf("SyntaxError", NULL,
@@ -1168,7 +1168,7 @@ cmd_tpl_edit(const char *tplfile, int argc, char *argv[])
 	FILE *file;
 	char *dirpath;
 
-	for (i = 1; i < argc; ++i) {
+	for (i = 0; i < argc; ++i) {
 		if (strcmp(argv[i], "add-primary") == 0) {
 			if (++i > argc) {
 				error = errf("SyntaxError", NULL,
