@@ -167,7 +167,6 @@ static boolean_t txnopen = B_FALSE;
 static uint64_t txntimeout = 0;
 static SCARDCONTEXT ctx;
 static uint64_t last_update;
-static uint64_t last_op;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static boolean_t sign_9d = B_FALSE;
@@ -242,6 +241,7 @@ const uint64_t pid_auth_cache_time = 15000;
 
 time_t card_probe_interval = 120; /* card_probe_interval_nopin */
 uint card_probe_fails = 0;
+uint64_t card_probe_next = 0;
 
 /* pid of shell == parent of agent */
 pid_t parent_pid = -1;
@@ -388,6 +388,32 @@ valid_pin(const char *pin)
 }
 
 static void
+set_probe_interval(boolean_t pin_loaded)
+{
+	uint64_t now;
+
+	now = monotime();
+
+	if (pin_loaded)
+		card_probe_interval = card_probe_interval_pin;
+	else
+		card_probe_interval = card_probe_interval_nopin;
+
+	now += card_probe_interval * 1000;
+	if (now <= card_probe_next)
+		card_probe_next = now;
+}
+
+static void
+extend_probe_deadline(void)
+{
+	uint64_t now;
+	now = monotime();
+	now += card_probe_interval * 1000;
+	card_probe_next = now;
+}
+
+static void
 drop_pin(void)
 {
 	if (pin_len != 0) {
@@ -395,7 +421,7 @@ drop_pin(void)
 		explicit_bzero(pin, pin_len);
 	}
 	pin_len = 0;
-	card_probe_interval = card_probe_interval_nopin;
+	set_probe_interval(B_FALSE);
 }
 
 static errf_t *
@@ -513,11 +539,16 @@ static void
 probe_card(void)
 {
 	errf_t *err;
+	uint64_t now;
+
+	now = monotime();
+	card_probe_next = now + card_probe_interval * 1000;
+
 	if (card_probe_fails > card_probe_limit)
 		return;
+
 	bunyan_log(BNY_TRACE, "doing idle probe", NULL);
 
-	last_op = monotime();
 	if ((err = agent_piv_open())) {
 		bunyan_log(BNY_TRACE, "error opening for idle probe",
 		    "error", BNY_ERF, err, NULL);
@@ -530,6 +561,7 @@ probe_card(void)
 		if (card_probe_fails++ > 0)
 			drop_pin();
 		selk = NULL;
+		card_probe_next = now + card_probe_interval * 1000;
 		return;
 	}
 	if (cak != NULL && (err = auth_cak())) {
@@ -540,6 +572,7 @@ probe_card(void)
 		drop_pin();
 		selk = NULL;
 		card_probe_fails++;
+		card_probe_next = now + card_probe_interval * 1000;
 		return;
 	}
 	agent_piv_close(B_FALSE);
@@ -647,13 +680,14 @@ try_askpass(void)
 		errf_free(err);
 		goto out;
 	}
+	extend_probe_deadline();
 	agent_piv_close(B_FALSE);
 	if (pin_len != 0)
 		explicit_bzero(pin, pin_len);
 	pin_len = strlen(buf);
 	bcopy(buf, pin, pin_len);
 	bunyan_log(BNY_INFO, "storing PIN in memory", NULL);
-	card_probe_interval = card_probe_interval_pin;
+	set_probe_interval(B_TRUE);
 
 out:
 	explicit_bzero(buf, sizeof(buf));
@@ -816,6 +850,8 @@ agent_piv_try_pin(boolean_t canskip)
 	if (pin_len != 0) {
 		err = piv_verify_pin(selk, piv_token_default_auth(selk),
 		    pin, &retries, canskip);
+		if (err == ERRF_OK)
+			extend_probe_deadline();
 		err = wrap_pin_error(err, retries);
 	}
 	return (err);
@@ -1827,6 +1863,7 @@ process_lock_agent(socket_entry_t *e, int lock)
 		    passwd, &retries, B_FALSE);
 
 		if (err == ERRF_OK) {
+			extend_probe_deadline();
 			agent_piv_close(B_FALSE);
 			if (pin_len != 0)
 				explicit_bzero(pin, pin_len);
@@ -1834,7 +1871,7 @@ process_lock_agent(socket_entry_t *e, int lock)
 			bcopy(passwd, pin, pwlen + 1);
 			send_status(e, 1);
 			bunyan_log(BNY_INFO, "storing PIN in memory", NULL);
-			card_probe_interval = card_probe_interval_pin;
+			set_probe_interval(B_TRUE);
 			goto out;
 		}
 		agent_piv_close(B_TRUE);
@@ -1926,8 +1963,6 @@ process_message(u_int socknum)
 	    (e->se_exepath == NULL) ? "???" : e->se_exepath,
 	    NULL);
 	bunyan_log(BNY_DEBUG, "received ssh-agent message", NULL);
-
-	last_op = monotime();
 
 	switch (type) {
 	case SSH_AGENTC_LOCK:
@@ -2306,13 +2341,21 @@ prepare_poll(struct pollfd **pfdp, size_t *npfdp, int *timeoutp)
 		}
 	}
 	now = monotime();
-	deadline = txnopen ? (txntimeout - now) : 0;
+	deadline = 0;
+	if (txnopen && txntimeout <= now)
+		deadline = 1;
+	else if (txnopen)
+		deadline = txntimeout - now;
 	if (parent_alive_interval != 0)
 		deadline = (deadline == 0) ? parent_alive_interval * 1000 :
 		    MINIMUM(deadline, parent_alive_interval * 1000);
-	if (card_probe_interval != 0)
-		deadline = (deadline == 0) ? card_probe_interval * 1000 :
-		    MINIMUM(deadline, card_probe_interval * 1000);
+	if (card_probe_interval != 0) {
+		uint64_t remtime = card_probe_next - now;
+		if (now <= card_probe_next)
+			remtime = 1;
+		deadline = (deadline == 0) ? remtime :
+		    MINIMUM(deadline, remtime);
+	}
 	if (deadline == 0) {
 		*timeoutp = -1; /* INFTIM */
 	} else {
@@ -2904,7 +2947,6 @@ skip:
 	} else {
 		agent_piv_close(B_TRUE);
 	}
-	last_op = monotime();
 
 	while (1) {
 		prepare_poll(&pfd, &npfd, &timeout);
@@ -2913,10 +2955,8 @@ skip:
 		if (parent_alive_interval != 0)
 			check_parent_exists();
 		now = monotime();
-		if (card_probe_interval != 0 &&
-		    (now - last_op) >= card_probe_interval * 1000) {
+		if (card_probe_interval != 0 && now >= card_probe_next)
 			probe_card();
-		}
 		if (txnopen && now >= txntimeout)
 			agent_piv_close(B_TRUE);
 		/*(void) reaper();*/	/* remove expired keys */
