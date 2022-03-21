@@ -168,6 +168,7 @@ void tlv_pushl(struct tlv_state *ts, uint tag, size_t maxlen);
 void tlv_pop(struct tlv_state *ts);
 
 void tlv_write(struct tlv_state *ts, const uint8_t *src, size_t len);
+void tlv_write_u16(struct tlv_state *ts, uint16_t val);
 void tlv_write_u8to32(struct tlv_state *ts, uint32_t val);
 void tlv_write_byte(struct tlv_state *ts, uint8_t val);
 

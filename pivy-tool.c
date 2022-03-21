@@ -424,6 +424,8 @@ cmd_list(void)
 	size_t len;
 	enum piv_pin defauth;
 	errf_t *err;
+	const struct piv_chuid *chuid;
+	const struct piv_fascn *fascn;
 
 	for (pk = ks; pk != NULL; pk = piv_token_next(pk)) {
 		const uint8_t *tguid = piv_token_guid(pk);
@@ -446,6 +448,12 @@ cmd_list(void)
 			}
 		}
 		piv_txn_end(pk);
+
+		chuid = piv_token_chuid(pk);
+		if (chuid != NULL)
+			fascn = piv_chuid_get_fascn(chuid);
+		else
+			fascn = NULL;
 
 		if (parseable) {
 			uint8_t nover[] = { 0, 0, 0 };
@@ -482,11 +490,8 @@ cmd_list(void)
 			continue;
 		}
 
-		if (piv_token_has_chuid(pk)) {
-			buf = piv_token_shortid(pk);
-		} else {
-			buf = strdup("00000000");
-		}
+
+		buf = piv_token_shortid(pk);
 		printf("%10s: %s\n", "card", buf);
 		free(buf);
 		printf("%10s: %s\n", "device", piv_token_rdrname(pk));
@@ -499,19 +504,17 @@ cmd_list(void)
 			printf("%10s: %s\n", "chuid", "ok");
 		}
 		printf("%10s: %s\n", "guid", piv_token_guid_hex(pk));
-		temp = piv_token_chuuid(pk);
+		temp = piv_chuid_get_chuuid(chuid);
 		if (temp != NULL) {
 			buf = buf_to_hex(temp, 16, B_FALSE);
 			printf("%10s: %s\n", "owner", buf);
 			free(buf);
 		}
-		temp = piv_token_fascn(pk, &len);
-		if (temp != NULL && len > 0) {
-			buf = buf_to_hex(temp, len, B_FALSE);
-			printf("%10s: %s\n", "fasc-n", buf);
-			free(buf);
+		if (fascn != NULL) {
+			printf("%10s: %s\n", "fasc-n",
+			    piv_fascn_to_string(fascn));
 		}
-		temp = piv_token_expiry(pk, &len);
+		temp = piv_chuid_get_expiry(chuid, &len);
 		if (len == 8 && temp[0] >= '0' && temp[0] <= '9') {
 			printf("%10s: %c%c%c%c-%c%c-%c%c\n", "expiry",
 			    temp[0], temp[1], temp[2], temp[3],
@@ -575,6 +578,7 @@ cmd_list(void)
 			printf("\n");
 			continue;
 		}
+
 		printf("%10s:\n", "slots");
 		printf("%10s %-3s  %-6s  %-4s  %-30s\n", "", "ID", "TYPE",
 		    "BITS", "CERTIFICATE");
@@ -593,92 +597,113 @@ cmd_list(void)
 static errf_t *
 save_pinfo_admin_key(struct piv_token *tk)
 {
-	struct tlv_state *tlv;
+	struct piv_pinfo *pinfo;
 	errf_t *err;
-
-	tlv = tlv_init_write();
-	tlv_push(tlv, 0x88);
-	tlv_push(tlv, 0x89);
-	tlv_write(tlv, admin_key, key_length);
-	tlv_pop(tlv);
-	tlv_pop(tlv);
-
-	err = piv_write_file(tk, PIV_TAG_PRINTINFO,
-	    tlv_buf(tlv), tlv_len(tlv));
-	tlv_free(tlv);
+	assert_pin(tk, NULL, B_FALSE);
+again:
+	err = piv_read_pinfo(tk, &pinfo);
+	if (err && errf_caused_by(err, "PermissionError")) {
+		assert_pin(tk, NULL, B_TRUE);
+		goto again;
+	}
+	if (err) {
+		errf_free(err);
+		pinfo = piv_pinfo_new();
+	}
+	ykpiv_pinfo_set_admin_key(pinfo, admin_key, key_length);
+	err = piv_write_pinfo(tk, pinfo);
+	piv_pinfo_free(pinfo);
 	return (err);
 }
 
 static errf_t *
 try_pinfo_admin_key(struct piv_token *tk)
 {
-	uint8_t *data = NULL;
-	size_t dlen = 0;
 	errf_t *err;
-	uint tag;
-	struct tlv_state *tlv = NULL;
+	struct piv_pinfo *pinfo;
 
 	assert_pin(tk, NULL, B_FALSE);
 again:
-	err = piv_read_file(tk, PIV_TAG_PRINTINFO, &data, &dlen);
+	err = piv_read_pinfo(tk, &pinfo);
 	if (err && errf_caused_by(err, "PermissionError")) {
 		assert_pin(tk, NULL, B_TRUE);
 		goto again;
 	}
 	if (err == ERRF_OK) {
-		tlv = tlv_init(data, 0, dlen);
-		while (!tlv_at_end(tlv)) {
-			if ((err = tlv_read_tag(tlv, &tag)))
-				goto out;
-			if (tag == 0x88) {
-				if ((err = tlv_read_tag(tlv, &tag)))
-					goto out;
-				if (tag == 0x89) {
-					uint8_t *key;
-					size_t keylen, ekeylen;
-					err = tlv_read_alloc(tlv, &key,
-					    &keylen);
-					if (err)
-						goto out;
-					if ((err = tlv_end(tlv)))
-						goto out;
-					ekeylen = len_for_admin_alg(key_alg);
-					if (keylen == ekeylen) {
-						key_length = keylen;
-						admin_key = key;
-						err = ERRF_OK;
-					} else {
-						err = errf("BadLength", NULL,
-						    "Data is wrong length for "
-						    "an admin key (%d bytes)",
-						    keylen);
-						goto out;
-					}
-				} else {
-					tlv_skip(tlv);
-				}
-				if ((err = tlv_end(tlv)))
-					goto out;
-			} else {
-				tlv_skip(tlv);
-			}
+		const uint8_t *key;
+		size_t keylen, ekeylen;
+
+		key = ykpiv_pinfo_get_admin_key(pinfo, &keylen);
+		ekeylen = len_for_admin_alg(key_alg);
+		if (key != NULL && keylen == ekeylen) {
+			key_length = keylen;
+			admin_key = malloc(keylen);
+			bcopy(key, (uint8_t *)admin_key, keylen);
+			err = ERRF_OK;
+		} else if (key == NULL) {
+			err = errf("NoAdminKey", NULL, "PIV PINFO file "
+			    "does not contain Yubico admin key extension");
+			goto out;
+		} else {
+			err = errf("BadLength", NULL, "Data is wrong length "
+			    "for an admin key (%d bytes)", keylen);
+			goto out;
 		}
 		bunyan_log(BNY_DEBUG, "using admin key from printedinfo file",
 		    NULL);
-		tlv_free(tlv);
-		tlv = NULL;
+		piv_pinfo_free(pinfo);
 	}
 
 out:
-	if (tlv != NULL)
-		tlv_abort(tlv);
-	freezero(data, dlen);
 	if (err) {
 		err = errf("AdminAuthError", err, "PIV admin auth with "
 		    "default key failed, and failed to retrieve PIN-protected "
 		    "admin key data");
 	}
 	return (err);
+}
+
+static errf_t *
+cmd_pinfo(void)
+{
+	struct piv_pinfo *pinfo;
+	errf_t *err;
+	size_t len;
+	const char *org1, *org2;
+
+	if ((err = piv_txn_begin(selk)))
+		return (err);
+	assert_select(selk);
+	assert_pin(selk, NULL, B_FALSE);
+again:
+	err = piv_read_pinfo(selk, &pinfo);
+	if (errf_caused_by(err, "PermissionError")) {
+		assert_pin(selk, NULL, B_TRUE);
+		goto again;
+	}
+	piv_txn_end(selk);
+	if (err) {
+		err = funcerrf(err, "failed to read pinfo");
+		return (err);
+	}
+
+	printf("%12s: %s\n", "name", piv_pinfo_get_name(pinfo));
+	printf("%12s: %s\n", "affiliation", piv_pinfo_get_affiliation(pinfo));
+	printf("%12s: %s\n", "expiry", piv_pinfo_get_expiry(pinfo));
+	printf("%12s: %s\n", "serial", piv_pinfo_get_serial(pinfo));
+	printf("%12s: %s\n", "issuer", piv_pinfo_get_issuer(pinfo));
+
+	org1 = piv_pinfo_get_org_line_1(pinfo);
+	org2 = piv_pinfo_get_org_line_2(pinfo);
+	if (org1 != NULL || org2 != NULL) {
+		printf("%12s: %s\n", "organization", org1 ? org1 : "");
+		printf("%12s  %s\n", "", org2 ? org2 : "");
+	}
+
+	if (ykpiv_pinfo_get_admin_key(pinfo, &len) != NULL && len > 0)
+		printf("%12s: contains admin key\n", "yubico");
+
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -741,10 +766,11 @@ static errf_t *
 cmd_init(void)
 {
 	errf_t *err;
-	struct tlv_state *ccc, *chuid;
-	uint8_t nguid[16];
-	uint8_t fascn[25];
-	uint8_t expiry[8] = { '2', '0', '5', '0', '0', '1', '0', '1' };
+	struct tlv_state *ccc;
+	struct piv_chuid *chuid;
+	struct piv_fascn *fascn;
+	struct piv_pinfo *pinfo;
+	char serial[32] = {0};
 	uint8_t cardId[21] = {
 		/* GSC-RID: GSC-IS data model */
 		0xa0, 0x00, 0x00, 0x01, 0x16,
@@ -755,9 +781,7 @@ cmd_init(void)
 		0x00
 	};
 
-	arc4random_buf(nguid, sizeof (nguid));
 	arc4random_buf(&cardId[6], sizeof (cardId) - 6);
-	bzero(fascn, sizeof (fascn));
 
 	/* First, the CCC */
 	ccc = tlv_init_write();
@@ -801,24 +825,26 @@ cmd_init(void)
 	tlv_pop(ccc);
 
 	/* Now, set up the CHUID file */
-	chuid = tlv_init_write();
+	chuid = piv_chuid_new();
 
-	tlv_push(chuid, 0x30);
-	tlv_write(chuid, fascn, sizeof (fascn));
-	tlv_pop(chuid);
+	fascn = piv_fascn_zero();
+	piv_chuid_set_fascn(chuid, fascn);
+	piv_fascn_free(fascn);
 
-	tlv_push(chuid, 0x34);
-	tlv_write(chuid, nguid, sizeof (nguid));
-	tlv_pop(chuid);
+	piv_chuid_set_random_guid(chuid);
+	piv_chuid_set_expiry_rel(chuid, 3600*24*365*10);
 
-	tlv_push(chuid, 0x35);
-	tlv_write(chuid, expiry, sizeof (expiry));
-	tlv_pop(chuid);
+	/* And set up printed info */
+	pinfo = piv_pinfo_new();
 
-	tlv_push(chuid, 0x3E);
-	tlv_pop(chuid);
-	tlv_push(chuid, 0xFE);
-	tlv_pop(chuid);
+	piv_pinfo_set_name(pinfo, "pivy user");
+	piv_pinfo_set_expiry_rel(pinfo, 3600*24*365*10);
+	if (ykpiv_token_has_serial(selk)) {
+		snprintf(serial, sizeof (serial), "%u",
+		    ykpiv_token_serial(selk));
+		piv_pinfo_set_serial(pinfo, serial);
+	}
+	piv_pinfo_set_kv_string(pinfo, "generator", "pivy");
 
 	if ((err = piv_txn_begin(selk)))
 		return (err);
@@ -838,13 +864,14 @@ admin_again:
 		    tlv_buf(ccc), tlv_len(ccc));
 	}
 	if (err == ERRF_OK) {
-		err = piv_write_file(selk, PIV_TAG_CHUID,
-		    tlv_buf(chuid), tlv_len(chuid));
+		err = piv_write_chuid(selk, chuid);
+	}
+	if (err == ERRF_OK) {
+		err = piv_write_pinfo(selk, pinfo);
 	}
 	piv_txn_end(selk);
 
 	tlv_free(ccc);
-	tlv_free(chuid);
 
 	if (errf_caused_by(err, "DeviceOutOfMemoryError")) {
 		err = funcerrf(err, "out of EEPROM to write CHUID "
@@ -860,9 +887,12 @@ admin_again:
 	}
 
 	/* This is for cmd_setup */
-	guid = malloc(16);
-	bcopy(nguid, guid, sizeof (nguid));
-	guid_len = 16;
+	guid = malloc(GUID_LEN);
+	bcopy(piv_chuid_get_guid(chuid), guid, GUID_LEN);
+	guid_len = GUID_LEN;
+
+	piv_chuid_free(chuid);
+	piv_pinfo_free(pinfo);
 
 	return (ERRF_OK);
 }
@@ -2479,6 +2509,7 @@ usage(void)
 	    "usage: pivy-tool [options] <operation>\n"
 	    "Available operations:\n"
 	    "  list                   Lists PIV tokens present\n"
+	    "  pinfo                  Shows contents of Printed Info file\n"
 	    "  pubkey <slot>          Outputs a public key in SSH format\n"
 	    "  cert <slot>            Outputs DER certificate from slot\n"
 	    "\n"
@@ -2858,6 +2889,14 @@ main(int argc, char *argv[])
 		}
 		check_select_key();
 		err = cmd_update_keyhist();
+
+	} else if (strcmp(op, "pinfo") == 0) {
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+		check_select_key();
+		err = cmd_pinfo();
 
 	} else if (strcmp(op, "sign") == 0) {
 		enum piv_slotid slotid;

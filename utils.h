@@ -14,6 +14,9 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
+/* Can't use errf_t here (errf.h #includes this first) */
+struct errf;
+
 #if !defined(__APPLE__) && !defined(__sun)
 typedef uint64_t uintmax_t;
 #endif
@@ -24,6 +27,14 @@ typedef enum { B_FALSE = 0, B_TRUE = 1 } boolean_t;
 typedef unsigned int uint;
 typedef unsigned int u_int;
 #endif
+
+struct bitbuf;
+struct bitbuf *bitbuf_new(void);
+struct bitbuf *bitbuf_from(const uint8_t *, size_t len);
+void bitbuf_free(struct bitbuf *);
+struct errf *bitbuf_write(struct bitbuf *, uint32_t v, uint nbits);
+struct errf *bitbuf_read(struct bitbuf *, uint nbits, uint32_t *v);
+uint8_t *bitbuf_to_bytes(const struct bitbuf *, size_t *outlen);
 
 void *malloc_conceal(size_t size) __attribute__((malloc));
 void *calloc_conceal(size_t nmemb, size_t size) __attribute__((malloc));
@@ -53,8 +64,6 @@ void *reallocarray(void *, size_t, size_t);
 void explicit_bzero(void *, size_t);
 #endif
 
-/* Can't use errf_t here (errf.h #includes this first) */
-struct errf;
 struct sshbuf;
 struct errf *sshbuf_b16tod(const char *str, struct sshbuf *buf);
 

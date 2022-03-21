@@ -204,17 +204,8 @@ struct piv_token {
 	/* We use this to cache a cstring hex version of pt_guid */
 	char *pt_guidhex;
 
-	/* Do we have a CHUID file? */
-	boolean_t pt_nochuid;
-	/* Is it signed? */
-	boolean_t pt_signedchuid;
-
-	/* Fields from the CHUID file. */
-	uint8_t pt_fascn[26];
-	size_t pt_fascn_len;
-	uint8_t pt_expiry[8];			/* YYYYMMDD */
-	boolean_t pt_haschuuid;
-	uint8_t pt_chuuid[GUID_LEN];		/* Card Holder UUID */
+	/* Contents of the CHUID file. */
+	struct piv_chuid *pt_chuid;
 
 	/*
 	 * Array of supported algorithms, if we got any in the answer to
@@ -255,6 +246,81 @@ struct piv_token {
 
 	boolean_t pt_ykserial_valid;	/* YubiKey serial # only on YK5 */
 	uint32_t pt_ykserial;
+};
+
+enum piv_chuid_flags {
+	PIV_CHUID_HAS_CHUUID 	= (1<<0),
+	PIV_CHUID_HAS_BUFLEN	= (1<<1),
+};
+
+struct piv_chuid {
+	enum piv_chuid_flags	 pc_flags;
+	uint16_t		 pc_buflen;
+	struct piv_fascn	*pc_fascn;
+	uint8_t			 pc_guid[GUID_LEN];
+	uint8_t			 pc_chuuid[GUID_LEN];
+	uint8_t			*pc_expiry;
+	size_t			 pc_expiry_len;
+	uint8_t			*pc_orgid;
+	size_t			 pc_orgid_len;
+	uint8_t			*pc_duns;
+	size_t			 pc_duns_len;
+	CMS_ContentInfo		*pc_sig;
+};
+
+enum piv_pinfo_kv_type {
+	PIV_PINFO_KV_UINT,
+	PIV_PINFO_KV_STRING,
+	PIV_PINFO_KV_BOOL,
+	PIV_PINFO_KV_DATA
+};
+
+struct piv_pinfo_kv {
+	struct piv_pinfo_kv 	*ppk_next;
+	struct piv_pinfo_kv 	*ppk_prev;
+	char			*ppk_name;
+	enum piv_pinfo_kv_type	 ppk_type;
+	union {
+		uint		 ppk_uint;
+		char		*ppk_string;
+		struct {
+			uint8_t	*ppk_data;
+			size_t	 ppk_len;
+		};
+	};
+};
+
+struct piv_pinfo {
+	char			*pp_name;
+	char			*pp_affiliation;
+	char			*pp_expiry;
+	char			*pp_serial;
+	char			*pp_issuer;
+	char			*pp_org_1;
+	char			*pp_org_2;
+
+	uint8_t			*pp_yk_admin;
+	size_t			 pp_yk_admin_len;
+
+	struct piv_pinfo_kv	*pp_kv;
+};
+
+enum piv_fascn_flags {
+	PIV_FASCN_ALL_ZERO	= (1<<0)
+};
+
+struct piv_fascn {
+	enum piv_fascn_flags	 pf_flags;
+	char 			*pf_agency;
+	char 			*pf_system;
+	char 			*pf_crednum;
+	char 			*pf_cs;
+	char 			*pf_ici;
+	char 			*pf_pi;
+	char			*pf_oi;
+	enum piv_fascn_oc	 pf_oc;
+	enum piv_fascn_poa	 pf_poa;
+	char			*pf_str_cache;
 };
 
 /* Helper to dump out APDU data */
@@ -312,6 +378,17 @@ sw_to_name(enum iso_sw sw)
 	return ("UNKNOWN");
 }
 
+inline static char *
+nstrdup(const char *str)
+{
+	char *out;
+	if (str == NULL)
+		return (NULL);
+	out = strdup(str);
+	VERIFY(out != NULL);
+	return (out);
+}
+
 const char *
 piv_token_rdrname(const struct piv_token *token)
 {
@@ -324,55 +401,29 @@ piv_token_in_txn(const struct piv_token *token)
 	return (token->pt_intxn);
 }
 
-const uint8_t *
-piv_token_fascn(const struct piv_token *token, size_t *len)
+const struct piv_fascn *
+piv_token_fascn(const struct piv_token *token)
 {
-	if (token->pt_fascn_len == 0) {
-		*len = 0;
+	if (token->pt_chuid == NULL)
 		return (NULL);
-	}
-	*len = token->pt_fascn_len;
-	return (token->pt_fascn);
+	return (token->pt_chuid->pc_fascn);
 }
 
 const uint8_t *
 piv_token_guid(const struct piv_token *token)
 {
-	if (token->pt_nochuid)
-		return (NULL);
 	return (token->pt_guid);
 }
 
 const char *
 piv_token_guid_hex(const struct piv_token *token)
 {
-	if (token->pt_nochuid)
-		return (NULL);
 	if (token->pt_guidhex == NULL) {
 		struct piv_token *tkwrite = (struct piv_token *)token;
 		tkwrite->pt_guidhex = buf_to_hex(token->pt_guid,
 		    sizeof (token->pt_guid), B_FALSE);
 	}
 	return (token->pt_guidhex);
-}
-
-const uint8_t *
-piv_token_chuuid(const struct piv_token *token)
-{
-	if (token->pt_nochuid || !token->pt_haschuuid)
-		return (NULL);
-	return (token->pt_chuuid);
-}
-
-const uint8_t *
-piv_token_expiry(const struct piv_token *token, size_t *len)
-{
-	if (token->pt_nochuid) {
-		*len = 0;
-		return (NULL);
-	}
-	*len = sizeof (token->pt_expiry);
-	return (token->pt_expiry);
 }
 
 size_t
@@ -391,13 +442,15 @@ piv_token_alg(const struct piv_token *token, size_t idx)
 boolean_t
 piv_token_has_chuid(const struct piv_token *token)
 {
-	return (!token->pt_nochuid);
+	return (token->pt_chuid != NULL);
 }
 
 boolean_t
 piv_token_has_signed_chuid(const struct piv_token *token)
 {
-	return (token->pt_signedchuid);
+	if (token->pt_chuid == NULL)
+		return (B_FALSE);
+	return (token->pt_chuid->pc_sig != NULL);
 }
 
 enum piv_pin
@@ -850,7 +903,7 @@ piv_read_keyhist(struct piv_token *pk)
 	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
 	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
 		if (apdu->a_reply.b_len < 1) {
-			rv = errf("APDUError", NULL,
+			rv = errf("EmptyDataError", NULL,
 			    "Card replied with empty APDU to "
 			    "INS_GET_DATA(KEYHIST)");
 			goto invdata;
@@ -972,98 +1025,54 @@ piv_read_chuid(struct piv_token *pk)
 	if (apdu->a_sw == SW_NO_ERROR ||
 	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
 	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
-		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
+	    	tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
-		if ((err = tlv_read_tag(tlv, &tag)))
+	    	if ((err = tlv_read_tag(tlv, &tag)))
 			goto invdata;
 		if (tag != 0x53) {
 			err = tagerrf("INS_GET_DATA(CHUID)", tag);
 			goto invdata;
 		}
-		while (!tlv_at_end(tlv)) {
-			if ((err = tlv_read_tag(tlv, &tag)))
-				goto invdata;
-			bunyan_log(BNY_TRACE, "reading chuid tlv tag",
-			    "tag", BNY_UINT, (uint)tag, NULL);
-			switch (tag) {
-			case 0x30:	/* FASC-N */
-				err = tlv_read_upto(tlv, pk->pt_fascn,
-				    sizeof (pk->pt_fascn), &pk->pt_fascn_len);
-				if (err)
-					goto invdata;
-				if ((err = tlv_end(tlv)))
-					goto invdata;
-				break;
-			case 0x32:	/* Org Ident */
-			case 0xEE:	/* Buffer Length */
-			case 0xFE:	/* CRC */
-			case 0x33:	/* DUNS */
-				tlv_skip(tlv);
-				break;
-			case 0x35:	/* Expiration date */
-				err = tlv_read(tlv, pk->pt_expiry,
-				    sizeof (pk->pt_expiry));
-				if (err)
-					goto invdata;
-				if ((err = tlv_end(tlv)))
-					goto invdata;
-				break;
-			case 0x36:	/* Cardholder UUID */
-				pk->pt_haschuuid = B_TRUE;
-				err = tlv_read(tlv, pk->pt_chuuid,
-				    sizeof (pk->pt_chuuid));
-				if (err)
-					goto invdata;
-				if ((err = tlv_end(tlv)))
-					goto invdata;
-				break;
-			case 0x3E:	/* Signature */
-				if (tlv_rem(tlv) > 0)
-					pk->pt_signedchuid = B_TRUE;
-				tlv_skip(tlv);
-				break;
-			case 0x34:	/* Card GUID */
-				err = tlv_read(tlv, pk->pt_guid,
-				    sizeof (pk->pt_guid));
-				if (err)
-					goto invdata;
-				bunyan_log(BNY_TRACE, "read guid",
-				    "guid", BNY_BIN_HEX, pk->pt_guid,
-				    sizeof (pk->pt_guid), NULL);
-				if ((err = tlv_end(tlv)))
-					goto invdata;
-				break;
-			default:
-				err = tagerrf("INS_GET_DATA(CHUID)", tag);
-				goto invdata;
-			}
-		}
-		if ((err = tlv_end(tlv)))
-			goto invdata;
+	    	err = piv_chuid_decode(tlv_ptr(tlv), tlv_rem(tlv),
+	    	    &pk->pt_chuid);
+	    	if (err != ERRF_OK)
+	    		goto invdata;
+	    	tlv_skip(tlv);
 
-		for (i = 0; i < sizeof (pk->pt_guid); ++i) {
-			if (pk->pt_guid[i] != 0)
+		for (i = 0; i < sizeof (pk->pt_chuid->pc_guid); ++i) {
+			if (pk->pt_chuid->pc_guid[i] != 0)
 				break;
 		}
 		if (i == sizeof (pk->pt_guid)) {
-			bcopy(pk->pt_chuuid, pk->pt_guid, sizeof (pk->pt_guid));
-			for (i = 0; i < sizeof (pk->pt_guid); ++i) {
-				if (pk->pt_guid[i] != 0)
-					break;
-			}
-			if (i == sizeof (pk->pt_guid) && pk->pt_fascn_len > 0) {
+			if (pk->pt_chuid->pc_flags & PIV_CHUID_HAS_CHUUID) {
+				bcopy(pk->pt_chuid->pc_chuuid,
+				    pk->pt_guid, sizeof (pk->pt_guid));
+			} else if (pk->pt_chuid->pc_fascn != NULL) {
 				struct ssh_digest_ctx *hctx;
+				struct piv_fascn *pf = pk->pt_chuid->pc_fascn;
 				uint8_t *buf = calloc(1, 32);
 				VERIFY(buf != NULL);
 				hctx = ssh_digest_start(SSH_DIGEST_SHA256);
 				VERIFY(hctx != NULL);
-				VERIFY0(ssh_digest_update(hctx, pk->pt_fascn,
-				    pk->pt_fascn_len));
+				VERIFY0(ssh_digest_update(hctx, pf->pf_agency,
+				    strlen(pf->pf_agency)));
+				VERIFY0(ssh_digest_update(hctx, pf->pf_system,
+				    strlen(pf->pf_system)));
+				VERIFY0(ssh_digest_update(hctx, pf->pf_crednum,
+				    strlen(pf->pf_crednum)));
+				VERIFY0(ssh_digest_update(hctx, pf->pf_cs,
+				    strlen(pf->pf_cs)));
+				VERIFY0(ssh_digest_update(hctx, pf->pf_ici,
+				    strlen(pf->pf_ici)));
 				VERIFY0(ssh_digest_final(hctx, buf, 32));
 				bcopy(buf, pk->pt_guid, sizeof (pk->pt_guid));
 				ssh_digest_free(hctx);
 			}
+		} else {
+			bcopy(pk->pt_chuid->pc_guid, pk->pt_guid,
+			    sizeof (pk->pt_guid));
 		}
+
 		err = ERRF_OK;
 
 	} else if (apdu->a_sw == SW_FILE_NOT_FOUND ||
@@ -1163,7 +1172,6 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 			if (errf_caused_by(err, "NotFoundError")) {
 				errf_free(err);
 				err = ERRF_OK;
-				key->pt_nochuid = B_TRUE;
 			}
 		}
 		if (err == ERRF_OK) {
@@ -1183,7 +1191,8 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		if (err == ERRF_OK) {
 			err = piv_read_keyhist(key);
 			if (errf_caused_by(err, "NotFoundError") ||
-			    errf_caused_by(err, "NotSupportedError")) {
+			    errf_caused_by(err, "NotSupportedError") ||
+			    errf_caused_by(err, "EmptyDataError")) {
 				errf_free(err);
 				err = ERRF_OK;
 			}
@@ -1294,7 +1303,6 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 		if (errf_caused_by(err, "NotFoundError") && guidlen == 0) {
 			errf_free(err);
 			err = ERRF_OK;
-			key->pt_nochuid = B_TRUE;
 			if (found != NULL) {
 				piv_txn_end(key);
 				(void) SCardDisconnect(card, SCARD_RESET_CARD);
@@ -1376,7 +1384,8 @@ nopenotxn:
 	if (err == ERRF_OK) {
 		err = piv_read_keyhist(key);
 		if (errf_caused_by(err, "NotFoundError") ||
-		    errf_caused_by(err, "NotSupportedError")) {
+		    errf_caused_by(err, "NotSupportedError") ||
+		    errf_caused_by(err, "EmptyDataError")) {
 			errf_free(err);
 			err = ERRF_OK;
 		}
@@ -1430,6 +1439,7 @@ piv_release(struct piv_token *pk)
 		free(pk->pt_app_uri);
 		free((char *)pk->pt_rdrname);
 		free(pk->pt_guidhex);
+		piv_chuid_free(pk->pt_chuid);
 
 		next = pk->pt_next;
 		free(pk);
@@ -2165,6 +2175,137 @@ invdata:
 	debug_dump(err, apdu);
 	tlv_abort(tlv);
 	goto out;
+}
+
+errf_t *
+piv_write_pinfo(struct piv_token *pt, const struct piv_pinfo *pinfo)
+{
+	errf_t *err;
+	struct apdu *apdu;
+	struct tlv_state *tlv;
+	uint8_t *data;
+	size_t len;
+
+	VERIFY(pt->pt_intxn == B_TRUE);
+
+	err = piv_pinfo_encode(pinfo, &data, &len);
+	if (err)
+		return (err);
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0x5C);
+	tlv_write_u8to32(tlv, PIV_TAG_PRINTINFO);
+	tlv_pop(tlv);
+	tlv_pushl(tlv, 0x53, len + 8);
+	tlv_write(tlv, (uint8_t *)data, len);
+	tlv_pop(tlv);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_PUT_DATA, 0x3F, 0xFF);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		bunyan_log(BNY_WARN, "piv_write_pinfo.transceive_chain failed",
+		    "error", BNY_ERF, err, NULL);
+		tlv_free(tlv);
+		piv_apdu_free(apdu);
+		return (err);
+	}
+
+	tlv_free(tlv);
+	tlv = NULL;
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		err = ERRF_OK;
+	} else if (apdu->a_sw == SW_OUT_OF_MEMORY) {
+		err = errf("DeviceOutOfMemoryError", swerrf("INS_PUT_DATA(PINFO)",
+		    apdu->a_sw), "Out of memory to store file object on "
+		    "PIV device '%s'", pt->pt_rdrname);
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = permerrf(swerrf("INS_PUT_DATA(PINFO)", apdu->a_sw),
+		    pt->pt_rdrname, "writing PINFO object");
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("INS_PUT_DATA(PINFO)", apdu->a_sw),
+		    pt->pt_rdrname, "PINFO object");
+	} else {
+		err = swerrf("INS_PUT_DATA(PINFO)", apdu->a_sw);
+	}
+
+	piv_apdu_free(apdu);
+
+	return (err);
+}
+
+errf_t *
+piv_write_chuid(struct piv_token *pt, const struct piv_chuid *chuid)
+{
+	errf_t *err;
+	struct apdu *apdu;
+	struct tlv_state *tlv;
+	uint8_t *data;
+	size_t len;
+
+	VERIFY(pt->pt_intxn == B_TRUE);
+
+	err = piv_chuid_encode(chuid, &data, &len);
+	if (err)
+		return (err);
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0x5C);
+	tlv_write_u8to32(tlv, PIV_TAG_CHUID);
+	tlv_pop(tlv);
+	tlv_pushl(tlv, 0x53, len + 8);
+	tlv_write(tlv, (uint8_t *)data, len);
+	tlv_pop(tlv);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_PUT_DATA, 0x3F, 0xFF);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		bunyan_log(BNY_WARN, "piv_write_pinfo.transceive_chain failed",
+		    "error", BNY_ERF, err, NULL);
+		tlv_free(tlv);
+		piv_apdu_free(apdu);
+		return (err);
+	}
+
+	tlv_free(tlv);
+	tlv = NULL;
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		piv_chuid_free(pt->pt_chuid);
+		if ((err = piv_chuid_clone(chuid, &pt->pt_chuid))) {
+			piv_apdu_free(apdu);
+			return (err);
+		}
+		bcopy(chuid->pc_guid, pt->pt_guid, sizeof (pt->pt_guid));
+
+		free(pt->pt_guidhex);
+		pt->pt_guidhex = NULL;
+
+	} else if (apdu->a_sw == SW_OUT_OF_MEMORY) {
+		err = errf("DeviceOutOfMemoryError", swerrf("INS_PUT_DATA(PINFO)",
+		    apdu->a_sw), "Out of memory to store file object on "
+		    "PIV device '%s'", pt->pt_rdrname);
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = permerrf(swerrf("INS_PUT_DATA(PINFO)", apdu->a_sw),
+		    pt->pt_rdrname, "writing PINFO object");
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("INS_PUT_DATA(PINFO)", apdu->a_sw),
+		    pt->pt_rdrname, "PINFO object");
+	} else {
+		err = swerrf("INS_PUT_DATA(PINFO)", apdu->a_sw);
+	}
+
+	piv_apdu_free(apdu);
+
+	return (err);
 }
 
 /*
@@ -5767,7 +5908,7 @@ piv_slotid_from_string(const char *str, enum piv_slotid *out)
 	}
 	if (strncasecmp(str, "retired-", 8) == 0) {
 		uint n;
-		const char *p = str + 8;
+		char *p = (char *)str + 8;
 		errno = 0;
 		n = strtoul(str + 8, &p, 10);
 		if (errno != 0 || *p != '\0') {
@@ -5784,7 +5925,7 @@ piv_slotid_from_string(const char *str, enum piv_slotid *out)
 	}
 	if (strncasecmp(str, "piv-retired-", 12) == 0) {
 		uint n;
-		const char *p = str + 12;
+		char *p = (char *)str + 12;
 		errno = 0;
 		n = strtoul(str + 12, &p, 10);
 		if (errno != 0 || *p != '\0') {
@@ -5801,7 +5942,7 @@ piv_slotid_from_string(const char *str, enum piv_slotid *out)
 	}
 	if (strncmp(str, "0x", 2) == 0) {
 		uint n;
-		const char *p = str + 2;
+		char *p = (char *)str + 2;
 		errno = 0;
 		n = strtoul(str + 2, &p, 16);
 		if (errno != 0 || *p != '\0') {
@@ -5819,7 +5960,7 @@ piv_slotid_from_string(const char *str, enum piv_slotid *out)
 	}
 	if (strlen(str) == 2) {
 		uint n;
-		const char *p = str;
+		char *p = (char *)str;
 		errno = 0;
 		n = strtoul(str, &p, 16);
 		if (errno != 0 || *p != '\0') {
@@ -5837,4 +5978,1930 @@ piv_slotid_from_string(const char *str, enum piv_slotid *out)
 	}
 	return (errf("InvalidSlotID", NULL, "Invalid or unsupported PIV "
 	    "slot ID: '%s'", str));
+}
+
+enum fascn_bcd {
+	FASCN_BCD_0	= 0x01,
+	FASCN_BCD_1	= 0x10,
+	FASCN_BCD_2	= 0x08,
+	FASCN_BCD_3	= 0x19,
+	FASCN_BCD_4	= 0x04,
+	FASCN_BCD_5	= 0x15,
+	FASCN_BCD_6	= 0x0d,
+	FASCN_BCD_7	= 0x1c,
+	FASCN_BCD_8	= 0x02,
+	FASCN_BCD_9	= 0x13,
+	FASCN_BCD_SS	= 0x1a,
+	FASCN_BCD_FS	= 0x16,
+	FASCN_BCD_ES	= 0x1f
+};
+
+void
+piv_fascn_free(struct piv_fascn *pf)
+{
+	if (pf == NULL)
+		return;
+	free(pf->pf_agency);
+	free(pf->pf_system);
+	free(pf->pf_crednum);
+	free(pf->pf_cs);
+	free(pf->pf_ici);
+	free(pf->pf_pi);
+	free(pf->pf_oi);
+	free(pf->pf_str_cache);
+	free(pf);
+}
+
+static const char *
+bcd_to_str(enum fascn_bcd b)
+{
+	switch (b) {
+	case FASCN_BCD_0: return ("0");
+	case FASCN_BCD_1: return ("1");
+	case FASCN_BCD_2: return ("2");
+	case FASCN_BCD_3: return ("3");
+	case FASCN_BCD_4: return ("4");
+	case FASCN_BCD_5: return ("5");
+	case FASCN_BCD_6: return ("6");
+	case FASCN_BCD_7: return ("7");
+	case FASCN_BCD_8: return ("8");
+	case FASCN_BCD_9: return ("9");
+	case FASCN_BCD_SS: return ("SS");
+	case FASCN_BCD_FS: return ("FS");
+	case FASCN_BCD_ES: return ("ES");
+	default: return (NULL);
+	}
+}
+
+struct bcdbuf {
+	struct bitbuf 	*bcd_b;
+	struct sshbuf 	*bcd_sb;
+	uint8_t		 bcd_last;
+	uint8_t		 bcd_lrc;
+};
+
+static errf_t *
+write_bcd_char(struct bcdbuf *b, enum fascn_bcd v, const char *name)
+{
+	errf_t *err;
+
+	if ((err = bitbuf_write(b->bcd_b, v, 5))) {
+		err = errf("FASCNFormatError", err, "While writing "
+		    "%s", name);
+		return (err);
+	}
+	b->bcd_last = v;
+	b->bcd_lrc ^= (v & 0x1e);
+
+	return (ERRF_OK);
+}
+
+static errf_t *
+write_lrc(struct bcdbuf *b)
+{
+	errf_t *err;
+	uint32_t v;
+
+	v = b->bcd_lrc;
+	v |= ((v & (1<<4)) >> 4) ^ ((v & (1<<3)) >> 3) ^ ((v & (1<<2)) >> 2) ^
+	    ((v & (1<<1)) >> 1) ^ 1;
+
+	if ((err = bitbuf_write(b->bcd_b, v, 5))) {
+		err = errf("FASCNFormatError", err, "While writing LRC");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
+write_bcd_field(struct bcdbuf *b, size_t limit, enum fascn_bcd terminator,
+    const char *name, const char *strval)
+{
+	enum fascn_bcd v;
+	errf_t *err;
+	uint len = 0;
+	const char *p = strval;
+
+	while (*p != '\0') {
+		switch (*p) {
+		case '0':
+			v = FASCN_BCD_0;
+			break;
+		case '1':
+			v = FASCN_BCD_1;
+			break;
+		case '2':
+			v = FASCN_BCD_2;
+			break;
+		case '3':
+			v = FASCN_BCD_3;
+			break;
+		case '4':
+			v = FASCN_BCD_4;
+			break;
+		case '5':
+			v = FASCN_BCD_5;
+			break;
+		case '6':
+			v = FASCN_BCD_6;
+			break;
+		case '7':
+			v = FASCN_BCD_7;
+			break;
+		case '8':
+			v = FASCN_BCD_8;
+			break;
+		case '9':
+			v = FASCN_BCD_9;
+			break;
+		default:
+			err = errf("FASCNFormatError", NULL, "Field %s "
+			    "contains invalid BCD char: '%c'", name, *p);
+			return (err);
+		}
+		if ((err = write_bcd_char(b, v, name)))
+			return (err);
+		p++;
+		len++;
+		if (len > limit) {
+			err = errf("FASCNFormatError", NULL, "Field %s "
+			    "is too long (limit %zu chars)", name, limit);
+			return (err);
+		}
+	}
+
+	if (terminator != 0) {
+		if ((err = write_bcd_char(b, terminator, name)))
+			return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
+read_bcd_char(struct bcdbuf *b, const char *name, enum fascn_bcd *out,
+    const char **strout)
+{
+	errf_t *err;
+	uint32_t v;
+	const char *vstr;
+
+	if ((err = bitbuf_read(b->bcd_b, 5, &v))) {
+		err = errf("FASCNFormatError", err, "While reading "
+		    "%s", name);
+		return (err);
+	}
+	b->bcd_last = v;
+	b->bcd_lrc ^= (v & 0x1e);
+
+	vstr = bcd_to_str(v);
+	switch (v) {
+	case FASCN_BCD_0:
+	case FASCN_BCD_1:
+	case FASCN_BCD_2:
+	case FASCN_BCD_3:
+	case FASCN_BCD_4:
+	case FASCN_BCD_5:
+	case FASCN_BCD_6:
+	case FASCN_BCD_7:
+	case FASCN_BCD_8:
+	case FASCN_BCD_9:
+	case FASCN_BCD_SS:
+	case FASCN_BCD_FS:
+	case FASCN_BCD_ES:
+		break;
+	default:
+		err = errf("FASCNFormatError", NULL, "Read 0x%x "
+		    "in %s, expected valid BCD char", v, name);
+		return (err);
+	}
+
+	*out = v;
+	*strout = vstr;
+	return (ERRF_OK);
+}
+
+static errf_t *
+read_and_check_lrc(struct bcdbuf *b)
+{
+	errf_t *err;
+	uint32_t v;
+
+	if ((err = bitbuf_read(b->bcd_b, 5, &v))) {
+		err = errf("FASCNFormatError", err, "While reading LRC");
+		return (err);
+	}
+
+	v &= 0x1e;
+
+	if (v != b->bcd_lrc) {
+		err = errf("FASCNFormatError", NULL, "LRC mismatch");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
+read_bcd_field(struct bcdbuf *b, size_t limit, const char *name,
+    char **field)
+{
+	enum fascn_bcd v;
+	const char *vstr;
+	errf_t *err;
+
+	while (1) {
+		err = read_bcd_char(b, name, &v, &vstr);
+		if (err != ERRF_OK)
+			return (err);
+		if (v == FASCN_BCD_SS) {
+			err = errf("FASCNFormatError", NULL, "Read SS "
+			    "in %s, expected valid BCD char", name);
+			return (err);
+		}
+		if (v == FASCN_BCD_FS || v == FASCN_BCD_ES)
+			break;
+		VERIFY0(sshbuf_put_u8(b->bcd_sb, vstr[0]));
+		if (limit != 0 && sshbuf_len(b->bcd_sb) >= limit)
+			break;
+	}
+	*field = sshbuf_dup_string(b->bcd_sb);
+	sshbuf_reset(b->bcd_sb);
+	return (ERRF_OK);
+}
+
+/*
+ * See TIG SCEPACS for details here
+ */
+errf_t *
+piv_fascn_decode(const uint8_t *data, size_t len, struct piv_fascn **out)
+{
+	struct piv_fascn *pf;
+	errf_t *err = NULL;
+	enum fascn_bcd v;
+	const char *vstr;
+	char *oc = NULL, *poa = NULL;
+	struct bcdbuf b;
+	uint i;
+
+	bzero(&b, sizeof (b));
+
+	/* First check for all-zero value, give this special treatment. */
+	for (i = 0; i < len; ++i) {
+		if (data[i] != 0x00)
+			break;
+	}
+	if (i == len) {
+		pf = piv_fascn_zero();
+		pf->pf_flags |= PIV_FASCN_ALL_ZERO;
+		goto good;
+	}
+
+	pf = calloc(1, sizeof(struct piv_fascn));
+	if (pf == NULL)
+		return (errfno("calloc", errno, NULL));
+
+	b.bcd_sb = sshbuf_new();
+	if (b.bcd_sb == NULL) {
+		err = errfno("sshbuf_new", errno, NULL);
+		goto out;
+	}
+
+	b.bcd_b = bitbuf_from(data, len);
+	VERIFY(b.bcd_b != NULL);
+
+	if ((err = read_bcd_char(&b, "start sentinel", &v, &vstr)))
+		goto out;
+	if (v != FASCN_BCD_SS) {
+		err = errf("FASCNFormatError", NULL, "Read 0x%x ('%s'), "
+		    "expected start sentinel", v, vstr == NULL ? "?" : vstr);
+		goto out;
+	}
+
+	if ((err = read_bcd_field(&b, 5, "agency code", &pf->pf_agency)) ||
+	    (err = read_bcd_field(&b, 5, "system code", &pf->pf_system)) ||
+	    (err = read_bcd_field(&b, 7, "cred num", &pf->pf_crednum)) ||
+	    (err = read_bcd_field(&b, 2, "cs", &pf->pf_cs)) ||
+	    (err = read_bcd_field(&b, 2, "ici", &pf->pf_ici)) ||
+	    (err = read_bcd_field(&b, 10, "pi", &pf->pf_pi)) ||
+	    (err = read_bcd_field(&b, 1, "oc", &oc)) ||
+	    (err = read_bcd_field(&b, 4, "oi", &pf->pf_oi)) ||
+	    (err = read_bcd_field(&b, 2, "poa", &poa))) {
+		goto out;
+	}
+
+	switch (oc[0]) {
+	case '1':
+		pf->pf_oc = PIV_FASCN_OC_FEDERAL;
+		break;
+	case '2':
+		pf->pf_oc = PIV_FASCN_OC_STATE;
+		break;
+	case '3':
+		pf->pf_oc = PIV_FASCN_OC_COMMERCIAL;
+		break;
+	case '4':
+		pf->pf_oc = PIV_FASCN_OC_FOREIGN;
+		break;
+	default:
+		err = errf("FASCNFormatError", NULL, "Unknown OC value: '%s'",
+		    oc);
+		goto out;
+	}
+
+	switch (poa[0]) {
+	case '1':
+		pf->pf_poa = PIV_FASCN_POA_EMPLOYEE;
+		break;
+	case '2':
+		pf->pf_poa = PIV_FASCN_POA_CIVIL;
+		break;
+	case '3':
+		pf->pf_poa = PIV_FASCN_POA_EXECUTIVE;
+		break;
+	case '4':
+		pf->pf_poa = PIV_FASCN_POA_UNIFORMED;
+		break;
+	case '5':
+		pf->pf_poa = PIV_FASCN_POA_CONTRACTOR;
+		break;
+	case '6':
+		pf->pf_poa = PIV_FASCN_POA_AFFILIATE;
+		break;
+	case '7':
+		pf->pf_poa = PIV_FASCN_POA_BENEFICIARY;
+		break;
+	default:
+		err = errf("FASCNFormatError", NULL, "Unknown POA value: '%s'",
+		    poa);
+		goto out;
+	}
+
+	if (b.bcd_last != FASCN_BCD_ES) {
+		vstr = bcd_to_str(b.bcd_last);
+		err = errf("FASCNFormatError", NULL, "Read 0x%x ('%s'), "
+		    "expected end sentinel", b.bcd_last,
+		    vstr == NULL ? "?" : vstr);
+		goto out;
+	}
+
+	if ((err = read_and_check_lrc(&b)))
+		goto out;
+
+good:
+	*out = pf;
+	pf = NULL;
+	err = ERRF_OK;
+
+out:
+	piv_fascn_free(pf);
+	sshbuf_free(b.bcd_sb);
+	bitbuf_free(b.bcd_b);
+	free(oc);
+	free(poa);
+	return (err);
+}
+
+const char *
+piv_fascn_get_agency_code(const struct piv_fascn *pf)
+{
+	return (pf->pf_agency);
+}
+
+const char *
+piv_fascn_get_system_code(const struct piv_fascn *pf)
+{
+	return (pf->pf_system);
+}
+
+const char *
+piv_fascn_get_cred_number(const struct piv_fascn *pf)
+{
+	return (pf->pf_crednum);
+}
+
+const char *
+piv_fascn_get_cred_series(const struct piv_fascn *pf)
+{
+	return (pf->pf_cs);
+}
+
+const char *
+piv_fascn_get_indiv_cred_issue(const struct piv_fascn *pf)
+{
+	return (pf->pf_ici);
+}
+
+const char *
+piv_fascn_get_person_id(const struct piv_fascn *pf)
+{
+	return (pf->pf_pi);
+}
+
+const char *
+piv_fascn_get_org_id(const struct piv_fascn *pf)
+{
+	return (pf->pf_oi);
+}
+
+enum piv_fascn_oc
+piv_fascn_get_org_type(const struct piv_fascn *pf)
+{
+	return (pf->pf_oc);
+}
+
+enum piv_fascn_poa
+piv_fascn_get_assoc(const struct piv_fascn *pf)
+{
+	return (pf->pf_poa);
+}
+
+const char *
+piv_fascn_org_type_to_string(enum piv_fascn_oc oc)
+{
+	switch (oc) {
+	case PIV_FASCN_OC_FEDERAL:
+		return ("federal");
+	case PIV_FASCN_OC_STATE:
+		return ("state");
+	case PIV_FASCN_OC_COMMERCIAL:
+		return ("commercial");
+	case PIV_FASCN_OC_FOREIGN:
+		return ("foreign");
+	default:
+		VERIFY(0);
+		return (NULL);
+	}
+}
+
+const char *
+piv_fascn_assoc_to_string(enum piv_fascn_poa poa)
+{
+	switch (poa) {
+	case PIV_FASCN_POA_EMPLOYEE:
+		return ("employee");
+	case PIV_FASCN_POA_CIVIL:
+		return ("civil");
+	case PIV_FASCN_POA_EXECUTIVE:
+		return ("executive-staff");
+	case PIV_FASCN_POA_UNIFORMED:
+		return ("uniformed-service");
+	case PIV_FASCN_POA_CONTRACTOR:
+		return ("contractor");
+	case PIV_FASCN_POA_AFFILIATE:
+		return ("affiliate");
+	case PIV_FASCN_POA_BENEFICIARY:
+		return ("beneficiary");
+	default:
+		VERIFY(0);
+		return (NULL);
+	}
+}
+
+const char *
+piv_fascn_to_string(const struct piv_fascn *pf)
+{
+	size_t buflen;
+	char *buf;
+
+	if (pf->pf_str_cache != NULL)
+		return (pf->pf_str_cache);
+
+	buflen = 1024;
+	buf = malloc(buflen);
+	if (buf == NULL)
+		return (NULL);
+
+	strlcpy(buf, pf->pf_agency, buflen);
+	strlcat(buf, "-", buflen);
+	strlcat(buf, pf->pf_system, buflen);
+	strlcat(buf, "-", buflen);
+	strlcat(buf, pf->pf_crednum, buflen);
+	strlcat(buf, "-", buflen);
+	strlcat(buf, pf->pf_cs, buflen);
+	strlcat(buf, "-", buflen);
+	strlcat(buf, pf->pf_ici, buflen);
+	strlcat(buf, "/", buflen);
+	strlcat(buf, piv_fascn_org_type_to_string(pf->pf_oc), buflen);
+	strlcat(buf, ":", buflen);
+	strlcat(buf, pf->pf_oi, buflen);
+	strlcat(buf, "/", buflen);
+	strlcat(buf, piv_fascn_assoc_to_string(pf->pf_poa), buflen);
+	strlcat(buf, ":", buflen);
+	strlcat(buf, pf->pf_pi, buflen);
+
+	((struct piv_fascn *)pf)->pf_str_cache = buf;
+
+	return (buf);
+}
+
+void
+piv_fascn_set_agency_code(struct piv_fascn *pf, const char *v)
+{
+	free(pf->pf_agency);
+	pf->pf_agency = strdup(v);
+	free(pf->pf_str_cache);
+	pf->pf_str_cache = NULL;
+	pf->pf_flags &= ~PIV_FASCN_ALL_ZERO;
+}
+
+void
+piv_fascn_set_system_code(struct piv_fascn *pf, const char *v)
+{
+	free(pf->pf_system);
+	pf->pf_system = strdup(v);
+	free(pf->pf_str_cache);
+	pf->pf_str_cache = NULL;
+	pf->pf_flags &= ~PIV_FASCN_ALL_ZERO;
+}
+
+void
+piv_fascn_set_cred_number(struct piv_fascn *pf, const char *v)
+{
+	free(pf->pf_crednum);
+	pf->pf_crednum = strdup(v);
+	free(pf->pf_str_cache);
+	pf->pf_str_cache = NULL;
+	pf->pf_flags &= ~PIV_FASCN_ALL_ZERO;
+}
+
+void
+piv_fascn_set_cred_series(struct piv_fascn *pf, const char *v)
+{
+	free(pf->pf_cs);
+	pf->pf_cs = strdup(v);
+	free(pf->pf_str_cache);
+	pf->pf_str_cache = NULL;
+	pf->pf_flags &= ~PIV_FASCN_ALL_ZERO;
+}
+
+void
+piv_fascn_set_indiv_cred_issue(struct piv_fascn *pf, const char *v)
+{
+	free(pf->pf_ici);
+	pf->pf_ici = strdup(v);
+	free(pf->pf_str_cache);
+	pf->pf_str_cache = NULL;
+	pf->pf_flags &= ~PIV_FASCN_ALL_ZERO;
+}
+
+void
+piv_fascn_set_person_id(struct piv_fascn *pf, enum piv_fascn_poa poa,
+    const char *v)
+{
+	pf->pf_poa = poa;
+	free(pf->pf_pi);
+	pf->pf_pi = strdup(v);
+
+	free(pf->pf_str_cache);
+	pf->pf_str_cache = NULL;
+	pf->pf_flags &= ~PIV_FASCN_ALL_ZERO;
+}
+
+void
+piv_fascn_set_org_id(struct piv_fascn *pf, enum piv_fascn_oc oc, const char *v)
+{
+	pf->pf_oc = oc;
+	free(pf->pf_oi);
+	pf->pf_oi = strdup(v);
+
+	free(pf->pf_str_cache);
+	pf->pf_str_cache = NULL;
+	pf->pf_flags &= ~PIV_FASCN_ALL_ZERO;
+}
+
+struct piv_fascn *
+piv_fascn_clone(const struct piv_fascn *opf)
+{
+	struct piv_fascn *pf;
+
+	pf = calloc(1, sizeof (struct piv_fascn));
+	if (pf == NULL)
+		return (NULL);
+
+	pf->pf_agency = nstrdup(opf->pf_agency);
+	pf->pf_system = nstrdup(opf->pf_system);
+	pf->pf_crednum = nstrdup(opf->pf_crednum);
+	pf->pf_cs = nstrdup(opf->pf_cs);
+	pf->pf_ici = nstrdup(opf->pf_ici);
+	pf->pf_pi = nstrdup(opf->pf_pi);
+	pf->pf_oi = nstrdup(opf->pf_oi);
+	pf->pf_str_cache = nstrdup(opf->pf_str_cache);
+
+	pf->pf_oc = opf->pf_oc;
+	pf->pf_poa = opf->pf_poa;
+	pf->pf_flags = opf->pf_flags;
+
+	return (pf);
+}
+
+struct piv_fascn *
+piv_fascn_zero(void)
+{
+	struct piv_fascn *pf;
+
+	pf = calloc(1, sizeof (struct piv_fascn));
+	if (pf == NULL)
+		return (NULL);
+
+	pf->pf_agency = nstrdup("0000");
+	pf->pf_system = nstrdup("0000");
+	pf->pf_crednum = nstrdup("000000");
+	pf->pf_cs = nstrdup("0");
+	pf->pf_ici = nstrdup("1");
+	pf->pf_poa = PIV_FASCN_POA_EMPLOYEE;
+	pf->pf_pi = nstrdup("0000000000");
+	pf->pf_oc = PIV_FASCN_OC_COMMERCIAL;
+	pf->pf_oi = nstrdup("0000");
+
+	return (pf);
+}
+
+errf_t *
+piv_fascn_encode(const struct piv_fascn *pf, uint8_t **out, size_t *outlen)
+{
+	struct bcdbuf b;
+	errf_t *err;
+	char oc[2] = {0}, poa[2] = {0};
+
+	bzero(&b, sizeof (b));
+
+	if (pf->pf_flags & PIV_FASCN_ALL_ZERO) {
+		*out = calloc(1, 25);
+		VERIFY(*out != NULL);
+		*outlen = 25;
+		return (ERRF_OK);
+	}
+
+	b.bcd_b = bitbuf_new();
+	VERIFY(b.bcd_b != NULL);
+
+	switch (pf->pf_oc) {
+	case PIV_FASCN_OC_FEDERAL:
+		oc[0] = '1';
+		break;
+	case PIV_FASCN_OC_STATE:
+		oc[0] = '2';
+		break;
+	case PIV_FASCN_OC_COMMERCIAL:
+		oc[0] = '3';
+		break;
+	case PIV_FASCN_OC_FOREIGN:
+		oc[0] = '4';
+		break;
+	}
+
+	switch (pf->pf_poa) {
+	case PIV_FASCN_POA_EMPLOYEE:
+		poa[0] = '1';
+		break;
+	case PIV_FASCN_POA_CIVIL:
+		poa[0] = '2';
+		break;
+	case PIV_FASCN_POA_EXECUTIVE:
+		poa[0] = '3';
+		break;
+	case PIV_FASCN_POA_UNIFORMED:
+		poa[0] = '4';
+		break;
+	case PIV_FASCN_POA_CONTRACTOR:
+		poa[0] = '5';
+		break;
+	case PIV_FASCN_POA_AFFILIATE:
+		poa[0] = '6';
+		break;
+	case PIV_FASCN_POA_BENEFICIARY:
+		poa[0] = '7';
+		break;
+	}
+
+	if ((err = write_bcd_char(&b, FASCN_BCD_SS, "start sentinel")))
+		goto out;
+
+	err = write_bcd_field(&b, 4, FASCN_BCD_FS, "agency code", pf->pf_agency);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = write_bcd_field(&b, 4, FASCN_BCD_FS, "system code", pf->pf_system);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = write_bcd_field(&b, 6, FASCN_BCD_FS, "cred num", pf->pf_crednum);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = write_bcd_field(&b, 1, FASCN_BCD_FS, "CS", pf->pf_cs);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = write_bcd_field(&b, 1, FASCN_BCD_FS, "ICI", pf->pf_ici);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = write_bcd_field(&b, 10, 0, "person id", pf->pf_pi);
+	if (err != ERRF_OK)
+		goto out;
+	err = write_bcd_field(&b, 1, 0, "org category", oc);
+	if (err != ERRF_OK)
+		goto out;
+	err = write_bcd_field(&b, 4, 0, "org id", pf->pf_oi);
+	if (err != ERRF_OK)
+		goto out;
+	err = write_bcd_field(&b, 1, FASCN_BCD_ES, "POA", poa);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = write_lrc(&b);
+	if (err != ERRF_OK)
+		goto out;
+
+	*out = bitbuf_to_bytes(b.bcd_b, outlen);
+
+out:
+	bitbuf_free(b.bcd_b);
+	return (err);
+}
+
+void
+piv_chuid_free(struct piv_chuid *chuid)
+{
+	if (chuid == NULL)
+		return;
+	piv_fascn_free(chuid->pc_fascn);
+	free(chuid->pc_expiry);
+	free(chuid->pc_orgid);
+	free(chuid->pc_duns);
+	CMS_ContentInfo_free(chuid->pc_sig);
+	free(chuid);
+}
+
+struct piv_chuid *
+piv_chuid_new(void)
+{
+	struct piv_chuid *chuid;
+
+	chuid = calloc(1, sizeof (struct piv_chuid));
+	if (chuid == NULL)
+		return (NULL);
+
+	return (chuid);
+}
+
+errf_t *
+piv_chuid_clone(const struct piv_chuid *other, struct piv_chuid **out)
+{
+	struct piv_chuid *chuid = NULL;
+	uint8_t *buf = NULL;
+	const uint8_t *p;
+	size_t len;
+	errf_t *err;
+
+	chuid = calloc(1, sizeof (struct piv_chuid));
+	if (chuid == NULL)
+		return (NULL);
+
+	chuid->pc_flags = other->pc_flags;
+
+	chuid->pc_buflen = other->pc_buflen;
+
+	bcopy(other->pc_guid, chuid->pc_guid, sizeof (chuid->pc_guid));
+	bcopy(other->pc_chuuid, chuid->pc_chuuid, sizeof (chuid->pc_chuuid));
+
+	if (other->pc_fascn != NULL) {
+		chuid->pc_fascn = piv_fascn_clone(other->pc_fascn);
+		if (chuid->pc_fascn == NULL) {
+			err = ERRF_NOMEM;
+			goto out;
+		}
+	}
+
+	if (other->pc_expiry_len > 0) {
+		chuid->pc_expiry = malloc(other->pc_expiry_len);
+		if (chuid->pc_expiry == NULL) {
+			err = ERRF_NOMEM;
+			goto out;
+		}
+		bcopy(other->pc_expiry, chuid->pc_expiry, other->pc_expiry_len);
+		chuid->pc_expiry_len = other->pc_expiry_len;
+	}
+
+	if (other->pc_orgid_len > 0) {
+		chuid->pc_orgid = malloc(other->pc_orgid_len);
+		if (chuid->pc_orgid == NULL) {
+			err = ERRF_NOMEM;
+			goto out;
+		}
+		bcopy(other->pc_orgid, chuid->pc_orgid, other->pc_orgid_len);
+		chuid->pc_orgid_len = other->pc_orgid_len;
+	}
+
+	if (other->pc_duns_len > 0) {
+		chuid->pc_duns = malloc(other->pc_duns_len);
+		if (chuid->pc_duns == NULL) {
+			err = ERRF_NOMEM;
+			goto out;
+		}
+		bcopy(other->pc_duns, chuid->pc_duns, other->pc_duns_len);
+		chuid->pc_duns_len = other->pc_duns_len;
+	}
+
+	if (other->pc_sig != NULL) {
+		len = i2d_CMS_ContentInfo(other->pc_sig, &buf);
+		if (len == 0) {
+			make_sslerrf(err, "i2d_CMS_ContentInfo", "encoding "
+			    "chuid signature");
+			goto out;
+		}
+		p = buf;
+		chuid->pc_sig = d2i_CMS_ContentInfo(NULL, &p, len);
+		if (chuid->pc_sig == NULL) {
+			make_sslerrf(err, "d2i_CMS_ContentInfo",
+			    "parsing issuer signature in CHUID");
+			goto out;
+		}
+	}
+
+	*out = chuid;
+	chuid = NULL;
+	err = ERRF_OK;
+
+out:
+	OPENSSL_free(buf);
+	piv_chuid_free(chuid);
+	return (err);
+}
+
+boolean_t
+piv_chuid_is_expired(const struct piv_chuid *pc)
+{
+	return (B_FALSE);
+}
+
+void
+piv_chuid_set_random_guid(struct piv_chuid *pc)
+{
+	arc4random_buf(pc->pc_guid, sizeof (pc->pc_guid));
+}
+
+void
+piv_chuid_set_fascn(struct piv_chuid *pc, const struct piv_fascn *v)
+{
+	piv_fascn_free(pc->pc_fascn);
+	pc->pc_fascn = piv_fascn_clone(v);
+}
+
+void
+piv_chuid_set_guid(struct piv_chuid *pc, uint8_t *v)
+{
+	bcopy(v, pc->pc_guid, sizeof (pc->pc_guid));
+}
+
+void
+piv_chuid_set_chuuid(struct piv_chuid *pc, uint8_t *v)
+{
+	if (v == NULL) {
+		bzero(pc->pc_chuuid, sizeof (pc->pc_chuuid));
+		pc->pc_flags &= ~PIV_CHUID_HAS_CHUUID;
+	} else {
+		bcopy(v, pc->pc_chuuid, sizeof (pc->pc_chuuid));
+		pc->pc_flags |= PIV_CHUID_HAS_CHUUID;
+	}
+}
+
+void
+piv_chuid_set_expiry(struct piv_chuid *pc, uint8_t *v, size_t len)
+{
+	free(pc->pc_expiry);
+	pc->pc_expiry = malloc(len);
+	bcopy(v, pc->pc_expiry, len);
+	pc->pc_expiry_len = len;
+}
+
+void
+piv_chuid_set_expiry_rel(struct piv_chuid *pc, uint sec)
+{
+	char buf[9] = {0};
+	time_t now;
+	struct tm *tm;
+
+	now = time(NULL);
+	now += sec;
+
+	tm = gmtime(&now);
+
+	snprintf(buf, sizeof (buf), "%04d%02d%02d", tm->tm_year + 1900,
+	    tm->tm_mon + 1, tm->tm_mday);
+
+	piv_chuid_set_expiry(pc, (uint8_t *)buf, strlen(buf));
+}
+
+static errf_t *
+piv_chuid_write_tbs_tlv(const struct piv_chuid *pc, struct tlv_state *tlv)
+{
+	uint8_t *buf = NULL;
+	size_t len;
+	errf_t *err;
+
+	if (pc->pc_flags & PIV_CHUID_HAS_BUFLEN) {
+		tlv_push(tlv, 0xEE);
+		tlv_write_u16(tlv, pc->pc_buflen);
+		tlv_pop(tlv);
+	}
+
+	if (pc->pc_fascn != NULL) {
+		err = piv_fascn_encode(pc->pc_fascn, &buf, &len);
+		if (err != ERRF_OK) {
+			err = errf("CHUIDEncodeError", err, "Failed to encode "
+			    "FASC-N in CHUID");
+			goto out;
+		}
+		tlv_pushl(tlv, 0x30, len);
+		tlv_write(tlv, buf, len);
+		tlv_pop(tlv);
+		free(buf);
+		buf = NULL;
+	}
+
+	if (pc->pc_orgid != NULL) {
+		tlv_pushl(tlv, 0x32, pc->pc_orgid_len);
+		tlv_write(tlv, pc->pc_orgid, pc->pc_orgid_len);
+		tlv_pop(tlv);
+	}
+
+	if (pc->pc_duns != NULL) {
+		tlv_pushl(tlv, 0x32, pc->pc_duns_len);
+		tlv_write(tlv, pc->pc_duns, pc->pc_duns_len);
+		tlv_pop(tlv);
+	}
+
+	tlv_pushl(tlv, 0x34, sizeof (pc->pc_guid));
+	tlv_write(tlv, pc->pc_guid, sizeof (pc->pc_guid));
+	tlv_pop(tlv);
+
+	if (pc->pc_expiry != NULL) {
+		tlv_pushl(tlv, 0x35, pc->pc_expiry_len);
+		tlv_write(tlv, pc->pc_expiry, pc->pc_expiry_len);
+		tlv_pop(tlv);
+	}
+
+	if (pc->pc_flags & PIV_CHUID_HAS_CHUUID) {
+		tlv_pushl(tlv, 0x36, sizeof (pc->pc_chuuid));
+		tlv_write(tlv, pc->pc_chuuid, sizeof (pc->pc_chuuid));
+		tlv_pop(tlv);
+	}
+
+	err = ERRF_OK;
+
+out:
+	free(buf);
+	return (err);
+}
+
+errf_t *
+piv_chuid_tbs(const struct piv_chuid *pc, uint8_t **out, size_t *len)
+{
+	struct tlv_state *tlv = NULL;
+	errf_t *err;
+
+	tlv = tlv_init_write();
+	if (tlv == NULL) {
+		err = errfno("tlv_init_write", errno, NULL);
+		goto out;
+	}
+
+	if ((err = piv_chuid_write_tbs_tlv(pc, tlv)))
+		goto out;
+
+	*len = tlv_len(tlv);
+	*out = malloc(*len);
+	if (*out == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	bcopy(tlv_buf(tlv), *out, *len);
+
+	err = ERRF_OK;
+
+out:
+	tlv_free(tlv);
+	return (err);
+}
+
+errf_t *
+piv_chuid_encode(const struct piv_chuid *pc, uint8_t **out, size_t *outlen)
+{
+	struct tlv_state *tlv = NULL;
+	uint8_t *buf = NULL;
+	size_t len;
+	errf_t *err;
+
+	tlv = tlv_init_write();
+	if (tlv == NULL) {
+		err = errfno("tlv_init_write", errno, NULL);
+		goto out;
+	}
+
+	if ((err = piv_chuid_write_tbs_tlv(pc, tlv)))
+		goto out;
+
+	if (pc->pc_sig != NULL) {
+		len = i2d_CMS_ContentInfo(pc->pc_sig, &buf);
+		if (len == 0) {
+			make_sslerrf(err, "i2d_CMS_ContentInfo", "encoding "
+			    "CHUID signature");
+			goto out;
+		}
+		tlv_pushl(tlv, 0x3E, len);
+		tlv_write(tlv, buf, len);
+		tlv_pop(tlv);
+	} else {
+		/*
+		 * The signature field is compulsory, so write an empty tag.
+		 */
+		tlv_push(tlv, 0x3E);
+		tlv_pop(tlv);
+	}
+
+	len = tlv_len(tlv);
+	*out = malloc(len);
+	if (*out == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	bcopy(tlv_buf(tlv), *out, len);
+	*outlen = len;
+
+	err = ERRF_OK;
+
+out:
+	tlv_free(tlv);
+	free(buf);
+	return (err);
+}
+
+errf_t *
+piv_chuid_decode(const uint8_t *data, size_t len, struct piv_chuid **out)
+{
+	struct tlv_state *tlv = NULL;
+	uint tag;
+	errf_t *err;
+	struct piv_chuid *chuid = NULL;
+	uint8_t *d;
+	size_t dlen;
+	int rc;
+	const uint8_t *p;
+
+	chuid = calloc(1, sizeof (struct piv_chuid));
+	if (chuid == NULL) {
+		err = errfno("calloc", errno, NULL);
+		goto out;
+	}
+
+	tlv = tlv_init(data, 0, len);
+	if (tlv == NULL) {
+		err = errfno("tlv_init", errno, NULL);
+		goto out;
+	}
+
+	while (!tlv_at_end(tlv)) {
+		if ((err = tlv_read_tag(tlv, &tag)))
+			goto out;
+		switch (tag) {
+		case 0xEE:	/* Buffer Length */
+			err = tlv_read_u16(tlv, &chuid->pc_buflen);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			chuid->pc_flags |= PIV_CHUID_HAS_BUFLEN;
+			break;
+		case 0x30:	/* FASC-N */
+			err = piv_fascn_decode(tlv_ptr(tlv), tlv_rem(tlv),
+			    &chuid->pc_fascn);
+			if (err)
+				goto out;
+			tlv_skip(tlv);
+			break;
+		case 0x32:	/* Organizational Identifier */
+			err = tlv_read_alloc(tlv, &chuid->pc_orgid,
+			    &chuid->pc_orgid_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x33:	/* DUNS */
+			err = tlv_read_alloc(tlv, &chuid->pc_duns,
+			    &chuid->pc_duns_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x34:	/* GUID */
+			err = tlv_read(tlv, chuid->pc_guid,
+			    sizeof (chuid->pc_guid));
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x35:	/* Expiry */
+			err = tlv_read_alloc(tlv, &chuid->pc_expiry,
+			    &chuid->pc_expiry_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x36:	/* Cardholder UUID */
+			err = tlv_read(tlv, chuid->pc_chuuid,
+			    sizeof (chuid->pc_chuuid));
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			chuid->pc_flags |= PIV_CHUID_HAS_CHUUID;
+			break;
+		case 0x3E:	/* Issuer Signature */
+			err = tlv_read_alloc(tlv, &d, &dlen);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			if (dlen == 0) {
+				/* Skip an empty signature */
+				free(d);
+				break;
+			}
+			p = d;
+			chuid->pc_sig = d2i_CMS_ContentInfo(NULL, &p, len);
+			free(d);
+			if (chuid->pc_sig == NULL) {
+				make_sslerrf(err, "d2i_CMS_ContentInfo",
+				    "parsing issuer signature in CHUID");
+				goto out;
+			}
+			break;
+		case 0xFE:	/* LRC */
+			tlv_skip(tlv);
+			break;
+		default:
+			err = tagerrf("CHUID", tag);
+			goto out;
+		}
+	}
+
+	*out = chuid;
+	chuid = NULL;
+	err = ERRF_OK;
+
+out:
+	if (err != ERRF_OK)
+		tlv_abort(tlv);
+	else
+		tlv_free(tlv);
+	piv_chuid_free(chuid);
+	return (err);
+}
+
+const struct piv_chuid *
+piv_token_chuid(struct piv_token *pk)
+{
+	return (pk->pt_chuid);
+}
+
+const struct piv_fascn *
+piv_chuid_get_fascn(const struct piv_chuid *c)
+{
+	return (c->pc_fascn);
+}
+
+const uint8_t *
+piv_chuid_get_guid(const struct piv_chuid *c)
+{
+	return (c->pc_guid);
+}
+
+const uint8_t *
+piv_chuid_get_chuuid(const struct piv_chuid *c)
+{
+	if (!(c->pc_flags & PIV_CHUID_HAS_CHUUID))
+		return (NULL);
+	return (c->pc_chuuid);
+}
+
+const uint8_t *
+piv_chuid_get_expiry(const struct piv_chuid *c, size_t *plen)
+{
+	*plen = c->pc_expiry_len;
+	return (c->pc_expiry);
+}
+
+CMS_ContentInfo *
+piv_chuid_get_signature(struct piv_chuid *c)
+{
+	return (c->pc_sig);
+}
+
+errf_t *
+piv_read_pinfo(struct piv_token *pk, struct piv_pinfo **outp)
+{
+	errf_t *err;
+	struct apdu *apdu;
+	struct tlv_state *tlv;
+	uint tag, i;
+
+	VERIFY(pk->pt_intxn == B_TRUE);
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0x5C);
+	tlv_write_u8to32(tlv, PIV_TAG_PRINTINFO);
+	tlv_pop(tlv);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	err = piv_apdu_transceive_chain(pk, apdu);
+	if (err) {
+		err = ioerrf(err, pk->pt_rdrname);
+		bunyan_log(BNY_WARN, "transceive_apdu failed",
+		    "error", BNY_ERF, err, NULL);
+		goto out;
+	}
+
+	tlv_free(tlv);
+	tlv = NULL;
+
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+	    	tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
+		    apdu->a_reply.b_len);
+	    	if ((err = tlv_read_tag(tlv, &tag)))
+			goto invdata;
+		if (tag != 0x53) {
+			err = tagerrf("INS_GET_DATA(PINFO)", tag);
+			goto invdata;
+		}
+	    	err = piv_pinfo_decode(tlv_ptr(tlv), tlv_rem(tlv), outp);
+	    	if (err != ERRF_OK)
+	    		goto invdata;
+	    	tlv_skip(tlv);
+
+		err = ERRF_OK;
+
+	} else if (apdu->a_sw == SW_FILE_NOT_FOUND ||
+	    apdu->a_sw == SW_WRONG_DATA) {
+		err = errf("NotFoundError", swerrf("INS_GET_DATA", apdu->a_sw),
+		    "PIV PINFO object was not found on device '%s'",
+		    pk->pt_rdrname);
+
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = permerrf(swerrf("INS_GET_DATA", apdu->a_sw),
+		    pk->pt_rdrname, "reading PIV PINFO object");
+
+	} else {
+		err = swerrf("INS_GET_DATA(PINFO)", apdu->a_sw);
+		bunyan_log(BNY_DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
+	}
+
+out:
+	tlv_free(tlv);
+	piv_apdu_free(apdu);
+	return (err);
+
+invdata:
+	tlv_abort(tlv);
+	err = invderrf(err, pk->pt_rdrname);
+	debug_dump(err, apdu);
+	goto out;
+}
+
+void
+pinfo_kv_free(struct piv_pinfo_kv *kv)
+{
+	if (kv == NULL)
+		return;
+	VERIFY(kv->ppk_next == NULL);
+	VERIFY(kv->ppk_prev == NULL);
+	free(kv->ppk_name);
+	switch (kv->ppk_type) {
+	case PIV_PINFO_KV_STRING:
+		free(kv->ppk_string);
+		break;
+	case PIV_PINFO_KV_DATA:
+		freezero(kv->ppk_data, kv->ppk_len);
+		break;
+	default:
+		break;
+	}
+	free(kv);
+}
+
+errf_t *
+piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
+{
+	struct tlv_state *tlv = NULL;
+	errf_t *err;
+	uint8_t *buf = NULL;
+	size_t buflen = 0;
+	struct piv_pinfo_kv *kv;
+
+	tlv = tlv_init_write();
+
+	if (pp->pp_name != NULL) {
+		tlv_pushl(tlv, 0x01, strlen(pp->pp_name));
+		tlv_write(tlv, (uint8_t *)pp->pp_name, strlen(pp->pp_name));
+		tlv_pop(tlv);
+	}
+	if (pp->pp_affiliation != NULL) {
+		tlv_push(tlv, 0x02);
+		tlv_write(tlv, (uint8_t *)pp->pp_affiliation,
+		    strlen(pp->pp_affiliation));
+		tlv_pop(tlv);
+	}
+	if (pp->pp_expiry != NULL) {
+		tlv_push(tlv, 0x04);
+		tlv_write(tlv, (uint8_t *)pp->pp_expiry, strlen(pp->pp_expiry));
+		tlv_pop(tlv);
+	}
+	if (pp->pp_serial != NULL) {
+		tlv_push(tlv, 0x05);
+		tlv_write(tlv, (uint8_t *)pp->pp_serial, strlen(pp->pp_serial));
+		tlv_pop(tlv);
+	}
+	if (pp->pp_issuer != NULL) {
+		tlv_push(tlv, 0x06);
+		tlv_write(tlv, (uint8_t *)pp->pp_issuer, strlen(pp->pp_issuer));
+		tlv_pop(tlv);
+	}
+	if (pp->pp_org_1 != NULL) {
+		tlv_push(tlv, 0x07);
+		tlv_write(tlv, (uint8_t *)pp->pp_org_1, strlen(pp->pp_org_1));
+		tlv_pop(tlv);
+	}
+	if (pp->pp_org_2 != NULL) {
+		tlv_push(tlv, 0x08);
+		tlv_write(tlv, (uint8_t *)pp->pp_org_2, strlen(pp->pp_org_2));
+		tlv_pop(tlv);
+	}
+
+	if (pp->pp_yk_admin != NULL && pp->pp_yk_admin_len > 0) {
+		tlv_pushl(tlv, 0x88, pp->pp_yk_admin_len + 4);
+		tlv_pushl(tlv, 0x89, pp->pp_yk_admin_len);
+		tlv_write(tlv, pp->pp_yk_admin, pp->pp_yk_admin_len);
+		tlv_pop(tlv);
+		tlv_pop(tlv);
+	}
+
+	for (kv = pp->pp_kv; kv != NULL; kv = kv->ppk_next) {
+		size_t len = 2 + strlen(kv->ppk_name) + 4;
+		switch (kv->ppk_type) {
+		case PIV_PINFO_KV_UINT:
+			len += 4;
+			break;
+		case PIV_PINFO_KV_STRING:
+			len += strlen(kv->ppk_string);
+			break;
+		case PIV_PINFO_KV_DATA:
+			len += kv->ppk_len;
+			break;
+		default:
+			break;
+		}
+		tlv_pushl(tlv, 0x90, len);
+
+		tlv_push(tlv, 0x01);
+		tlv_write(tlv, kv->ppk_name, strlen(kv->ppk_name));
+		tlv_pop(tlv);
+
+		switch (kv->ppk_type) {
+		case PIV_PINFO_KV_BOOL:
+			tlv_push(tlv, 0x02);
+			tlv_pop(tlv);
+			break;
+		case PIV_PINFO_KV_UINT:
+			tlv_push(tlv, 0x03);
+			tlv_write_u8to32(tlv, kv->ppk_uint);
+			tlv_pop(tlv);
+			break;
+		case PIV_PINFO_KV_STRING:
+			tlv_pushl(tlv, 0x04, strlen(kv->ppk_string));
+			tlv_write(tlv, kv->ppk_string, strlen(kv->ppk_string));
+			tlv_pop(tlv);
+			break;
+		case PIV_PINFO_KV_DATA:
+			tlv_pushl(tlv, 0x05, kv->ppk_len);
+			tlv_write(tlv, kv->ppk_data, kv->ppk_len);
+			tlv_pop(tlv);
+			break;
+		}
+
+		tlv_pop(tlv);
+	}
+
+	buflen = tlv_len(tlv);
+	buf = malloc(buflen);
+	if (buf == NULL) {
+		err = errfno("malloc", errno, NULL);
+		goto out;
+	}
+	bcopy(tlv_buf(tlv), buf, buflen);
+
+	*outlen = buflen;
+	*out = buf;
+	buf = NULL;
+	buflen = 0;
+	err = ERRF_OK;
+
+out:
+	freezero(buf, buflen);
+	tlv_free(tlv);
+	return (err);
+}
+
+errf_t *
+piv_pinfo_decode(const uint8_t *data, size_t len, struct piv_pinfo **out)
+{
+	struct tlv_state *tlv = NULL;
+	uint tag;
+	errf_t *err;
+	struct piv_pinfo *pi = NULL;
+	struct piv_pinfo_kv *kv = NULL;
+
+	pi = calloc(1, sizeof (struct piv_pinfo));
+	if (pi == NULL) {
+		err = errfno("calloc", errno, NULL);
+		goto out;
+	}
+
+	tlv = tlv_init(data, 0, len);
+	if (tlv == NULL) {
+		err = errfno("tlv_init", errno, NULL);
+		goto out;
+	}
+
+	while (!tlv_at_end(tlv)) {
+		if ((err = tlv_read_tag(tlv, &tag)))
+			goto out;
+		switch (tag) {
+		case 0x01:	/* Name */
+			if ((err = tlv_read_string(tlv, &pi->pp_name)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x02:	/* Employee Affiliation */
+			if ((err = tlv_read_string(tlv, &pi->pp_affiliation)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x04:	/* Expiration date */
+			if ((err = tlv_read_string(tlv, &pi->pp_expiry)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x05:	/* Agency Card Serial Number */
+			if ((err = tlv_read_string(tlv, &pi->pp_serial)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x06:	/* Issuer Identification */
+			if ((err = tlv_read_string(tlv, &pi->pp_issuer)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x07:	/* Org. Affiliation (Line 1) */
+			if ((err = tlv_read_string(tlv, &pi->pp_org_1)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x08:	/* Org. Affiliation (Line 2) */
+			if ((err = tlv_read_string(tlv, &pi->pp_org_2)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x88:	/* Yubico Extensions */
+			if ((err = tlv_read_tag(tlv, &tag)))
+				goto out;
+			switch (tag) {
+			case 0x89:
+				err = tlv_read_alloc(tlv, &pi->pp_yk_admin,
+				    &pi->pp_yk_admin_len);
+				if (err)
+					goto out;
+				if ((err = tlv_end(tlv)))
+					goto out;
+				break;
+			default:
+				err = tagerrf("PINFO YK ext", tag);
+				goto out;
+			}
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0x90:	/* KV extension */
+			kv = calloc(1, sizeof (struct piv_pinfo_kv));
+			if (kv == NULL) {
+				err = errfno("calloc", errno, NULL);
+				goto out;
+			}
+
+			if ((err = tlv_read_tag(tlv, &tag)))
+				goto out;
+			if (tag != 0x01) {
+				err = tagerrf("PINFO KV ext", tag);
+				goto out;
+			}
+			if ((err = tlv_read_string(tlv, &kv->ppk_name)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+
+			if ((err = tlv_read_tag(tlv, &tag)))
+				goto out;
+
+			switch (tag) {
+			case 0x02:
+				kv->ppk_type = PIV_PINFO_KV_BOOL;
+				if ((err = tlv_end(tlv)))
+					goto out;
+				break;
+			case 0x03:
+				kv->ppk_type = PIV_PINFO_KV_UINT;
+				if ((err = tlv_read_u8to32(tlv, &kv->ppk_uint)))
+					goto out;
+				if ((err = tlv_end(tlv)))
+					goto out;
+				break;
+			case 0x04:
+				kv->ppk_type = PIV_PINFO_KV_STRING;
+				if ((err = tlv_read_string(tlv, &kv->ppk_string)))
+					goto out;
+				if ((err = tlv_end(tlv)))
+					goto out;
+				break;
+			case 0x05:
+				kv->ppk_type = PIV_PINFO_KV_DATA;
+				err = tlv_read_alloc(tlv, &kv->ppk_data,
+				    &kv->ppk_len);
+				if (err)
+					goto out;
+				if ((err = tlv_end(tlv)))
+					goto out;
+				break;
+			default:
+				err = tagerrf("PINFO KV ext", tag);
+				goto out;
+			}
+			if ((err = tlv_end(tlv)))
+				goto out;
+
+			kv->ppk_next = pi->pp_kv;
+			if (pi->pp_kv != NULL)
+				pi->pp_kv->ppk_prev = kv;
+			pi->pp_kv = kv;
+			kv = NULL;
+
+			break;
+		case 0xFE:	/* LRC */
+			tlv_skip(tlv);
+			break;
+		default:
+			err = tagerrf("PINFO", tag);
+			goto out;
+		}
+	}
+
+	*out = pi;
+	pi = NULL;
+	err = ERRF_OK;
+out:
+	if (err != ERRF_OK)
+		tlv_abort(tlv);
+	else
+		tlv_free(tlv);
+	piv_pinfo_free(pi);
+	pinfo_kv_free(kv);
+	return (err);
+}
+
+struct piv_pinfo *
+piv_pinfo_new(void)
+{
+	struct piv_pinfo *pp;
+
+	pp = calloc(1, sizeof (struct piv_pinfo));
+	if (pp == NULL)
+		return (NULL);
+
+	return (pp);
+}
+
+void
+piv_pinfo_free(struct piv_pinfo *pp)
+{
+	struct piv_pinfo_kv *kv, *nkv;
+
+	if (pp == NULL)
+		return;
+
+	for (kv = pp->pp_kv; kv != NULL; kv = nkv) {
+		nkv = kv->ppk_next;
+		kv->ppk_next = NULL;
+		kv->ppk_prev = NULL;
+		pinfo_kv_free(kv);
+	}
+
+	free(pp->pp_name);
+	free(pp->pp_affiliation);
+	free(pp->pp_expiry);
+	free(pp->pp_serial);
+	free(pp->pp_issuer);
+	free(pp->pp_org_1);
+	free(pp->pp_org_2);
+
+	freezero(pp->pp_yk_admin, pp->pp_yk_admin_len);
+
+	free(pp);
+}
+
+void
+piv_pinfo_set_name(struct piv_pinfo *pp, const char *v)
+{
+	free(pp->pp_name);
+	pp->pp_name = nstrdup(v);
+}
+
+void
+piv_pinfo_set_affiliation(struct piv_pinfo *pp, const char *v)
+{
+	free(pp->pp_affiliation);
+	pp->pp_affiliation = nstrdup(v);
+}
+
+void
+piv_pinfo_set_expiry(struct piv_pinfo *pp, const char *v)
+{
+	free(pp->pp_expiry);
+	pp->pp_expiry = nstrdup(v);
+}
+
+const char *pinfo_months[] = {
+	"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT",
+	"NOV", "DEC"
+};
+
+void
+piv_pinfo_set_expiry_rel(struct piv_pinfo *pp, uint sec)
+{
+	char buf[12] = {0};
+	time_t now;
+	struct tm *tm;
+
+	now = time(NULL);
+	now += sec;
+	tm = gmtime(&now);
+
+	snprintf(buf, sizeof (buf), "%04d%s%02d", tm->tm_year + 1900,
+	    pinfo_months[tm->tm_mon], tm->tm_mday);
+
+	piv_pinfo_set_expiry(pp, buf);
+}
+
+void
+piv_pinfo_set_serial(struct piv_pinfo *pp, const char *v)
+{
+	free(pp->pp_serial);
+	pp->pp_serial = nstrdup(v);
+}
+
+void
+piv_pinfo_set_issuer(struct piv_pinfo *pp, const char *v)
+{
+	free(pp->pp_issuer);
+	pp->pp_issuer = nstrdup(v);
+}
+
+void
+piv_pinfo_set_org_line_1(struct piv_pinfo *pp, const char *v)
+{
+	free(pp->pp_org_1);
+	pp->pp_org_1 = nstrdup(v);
+}
+
+void
+piv_pinfo_set_org_line_2(struct piv_pinfo *pp, const char *v)
+{
+	free(pp->pp_org_2);
+	pp->pp_org_2 = nstrdup(v);
+}
+
+void
+ykpiv_pinfo_set_admin_key(struct piv_pinfo *pp, const uint8_t *key, size_t len)
+{
+	freezero(pp->pp_yk_admin, pp->pp_yk_admin_len);
+	pp->pp_yk_admin = malloc(len);
+	VERIFY(pp->pp_yk_admin != NULL);
+	bcopy(key, pp->pp_yk_admin, len);
+	pp->pp_yk_admin_len = len;
+}
+
+struct piv_pinfo_kv *
+set_pinfo_kv(struct piv_pinfo *pp, const char *key, enum piv_pinfo_kv_type type)
+{
+	struct piv_pinfo_kv *kv;
+	for (kv = pp->pp_kv; kv != NULL; kv = kv->ppk_next) {
+		if (strcmp(key, kv->ppk_name) == 0 &&
+		    kv->ppk_type == type) {
+			return (kv);
+		}
+	}
+	kv = calloc(1, sizeof (struct piv_pinfo_kv));
+	kv->ppk_name = nstrdup(key);
+	kv->ppk_type = type;
+	kv->ppk_next = pp->pp_kv;
+	if (pp->pp_kv != NULL)
+		pp->pp_kv->ppk_prev = kv;
+	pp->pp_kv = kv;
+	return (kv);
+}
+
+void
+piv_pinfo_set_kv(struct piv_pinfo *pp, const char *key, const uint8_t *val,
+    size_t len)
+{
+	struct piv_pinfo_kv *kv;
+	kv = set_pinfo_kv(pp, key, PIV_PINFO_KV_DATA);
+	if (kv == NULL)
+		return;
+	free(kv->ppk_data);
+	kv->ppk_data = malloc(len);
+	bcopy(val, kv->ppk_data, len);
+	kv->ppk_len = len;
+}
+
+void
+piv_pinfo_set_kv_uint(struct piv_pinfo *pp, const char *key, uint val)
+{
+	struct piv_pinfo_kv *kv;
+	kv = set_pinfo_kv(pp, key, PIV_PINFO_KV_UINT);
+	if (kv == NULL)
+		return;
+	kv->ppk_uint = val;
+}
+
+void
+piv_pinfo_set_kv_bool(struct piv_pinfo *pp, const char *key)
+{
+	(void) set_pinfo_kv(pp, key, PIV_PINFO_KV_BOOL);
+}
+
+void
+piv_pinfo_unset_kv(struct piv_pinfo *pp, const char *key)
+{
+	struct piv_pinfo_kv *kv, *nkv;
+	for (kv = pp->pp_kv; kv != NULL; kv = nkv) {
+		nkv = kv->ppk_next;
+		if (strcmp(key, kv->ppk_name) == 0) {
+			if (kv->ppk_prev == NULL)
+				pp->pp_kv = kv->ppk_next;
+			else
+				kv->ppk_prev->ppk_next = kv->ppk_next;
+			if (kv->ppk_next != NULL)
+				kv->ppk_next->ppk_prev = kv->ppk_prev;
+			kv->ppk_prev = NULL;
+			kv->ppk_next = NULL;
+			pinfo_kv_free(kv);
+		}
+	}
+}
+
+void
+piv_pinfo_set_kv_string(struct piv_pinfo *pp, const char *key, const char *val)
+{
+	struct piv_pinfo_kv *kv;
+	kv = set_pinfo_kv(pp, key, PIV_PINFO_KV_STRING);
+	if (kv == NULL)
+		return;
+	free(kv->ppk_string);
+	kv->ppk_string = nstrdup(val);
+}
+
+const char *
+piv_pinfo_get_name(const struct piv_pinfo *pp)
+{
+	return (pp->pp_name);
+}
+
+const char *
+piv_pinfo_get_affiliation(const struct piv_pinfo *pp)
+{
+	return (pp->pp_affiliation);
+}
+
+const char *
+piv_pinfo_get_expiry(const struct piv_pinfo *pp)
+{
+	return (pp->pp_expiry);
+}
+
+const char *
+piv_pinfo_get_serial(const struct piv_pinfo *pp)
+{
+	return (pp->pp_serial);
+}
+
+const char *
+piv_pinfo_get_issuer(const struct piv_pinfo *pp)
+{
+	return (pp->pp_issuer);
+}
+
+const char *
+piv_pinfo_get_org_line_1(const struct piv_pinfo *pp)
+{
+	return (pp->pp_org_1);
+}
+
+const char *
+piv_pinfo_get_org_line_2(const struct piv_pinfo *pp)
+{
+	return (pp->pp_org_2);
+}
+
+const uint8_t *
+ykpiv_pinfo_get_admin_key(const struct piv_pinfo *pp, size_t *len)
+{
+	*len = pp->pp_yk_admin_len;
+	return (pp->pp_yk_admin);
+}
+
+const struct piv_pinfo_kv *
+get_pinfo_kv(const struct piv_pinfo *pp, const char *key,
+    enum piv_pinfo_kv_type type)
+{
+	const struct piv_pinfo_kv *kv;
+	for (kv = pp->pp_kv; kv != NULL; kv = kv->ppk_next) {
+		if (strcmp(key, kv->ppk_name) == 0 &&
+		    kv->ppk_type == type) {
+			return (kv);
+		}
+	}
+	return (NULL);
+}
+
+boolean_t
+piv_pinfo_get_kv_uint(const struct piv_pinfo *pp, const char *key, uint *out)
+{
+	const struct piv_pinfo_kv *kv;
+	kv = get_pinfo_kv(pp, key, PIV_PINFO_KV_UINT);
+	if (kv == NULL)
+		return (B_FALSE);
+	*out = kv->ppk_uint;
+	return (B_TRUE);
+}
+
+boolean_t
+piv_pinfo_get_kv_bool(const struct piv_pinfo *pp, const char *key)
+{
+	const struct piv_pinfo_kv *kv;
+	kv = get_pinfo_kv(pp, key, PIV_PINFO_KV_BOOL);
+	if (kv == NULL)
+		return (B_FALSE);
+	return (B_TRUE);
+}
+
+const char *
+piv_pinfo_get_kv_string(const struct piv_pinfo *pp, const char *key)
+{
+	const struct piv_pinfo_kv *kv;
+	kv = get_pinfo_kv(pp, key, PIV_PINFO_KV_STRING);
+	if (kv == NULL)
+		return (NULL);
+	return (kv->ppk_string);
+}
+
+const uint8_t *
+piv_pinfo_get_kv(const struct piv_pinfo *pp, const char *key, size_t *len)
+{
+	const struct piv_pinfo_kv *kv;
+	kv = get_pinfo_kv(pp, key, PIV_PINFO_KV_DATA);
+	if (kv == NULL) {
+		*len = 0;
+		return (NULL);
+	}
+	*len = kv->ppk_len;
+	return (kv->ppk_data);
 }

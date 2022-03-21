@@ -25,6 +25,7 @@
 
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
+#include <openssl/cms.h>
 
 #include "errf.h"
 #include "openssh/digest.h"
@@ -240,6 +241,9 @@ enum piv_slot_auth {
 
 struct piv_slot;
 struct piv_token;
+struct piv_fascn;
+struct piv_chuid;
+struct piv_pinfo;
 
 /*
  * Enumerates all PIV tokens attached to the given SCARDCONTEXT.
@@ -290,16 +294,21 @@ void piv_release(struct piv_token *pk);
 const char *piv_token_rdrname(const struct piv_token *token);
 
 /*
- * Returns the card's FASC-N (a NIST card identity string). Lots of
- * non-US-government PIV cards won't have anything here or will have garbage.
+ * Returns a pointer to information contained in the card's CHUID (card holder
+ * UID) object. Some of this info is also available directly below, for
+ * convenience.
  */
-const uint8_t *piv_token_fascn(const struct piv_token *token, size_t *len);
+const struct piv_chuid *piv_token_chuid(struct piv_token *pk);
 
-const uint8_t *piv_token_expiry(const struct piv_token *token, size_t *len);
+/*
+ * Returns the card's FASC-N (a NIST card identity string). Lots of
+ * non-US-government PIV cards won't have anything here or will have garbage
+ * (unparseable values return NULL).
+ */
+const struct piv_fascn *piv_token_fascn(const struct piv_token *token);
 
 /* The buffer returned from these is always GUID_LEN bytes in length. */
 const uint8_t *piv_token_guid(const struct piv_token *token);
-const uint8_t *piv_token_chuuid(const struct piv_token *token);
 
 /*
  * Convenience function: returns the piv_token_guid() data as a hexadecimal
@@ -657,6 +666,45 @@ errf_t *piv_write_file(struct piv_token *pt, uint tag,
 MUST_CHECK
 errf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
     size_t *len);
+
+/*
+ * Reads and parses the PIV Printed Information object.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - PermissionError: card didn't allow this object to be read (might require
+ *                     PIN or is only retrievable over contact interface)
+ *  - NotFoundError: no printed info object on this card
+ *  - InvalidDataError: the tag structure returned by the card made no sense
+ */
+MUST_CHECK
+errf_t *piv_read_pinfo(struct piv_token *pt, struct piv_pinfo **out);
+
+/*
+ * Writes the PIV Printed Information object.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - PermissionError: card didn't allow this object to be written (requires
+ *                     admin auth)
+ *  - NotFoundError: no printed info object on this card
+ *  - InvalidDataError: the tag structure returned by the card made no sense
+ */
+MUST_CHECK
+errf_t *piv_write_pinfo(struct piv_token *pt, const struct piv_pinfo *out);
+
+/*
+ * Writes the PIV Cardholder UID (CHUID) object.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - PermissionError: card didn't allow this object to be written (requires
+ *                     admin auth)
+ *  - NotFoundError: no printed info object on this card
+ *  - InvalidDataError: the tag structure returned by the card made no sense
+ */
+MUST_CHECK
+errf_t *piv_write_chuid(struct piv_token *pt, const struct piv_chuid *out);
 
 /*
  * Zeroes and releases a file data buffer allocated by piv_read_file().
@@ -1035,5 +1083,150 @@ errf_t *piv_alg_from_string(const char *str, enum piv_alg *out);
 char *piv_slotid_to_string(enum piv_slotid slot);
 
 errf_t *piv_slotid_from_string(const char *str, enum piv_slotid *out);
+
+/*
+ * FASC-N utility functions
+ */
+/* Constructs a new FASC-N with all zero digits in every field */
+struct piv_fascn *piv_fascn_zero(void);
+
+struct piv_fascn *piv_fascn_clone(const struct piv_fascn *);
+
+void piv_fascn_free(struct piv_fascn *);
+
+/* FASC-N Organizational Category (OC) */
+enum piv_fascn_oc {
+	PIV_FASCN_OC_FEDERAL,
+	PIV_FASCN_OC_STATE,
+	PIV_FASCN_OC_COMMERCIAL,
+	PIV_FASCN_OC_FOREIGN
+};
+
+/* FASC-N Person-Org Association Type (POA) */
+enum piv_fascn_poa {
+	PIV_FASCN_POA_EMPLOYEE,
+	PIV_FASCN_POA_CIVIL,
+	PIV_FASCN_POA_EXECUTIVE,
+	PIV_FASCN_POA_UNIFORMED,
+	PIV_FASCN_POA_CONTRACTOR,
+	PIV_FASCN_POA_AFFILIATE,
+	PIV_FASCN_POA_BENEFICIARY
+};
+
+const char *piv_fascn_get_agency_code(const struct piv_fascn *);
+const char *piv_fascn_get_system_code(const struct piv_fascn *);
+const char *piv_fascn_get_cred_number(const struct piv_fascn *);
+const char *piv_fascn_get_cred_series(const struct piv_fascn *);
+const char *piv_fascn_get_indiv_cred_issue(const struct piv_fascn *);
+const char *piv_fascn_get_person_id(const struct piv_fascn *);
+const char *piv_fascn_get_org_id(const struct piv_fascn *);
+enum piv_fascn_oc piv_fascn_get_org_type(const struct piv_fascn *);
+enum piv_fascn_poa piv_fascn_get_assoc(const struct piv_fascn *);
+
+void piv_fascn_set_agency_code(struct piv_fascn *, const char *);
+void piv_fascn_set_system_code(struct piv_fascn *, const char *);
+void piv_fascn_set_cred_number(struct piv_fascn *, const char *);
+void piv_fascn_set_cred_series(struct piv_fascn *, const char *);
+void piv_fascn_set_indiv_cred_issue(struct piv_fascn *, const char *);
+void piv_fascn_set_person_id(struct piv_fascn *, enum piv_fascn_poa, const char *);
+void piv_fascn_set_org_id(struct piv_fascn *, enum piv_fascn_oc, const char *);
+
+const char *piv_fascn_org_type_to_string(enum piv_fascn_oc);
+const char *piv_fascn_assoc_to_string(enum piv_fascn_poa);
+
+/*
+ * Returns the entire FASC-N as a single printable string (zero-terminated).
+ * This isn't a standard format, but looks like:
+ *   agency-system-crednum-cs-ici/oc:oi/poa:pi
+ */
+const char *piv_fascn_to_string(const struct piv_fascn *);
+
+/*
+ * Encodes a FASC-N in binary BCD form, including the LRC digit. Allocates
+ * output buffer and places it in *out. Caller must free it later with free().
+ */
+errf_t *piv_fascn_encode(const struct piv_fascn *, uint8_t **out, size_t *outlen);
+
+/*
+ * Decodes a FASC-N from binary BCD form, also checking the LRC.
+ */
+errf_t *piv_fascn_decode(const uint8_t *data, size_t len, struct piv_fascn **out);
+
+
+/*
+ * CHUID utility functions
+ *
+ * Used to manipulate and inspect the contents of the PIV CHUID file.
+ */
+struct piv_chuid *piv_chuid_new(void);
+errf_t *piv_chuid_clone(const struct piv_chuid *other, struct piv_chuid **out);
+void piv_chuid_free(struct piv_chuid *);
+
+const struct piv_fascn *piv_chuid_get_fascn(const struct piv_chuid *);
+const uint8_t *piv_chuid_get_guid(const struct piv_chuid *);
+const uint8_t *piv_chuid_get_chuuid(const struct piv_chuid *);
+const uint8_t *piv_chuid_get_expiry(const struct piv_chuid *, size_t *len);
+CMS_ContentInfo *piv_chuid_get_signature(struct piv_chuid *);
+
+boolean_t piv_chuid_is_expired(const struct piv_chuid *);
+
+void piv_chuid_set_random_guid(struct piv_chuid *);
+void piv_chuid_set_fascn(struct piv_chuid *, const struct piv_fascn *);
+void piv_chuid_set_guid(struct piv_chuid *, uint8_t *);
+void piv_chuid_set_chuuid(struct piv_chuid *, uint8_t *);
+void piv_chuid_set_expiry(struct piv_chuid *, uint8_t *, size_t);
+void piv_chuid_set_expiry_rel(struct piv_chuid *, uint sec);
+
+errf_t *piv_chuid_tbs(const struct piv_chuid *, uint8_t **out, size_t *len);
+errf_t *piv_chuid_set_signature(struct piv_chuid *, X509 *cacert,
+    enum sshdigest_types hashalgo, uint8_t *sig, size_t siglen);
+
+errf_t *piv_chuid_verify(const struct piv_chuid *, STACK_OF(X509) *certs,
+    X509_STORE *store);
+
+errf_t *piv_chuid_encode(const struct piv_chuid *, uint8_t **out, size_t *outlen);
+errf_t *piv_chuid_decode(const uint8_t *data, size_t len, struct piv_chuid **out);
+
+
+/*
+ * PINFO utility functions
+ */
+struct piv_pinfo *piv_pinfo_new(void);
+void piv_pinfo_free(struct piv_pinfo *pp);
+
+void piv_pinfo_set_name(struct piv_pinfo *pp, const char *v);
+void piv_pinfo_set_affiliation(struct piv_pinfo *pp, const char *v);
+void piv_pinfo_set_expiry(struct piv_pinfo *pp, const char *v);
+void piv_pinfo_set_expiry_rel(struct piv_pinfo *pp, uint sec);
+void piv_pinfo_set_serial(struct piv_pinfo *pp, const char *v);
+void piv_pinfo_set_issuer(struct piv_pinfo *pp, const char *v);
+void piv_pinfo_set_org_line_1(struct piv_pinfo *pp, const char *v);
+void piv_pinfo_set_org_line_2(struct piv_pinfo *pp, const char *v);
+
+const char *piv_pinfo_get_name(const struct piv_pinfo *pp);
+const char *piv_pinfo_get_affiliation(const struct piv_pinfo *pp);
+const char *piv_pinfo_get_expiry(const struct piv_pinfo *pp);
+const char *piv_pinfo_get_serial(const struct piv_pinfo *pp);
+const char *piv_pinfo_get_issuer(const struct piv_pinfo *pp);
+const char *piv_pinfo_get_org_line_1(const struct piv_pinfo *pp);
+const char *piv_pinfo_get_org_line_2(const struct piv_pinfo *pp);
+
+const uint8_t *ykpiv_pinfo_get_admin_key(const struct piv_pinfo *pp, size_t *len);
+
+boolean_t piv_pinfo_get_kv_uint(const struct piv_pinfo *pp, const char *key, uint *out);
+boolean_t piv_pinfo_get_kv_bool(const struct piv_pinfo *pp, const char *key);
+const char *piv_pinfo_get_kv_string(const struct piv_pinfo *pp, const char *key);
+const uint8_t *piv_pinfo_get_kv(const struct piv_pinfo *pp, const char *key, size_t *len);
+
+void ykpiv_pinfo_set_admin_key(struct piv_pinfo *pp, const uint8_t *key, size_t len);
+
+void piv_pinfo_set_kv(struct piv_pinfo *pp, const char *key, const uint8_t *val, size_t len);
+void piv_pinfo_set_kv_uint(struct piv_pinfo *pp, const char *key, uint val);
+void piv_pinfo_set_kv_bool(struct piv_pinfo *pp, const char *key);
+void piv_pinfo_unset_kv(struct piv_pinfo *pp, const char *key);
+void piv_pinfo_set_kv_string(struct piv_pinfo *pp, const char *key, const char *val);
+
+errf_t *piv_pinfo_encode(const struct piv_pinfo *, uint8_t **out, size_t *outlen);
+errf_t *piv_pinfo_decode(const uint8_t *data, size_t len, struct piv_pinfo **out);
 
 #endif

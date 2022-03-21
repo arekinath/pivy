@@ -124,6 +124,13 @@ struct ca_uri {
 	char			*cu_uri;
 };
 
+struct ca_ebox_tpl {
+	struct ca_ebox_tpl	*cet_next;
+	char			*cet_name;
+	struct ebox_tpl		*cet_tpl;
+	uint64_t		 cet_refcnt;
+};
+
 struct ca {
 	char			*ca_base_path;
 	char			*ca_slug;
@@ -141,11 +148,12 @@ struct ca {
 	struct ca_uri		*ca_crls;
 	struct ca_uri		*ca_ocsps;
 
-	struct ebox_tpl		*ca_pin_tpl;
-	struct ebox_tpl		*ca_backup_tpl;
-	struct ebox_tpl		*ca_puk_tpl;
-	struct ebox_tpl		*ca_admin_tpl;
-	struct ebox_tpl		*ca_seqbase_tpl;
+	struct ca_ebox_tpl	*ca_ebox_tpls;
+
+	struct ca_ebox_tpl	*ca_pin_tpl;
+	struct ca_ebox_tpl	*ca_backup_tpl;
+	struct ca_ebox_tpl	*ca_puk_tpl;
+	struct ca_ebox_tpl	*ca_admin_tpl;
 
 	struct ca_session	*ca_sessions;
 
@@ -187,8 +195,12 @@ struct ca_token_tpl {
 	char				*ctt_help;
 	enum ca_token_tpl_flags		 ctt_flags;
 	enum piv_alg			 ctt_admin_alg;
+	struct ca_ebox_tpl		*ctt_puk_tpl;
+	struct ca_ebox_tpl		*ctt_backup_tpl;
+	struct ca_ebox_tpl		*ctt_admin_tpl;
 	json_object			*ctt_vars;
 	struct ca_token_slot_tpl	*ctt_slots;
+
 };
 
 struct ca_token_slot_tpl {
@@ -223,6 +235,23 @@ struct ca_cert_tpl {
 	json_object			*cct_vars;
 };
 
+struct ca_new_args {
+	char			*cna_init_pin;
+	char			*cna_init_puk;
+
+	enum piv_alg		 cna_init_admin_alg;
+	uint8_t			*cna_init_admin;
+	size_t			 cna_init_admin_len;
+
+	enum piv_alg		 cna_key_alg;
+	struct ca_ebox_tpl	*cna_ebox_tpls;
+	struct ca_ebox_tpl	*cna_backup_tpl;
+	struct ca_ebox_tpl	*cna_pin_tpl;
+	struct ca_ebox_tpl	*cna_puk_tpl;
+
+	X509_NAME		*cna_dn;
+};
+
 static struct cert_var *get_or_define_empty_var(struct cert_var_scope *,
     const char *, const char *, uint);
 static errf_t *cert_var_eval_into(struct cert_var *, struct sshbuf *);
@@ -233,15 +262,20 @@ static struct cert_var *find_var(struct cert_var *, const char *);
 static errf_t *load_ossl_config(const char *section,
     struct cert_var_scope *cs, CONF **out);
 
-static errf_t *agent_sign_json(int fd, struct sshkey *pubkey, json_object *obj);
+static errf_t *agent_sign_json(int fd, struct sshkey *pubkey,
+    const char *subprop, json_object *obj);
 static errf_t *piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
+    const char *subprop, json_object *obj);
+static errf_t *verify_json(struct sshkey *pubkey, const char *subprop,
     json_object *obj);
-static errf_t *verify_json(struct sshkey *pubkey, json_object *obj);
 
 static errf_t *read_text_file(const char *path, char **out, size_t *outlen);
 static errf_t *validate_cstring(const char *buf, size_t len, size_t maxlen);
 
 static errf_t *agent_sign_cert(int fd, struct sshkey *pubkey, X509 *cert);
+
+static struct ca_ebox_tpl *get_ebox_tpl(struct ca_ebox_tpl **, const char *,
+    int);
 
 #define	PARAM_DN	{ "dn", RQF_CERT | RQF_CERT_REQ, \
     "Distinguished name (e.g. 'cn=foo, o=company, c=AU')" }
@@ -356,6 +390,16 @@ struct cert_tpl cert_templates[] = {
 		.ct_name = NULL
 	}
 };
+
+static inline void
+set_ca_ebox_ptr(struct ca_ebox_tpl **ptr, struct ca_ebox_tpl *newval)
+{
+	if (*ptr != NULL)
+		(*ptr)->cet_refcnt--;
+	*ptr = newval;
+	if (newval != NULL)
+		newval->cet_refcnt++;
+}
 
 const struct cert_tpl *
 cert_tpl_find(const char *name)
@@ -2825,11 +2869,12 @@ best_sign_alg_for_key(struct sshkey *pubkey)
 }
 
 static errf_t *
-agent_sign_json(int fd, struct sshkey *pubkey, json_object *obj)
+agent_sign_json(int fd, struct sshkey *pubkey, const char *subprop,
+    json_object *obj)
 {
 	int rc;
 	errf_t *err;
-	json_object *sigprop = NULL;
+	json_object *sigprop = NULL, *sigsubprop;
 	char *sigb64 = NULL;
 	struct sshbuf *sigbuf = NULL, *tbsbuf = NULL;
 	uint8_t *sig = NULL;
@@ -2846,7 +2891,36 @@ agent_sign_json(int fd, struct sshkey *pubkey, json_object *obj)
 		goto out;
 	}
 
-	json_object_object_del(obj, "signature");
+	sigprop = json_object_object_get(obj, "signature");
+	if (sigprop == NULL) {
+		if (subprop != NULL)
+			sigprop = json_object_new_object();
+		else
+			sigprop = json_object_new_string("");
+	} else {
+		VERIFY(json_object_is_type(sigprop, json_type_object));
+		json_object_get(sigprop);
+		json_object_object_del(obj, "signature");
+	}
+	VERIFY(sigprop != NULL);
+
+	if (subprop == NULL) {
+		sigsubprop = sigprop;
+	} else {
+		sigsubprop = json_object_object_get(sigprop, subprop);
+		if (sigsubprop == NULL) {
+			sigsubprop = json_object_new_string("");
+			VERIFY(sigsubprop != NULL);
+			rc = json_object_object_add(sigprop, subprop,
+			    sigsubprop);
+			if (rc != 0) {
+				err = jsonerrf("json_object_object_add");
+				goto out;
+			}
+		}
+		VERIFY(json_object_is_type(sigsubprop, json_type_string));
+	}
+
 	tmp = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
 
 	if ((rc = sshbuf_put_cstring8(tbsbuf, "piv-ca-json-signature")) ||
@@ -2875,9 +2949,9 @@ agent_sign_json(int fd, struct sshkey *pubkey, json_object *obj)
 		goto out;
 	}
 
-	sigprop = json_object_new_string(sigb64);
-	if (sigprop == NULL) {
-		err = jsonerrf("json_object_new_string");
+	rc = json_object_set_string(sigsubprop, sigb64);
+	if (rc != 1) {
+		err = jsonerrf("json_object_set_string");
 		goto out;
 	}
 
@@ -2902,11 +2976,11 @@ out:
 
 static errf_t *
 piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
-    json_object *obj)
+    const char *subprop, json_object *obj)
 {
 	int rc;
 	errf_t *err;
-	json_object *sigprop = NULL;
+	json_object *sigprop = NULL, *sigsubprop;
 	char *sigb64 = NULL;
 	struct sshbuf *sigbuf = NULL, *tbsbuf = NULL;
 	enum sshdigest_types hashalg;
@@ -2930,7 +3004,36 @@ piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
 		goto out;
 	}
 
-	json_object_object_del(obj, "signature");
+	sigprop = json_object_object_get(obj, "signature");
+	if (sigprop == NULL) {
+		if (subprop != NULL)
+			sigprop = json_object_new_object();
+		else
+			sigprop = json_object_new_string("");
+	} else {
+		VERIFY(json_object_is_type(sigprop, json_type_object));
+		json_object_get(sigprop);
+		json_object_object_del(obj, "signature");
+	}
+	VERIFY(sigprop != NULL);
+
+	if (subprop == NULL) {
+		sigsubprop = sigprop;
+	} else {
+		sigsubprop = json_object_object_get(sigprop, subprop);
+		if (sigsubprop == NULL) {
+			sigsubprop = json_object_new_string("");
+			VERIFY(sigsubprop != NULL);
+			rc = json_object_object_add(sigprop, subprop,
+			    sigsubprop);
+			if (rc != 0) {
+				err = jsonerrf("json_object_object_add");
+				goto out;
+			}
+		}
+		VERIFY(json_object_is_type(sigsubprop, json_type_string));
+	}
+
 	tmp = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
 
 	if ((rc = sshbuf_put_cstring8(tbsbuf, "piv-ca-json-signature")) ||
@@ -2966,9 +3069,9 @@ piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
 		goto out;
 	}
 
-	sigprop = json_object_new_string(sigb64);
-	if (sigprop == NULL) {
-		err = jsonerrf("json_object_new_string");
+	rc = json_object_set_string(sigsubprop, sigb64);
+	if (rc != 1) {
+		err = jsonerrf("json_object_set_string");
 		goto out;
 	}
 
@@ -2992,11 +3095,11 @@ out:
 }
 
 static errf_t *
-verify_json(struct sshkey *pubkey, json_object *obj)
+verify_json(struct sshkey *pubkey, const char *subprop, json_object *obj)
 {
 	int rc;
 	const char *tmp;
-	json_object *sigprop = NULL;
+	json_object *sigprop = NULL, *sigsubprop;
 	errf_t *err;
 	struct sshbuf *sigbuf = NULL, *tbsbuf = NULL;
 
@@ -3008,7 +3111,19 @@ verify_json(struct sshkey *pubkey, json_object *obj)
 	}
 	json_object_get(sigprop);
 
-	tmp = json_object_get_string(sigprop);
+	if (subprop == NULL) {
+		sigsubprop = sigprop;
+	} else {
+		sigsubprop = json_object_object_get(sigprop, subprop);
+		if (sigsubprop == NULL) {
+			err = errf("JSONSignatureError", NULL, "No '%s' sub-"
+			    "property found in signature of JSON object",
+			    subprop);
+			goto out;
+		}
+	}
+
+	tmp = json_object_get_string(sigsubprop);
 	if (tmp == NULL) {
 		err = errf("JSONSignatureError", NULL, "Property 'signature' "
 		    "is null");
@@ -3067,12 +3182,21 @@ out:
 	return (err);
 }
 
+static void
+ca_ebox_tpl_free(struct ca_ebox_tpl *cet)
+{
+	free(cet->cet_name);
+	ebox_tpl_free(cet->cet_tpl);
+	free(cet);
+}
+
 void
 ca_close(struct ca *ca)
 {
 	struct ca_uri *uri, *nuri;
 	struct ca_cert_tpl *ctpl, *nctpl;
 	struct ca_token_tpl *ttpl, *nttpl;
+	struct ca_ebox_tpl *cet, *ncet;
 
 	if (ca == NULL)
 		return;
@@ -3087,11 +3211,10 @@ ca_close(struct ca *ca)
 	json_object_put(ca->ca_vars);
 	X509_free(ca->ca_cert);
 	sshkey_free(ca->ca_pubkey);
-	ebox_tpl_free(ca->ca_pin_tpl);
-	ebox_tpl_free(ca->ca_backup_tpl);
-	ebox_tpl_free(ca->ca_puk_tpl);
-	ebox_tpl_free(ca->ca_admin_tpl);
-	ebox_tpl_free(ca->ca_seqbase_tpl);
+	for (cet = ca->ca_ebox_tpls; cet != NULL; cet = ncet) {
+		ncet = cet->cet_next;
+		ca_ebox_tpl_free(cet);
+	}
 	for (uri = ca->ca_crls; uri != NULL; uri = nuri) {
 		nuri = uri->cu_next;
 		free(uri->cu_uri);
@@ -3117,17 +3240,92 @@ ca_close(struct ca *ca)
 	free(ca);
 }
 
+static struct ca_ebox_tpl *
+get_ebox_tpl(struct ca_ebox_tpl **head, const char *tplname, int create)
+{
+	struct ca_ebox_tpl *cet, *tcet = NULL;
+
+	for (cet = *head; cet != NULL; cet = cet->cet_next) {
+		if (strcmp(cet->cet_name, tplname) == 0) {
+			tcet = cet;
+			break;
+		}
+	}
+	if (tcet == NULL && create) {
+		tcet = calloc(1, sizeof (struct ca_ebox_tpl));
+		VERIFY(tcet != NULL);
+		tcet->cet_name = strdup(tplname);
+		VERIFY(tcet->cet_name != NULL);
+		tcet->cet_next = *head;
+		*head = tcet;
+	}
+
+	return (tcet);
+}
+
+static errf_t *
+parse_ebox_spec(struct ca *ca, const char *name, json_object *obj)
+{
+	struct ca_ebox_tpl *tcet = NULL;
+	const char *tplname;
+	errf_t *err;
+	json_object *prop;
+
+	prop = json_object_object_get(obj, "template");
+	if (prop == NULL) {
+		err = errf("ParseError", NULL, "Failed to parse ebox "
+		    "template '%s': no 'template' property", name);
+		return (err);
+	}
+
+	tplname = json_object_get_string(prop);
+	if (tplname == NULL) {
+		err = jsonerrf("json_object_get_string");
+		err = errf("ParseError", err, "Failed to parse ebox "
+		    "template '%s'", name);
+		return (err);
+	}
+
+	tcet = get_ebox_tpl(&ca->ca_ebox_tpls, tplname, 0);
+	if (tcet == NULL) {
+		err = errf("ParseError", err, "Failed to parse ebox "
+		    "template '%s': invalid ebox tpl name '%s'", name,
+		    tplname);
+		return (err);
+	}
+
+	if (strcmp(name, "pin") == 0)
+		set_ca_ebox_ptr(&ca->ca_pin_tpl, tcet);
+	else if (strcmp(name, "backup") == 0)
+		set_ca_ebox_ptr(&ca->ca_backup_tpl, tcet);
+	else if (strcmp(name, "puk") == 0)
+		set_ca_ebox_ptr(&ca->ca_puk_tpl, tcet);
+	else if (strcmp(name, "admin") == 0)
+		set_ca_ebox_ptr(&ca->ca_admin_tpl, tcet);
+	else {
+		return (errf("InvalidProperty", NULL, "Unknown ebox "
+		    "name '%s'", name));
+	}
+
+	return (ERRF_OK);
+}
+
 static errf_t *
 parse_ebox_template(struct ca *ca, const char *name, json_object *obj)
 {
 	const char *b64;
-	struct ebox_tpl *tpl;
+	struct ca_ebox_tpl *cet;
 	struct sshbuf *buf;
 	int rc;
 	errf_t *err;
 
 	buf = sshbuf_new();
 	VERIFY(buf != NULL);
+
+	cet = calloc(1, sizeof (struct ca_ebox_tpl));
+	VERIFY(cet != NULL);
+
+	cet->cet_name = strdup(name);
 
 	b64 = json_object_get_string(obj);
 	rc = sshbuf_b64tod(buf, b64);
@@ -3138,7 +3336,7 @@ parse_ebox_template(struct ca *ca, const char *name, json_object *obj)
 		sshbuf_free(buf);
 		return (err);
 	}
-	err = sshbuf_get_ebox_tpl(buf, &tpl);
+	err = sshbuf_get_ebox_tpl(buf, &cet->cet_tpl);
 	if (err != ERRF_OK) {
 		err = errf("ParseError", err, "Failed to parse ebox "
 		    "template '%s'", name);
@@ -3147,21 +3345,8 @@ parse_ebox_template(struct ca *ca, const char *name, json_object *obj)
 	}
 	sshbuf_free(buf);
 
-	if (strcmp(name, "pin") == 0)
-		ca->ca_pin_tpl = tpl;
-	else if (strcmp(name, "backup") == 0)
-		ca->ca_backup_tpl = tpl;
-	else if (strcmp(name, "puk") == 0)
-		ca->ca_puk_tpl = tpl;
-	else if (strcmp(name, "admin") == 0)
-		ca->ca_admin_tpl = tpl;
-	else if (strcmp(name, "seqbase") == 0)
-		ca->ca_seqbase_tpl = tpl;
-	else {
-		ebox_tpl_free(tpl);
-		return (errf("InvalidProperty", NULL, "Unknown ebox "
-		    "template '%s'", name));
-	}
+	cet->cet_next = ca->ca_ebox_tpls;
+	ca->ca_ebox_tpls = cet;
 
 	return (ERRF_OK);
 }
@@ -3309,6 +3494,44 @@ parse_token_slot_template(struct ca_token_tpl *ctt, enum piv_slotid slotid,
 	tpl->ctst_pinpol = YKPIV_PIN_DEFAULT;
 	tpl->ctst_touchpol = YKPIV_TOUCH_DEFAULT;
 
+	obj = json_object_object_get(robj, "pin_policy");
+	if (obj != NULL) {
+		const char *v = json_object_get_string(obj);
+		if (strcmp(v, "default") == 0)
+			tpl->ctst_pinpol = YKPIV_PIN_DEFAULT;
+		else if (strcmp(v, "never") == 0)
+			tpl->ctst_pinpol = YKPIV_PIN_NEVER;
+		else if (strcmp(v, "once") == 0)
+			tpl->ctst_pinpol = YKPIV_PIN_ONCE;
+		else if (strcmp(v, "always") == 0)
+			tpl->ctst_pinpol = YKPIV_PIN_ALWAYS;
+		else {
+			ca_token_slot_tpl_free(tpl);
+			return (errf("MissingProperty", NULL, "Token slot "
+			    "template '%s'/%02x has invalid 'pin_policy' "
+			    "property: '%s'", ctt->ctt_name, slotid, v));
+		}
+	}
+
+	obj = json_object_object_get(robj, "touch_policy");
+	if (obj != NULL) {
+		const char *v = json_object_get_string(obj);
+		if (strcmp(v, "default") == 0)
+			tpl->ctst_touchpol = YKPIV_TOUCH_DEFAULT;
+		else if (strcmp(v, "never") == 0)
+			tpl->ctst_touchpol = YKPIV_TOUCH_NEVER;
+		else if (strcmp(v, "cached") == 0)
+			tpl->ctst_touchpol = YKPIV_TOUCH_CACHED;
+		else if (strcmp(v, "always") == 0)
+			tpl->ctst_touchpol = YKPIV_TOUCH_ALWAYS;
+		else {
+			ca_token_slot_tpl_free(tpl);
+			return (errf("MissingProperty", NULL, "Token slot "
+			    "template '%s'/%02x has invalid 'touch_policy' "
+			    "property: '%s'", ctt->ctt_name, slotid, v));
+		}
+	}
+
 	obj = json_object_object_get(robj, "template");
 	if (obj == NULL) {
 		ca_token_slot_tpl_free(tpl);
@@ -3327,6 +3550,12 @@ parse_token_slot_template(struct ca_token_tpl *ctt, enum piv_slotid slotid,
 	obj = json_object_object_get(robj, "self_signed");
 	if (obj != NULL && json_object_get_boolean(obj))
 		tpl->ctst_flags |= CCTF_SELF_SIGNED;
+	obj = json_object_object_get(robj, "key_backup");
+	if (obj != NULL && json_object_get_boolean(obj))
+		tpl->ctst_flags |= CCTF_KEY_BACKUP;
+	obj = json_object_object_get(robj, "host_keygen");
+	if (obj != NULL && json_object_get_boolean(obj))
+		tpl->ctst_flags |= CCTF_HOST_KEYGEN;
 
 	tpl->ctst_vars = json_object_object_get(robj, "variables");
 	if (tpl->ctst_vars != NULL)
@@ -3406,6 +3635,41 @@ parse_token_template(struct ca *ca, const char *name, json_object *robj)
 			ca_token_tpl_free(tpl);
 			return (errf("InvalidProperty", err, "Token template "
 			    "'%s' has invalid slot: '%s'", name, iter.key));
+		}
+	}
+
+	set_ca_ebox_ptr(&tpl->ctt_puk_tpl, ca->ca_puk_tpl);
+	set_ca_ebox_ptr(&tpl->ctt_backup_tpl, ca->ca_backup_tpl);
+	set_ca_ebox_ptr(&tpl->ctt_admin_tpl, ca->ca_admin_tpl);
+
+	obj = json_object_object_get(robj, "eboxes");
+	if (obj != NULL) {
+		bzero(&iter, sizeof (iter));
+		json_object_object_foreachC(obj, iter) {
+			const char *tplname;
+			struct ca_ebox_tpl *tcet = NULL;
+
+			tplname = json_object_get_string(iter.val);
+			tcet = get_ebox_tpl(&ca->ca_ebox_tpls, tplname, 0);
+			if (tcet == NULL) {
+				ca_token_tpl_free(tpl);
+				return (errf("InvalidProperty", err, "Token "
+				    "template '%s' has invalid ebox spec: "
+				    "'%s' = '%s'", name, iter.key, tplname));
+			}
+
+			if (strcmp(iter.key, "puk") == 0)
+				set_ca_ebox_ptr(&tpl->ctt_puk_tpl, tcet);
+			else if (strcmp(iter.key, "backup") == 0)
+				set_ca_ebox_ptr(&tpl->ctt_backup_tpl, tcet);
+			else if (strcmp(iter.key, "admin") == 0)
+				set_ca_ebox_ptr(&tpl->ctt_admin_tpl, tcet);
+			else {
+				ca_token_tpl_free(tpl);
+				return (errf("InvalidProperty", err, "Token "
+				    "template '%s' has invalid ebox spec: "
+				    "'%s'", name, iter.key));
+			}
 		}
 	}
 
@@ -3603,6 +3867,277 @@ read_uri_array(json_object *array, struct ca_uri **head)
 }
 
 errf_t *
+ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type, const char *tplname)
+{
+	struct ca_ebox_tpl *cet;
+	struct ca_ebox_tpl **ptr;
+
+	cet = get_ebox_tpl(&ca->ca_ebox_tpls, tplname, 0);
+	if (cet == NULL || cet->cet_tpl == NULL) {
+		return (errf("InvalidTemplateName", NULL, "Invalid template "
+		   "name: '%s'", tplname));
+	}
+
+	switch (type) {
+	case CA_EBOX_PIN:
+		ptr = &ca->ca_pin_tpl;
+		break;
+	case CA_EBOX_PUK:
+		ptr = &ca->ca_puk_tpl;
+		break;
+	case CA_EBOX_KEY_BACKUP:
+		ptr = &ca->ca_backup_tpl;
+		break;
+	case CA_EBOX_ADMIN_KEY:
+		ptr = &ca->ca_admin_tpl;
+		break;
+	}
+	set_ca_ebox_ptr(ptr, cet);
+
+	return (ERRF_OK);
+}
+
+errf_t *
+ca_set_ebox_tpl_name(struct ca *ca, const char *tplname, struct ebox_tpl *tpl)
+{
+	struct ca_ebox_tpl *cet;
+
+	cet = get_ebox_tpl(&ca->ca_ebox_tpls, tplname, 1);
+	ebox_tpl_free(cet->cet_tpl);
+	cet->cet_tpl = ebox_tpl_clone(tpl);
+	VERIFY(cet->cet_tpl != NULL);
+
+	return (ERRF_OK);
+}
+
+struct ca_new_args *
+cana_new(void)
+{
+	struct ca_new_args *cna;
+
+	cna = calloc(1, sizeof (struct ca_new_args));
+	if (cna == NULL)
+		return (cna);
+
+	cna->cna_key_alg = PIV_ALG_RSA2048;
+}
+
+void
+cana_free(struct ca_new_args *cna)
+{
+	struct ca_ebox_tpl *cet, *ncet;
+	if (cna == NULL)
+		return;
+	if (cna->cna_init_pin != NULL)
+		freezero(cna->cna_init_pin, strlen(cna->cna_init_pin));
+	if (cna->cna_init_puk != NULL)
+		freezero(cna->cna_init_puk, strlen(cna->cna_init_puk));
+	freezero(cna->cna_init_admin, cna->cna_init_admin_len);
+
+	for (cet = cna->cna_ebox_tpls; cet != NULL; cet = ncet) {
+		ncet = cet->cet_next;
+		ca_ebox_tpl_free(cet);
+	}
+
+	X509_NAME_free(cna->cna_dn);
+
+	free(cna);
+}
+
+void
+cana_initial_pin(struct ca_new_args *cna, const char *pin)
+{
+	size_t len;
+	if (cna->cna_init_pin != NULL)
+		freezero(cna->cna_init_pin, strlen(cna->cna_init_pin));
+	len = strlen(pin) + 1;
+	cna->cna_init_pin = calloc_conceal(1, len);
+	VERIFY(cna->cna_init_pin != NULL);
+	strlcpy(cna->cna_init_pin, pin, len);
+}
+
+void
+cana_initial_puk(struct ca_new_args *cna, const char *puk)
+{
+	size_t len;
+	if (cna->cna_init_puk != NULL)
+		freezero(cna->cna_init_puk, strlen(cna->cna_init_puk));
+	len = strlen(puk) + 1;
+	cna->cna_init_puk = calloc_conceal(1, len);
+	VERIFY(cna->cna_init_puk != NULL);
+	strlcpy(cna->cna_init_puk, puk, len);
+}
+
+void
+cana_initial_admin_key(struct ca_new_args *cna, enum piv_alg alg, uint8_t *key,
+    size_t keylen)
+{
+	freezero(cna->cna_init_admin, cna->cna_init_admin_len);
+	cna->cna_init_admin_alg = alg;
+	cna->cna_init_admin_len = keylen;
+	cna->cna_init_admin = malloc_conceal(keylen);
+	VERIFY(cna->cna_init_admin != NULL);
+	bcopy(key, cna->cna_init_admin, keylen);
+}
+
+void
+cana_key_alg(struct ca_new_args *cna, enum piv_alg alg)
+{
+	cna->cna_key_alg = alg;
+}
+
+void
+cana_dn(struct ca_new_args *cna, X509_NAME *name)
+{
+	X509_NAME_free(cna->cna_dn);
+	cna->cna_dn = X509_NAME_dup(name);
+	VERIFY(cna->cna_dn != NULL);
+}
+
+void
+cana_backup_tpl(struct ca_new_args *cna, const char *tplname,
+    struct ebox_tpl *tpl)
+{
+	struct ca_ebox_tpl *cet;
+
+	cet = get_ebox_tpl(&cna->cna_ebox_tpls, tplname, 1);
+	if (cet->cet_tpl == NULL) {
+		cet->cet_tpl = ebox_tpl_clone(tpl);
+		VERIFY(cet->cet_tpl != NULL);
+	}
+	set_ca_ebox_ptr(&cna->cna_backup_tpl, cet);
+}
+
+void
+cana_pin_tpl(struct ca_new_args *cna, const char *tplname,
+    struct ebox_tpl *tpl)
+{
+	struct ca_ebox_tpl *cet;
+
+	cet = get_ebox_tpl(&cna->cna_ebox_tpls, tplname, 1);
+	if (cet->cet_tpl == NULL) {
+		cet->cet_tpl = ebox_tpl_clone(tpl);
+		VERIFY(cet->cet_tpl != NULL);
+	}
+	set_ca_ebox_ptr(&cna->cna_pin_tpl, cet);
+}
+
+void
+cana_puk_tpl(struct ca_new_args *cna, const char *tplname,
+    struct ebox_tpl *tpl)
+{
+	struct ca_ebox_tpl *cet;
+
+	cet = get_ebox_tpl(&cna->cna_ebox_tpls, tplname, 1);
+	if (cet->cet_tpl == NULL) {
+		cet->cet_tpl = ebox_tpl_clone(tpl);
+		VERIFY(cet->cet_tpl != NULL);
+	}
+	set_ca_ebox_ptr(&cna->cna_puk_tpl, cet);
+}
+
+char *
+generate_pin(void)
+{
+	char *out;
+	uint i;
+	out = calloc_conceal(9, 1);
+	if (out == NULL)
+		return (NULL);
+	for (i = 0; i < 8; ++i)
+		out[i] = '0' + arc4random_uniform(10);
+	return (out);
+}
+
+errf_t *
+ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
+    struct ca **out)
+{
+	struct ca *ca;
+	errf_t *err;
+	char fname[PATH_MAX];
+	FILE *caf = NULL;
+	struct sshkey *cakey = NULL;
+	int sshkt;
+	uint sshksz;
+	int rc;
+	char *newpin = NULL, *newpuk = NULL;
+	struct tlv_state *tlv;
+
+	ca = calloc(1, sizeof(struct ca));
+	if (ca == NULL)
+		return (errfno("calloc", errno, NULL));
+
+	ca->ca_base_path = strdup(path);
+	if (ca->ca_base_path == NULL) {
+		err = errfno("strdup", errno, NULL);
+		goto out;
+	}
+
+	strlcpy(fname, path, sizeof (fname));
+	strlcat(fname, "/pivy-ca.json", sizeof (fname));
+
+	caf = fopen(fname, "w");
+	if (caf == NULL) {
+		err = errf("MetadataError", errfno("fopen", errno, NULL),
+		    "Failed to open CA metadata file '%s' for writing",
+		    fname);
+		goto out;
+	}
+
+	ca->ca_dn = args->cna_dn;
+	args->cna_dn = NULL;
+
+	ca_recalc_slug(ca);
+
+	arc4random_buf(ca->ca_guid, sizeof (ca->ca_guid));
+
+	tlv = tlv_init_write();
+
+
+	switch (args->cna_key_alg) {
+	case PIV_ALG_RSA1024:
+		sshkt = KEY_RSA;
+		sshksz = 1024;
+		break;
+	case PIV_ALG_RSA2048:
+		sshkt = KEY_RSA;
+		sshksz = 2048;
+		break;
+	case PIV_ALG_ECCP256:
+		sshkt = KEY_ECDSA;
+		sshksz = 256;
+		break;
+	case PIV_ALG_ECCP384:
+		sshkt = KEY_ECDSA;
+		sshksz = 384;
+		break;
+	default:
+		err = errf("UnsupportedAlgorithm", NULL, "PIV algorithm "
+		    "%d (%s) not supported for CA key", args->cna_key_alg,
+		    piv_alg_to_string(args->cna_key_alg));
+	}
+
+	rc = sshkey_generate(sshkt, sshksz, &cakey);
+	if (rc != 0) {
+		err = ssherrf("sshkey_generate", rc);
+		goto out;
+	}
+
+out:
+	sshkey_free(cakey);
+	if (newpin != NULL)
+		freezero(newpin, strlen(newpin));
+	if (newpuk != NULL)
+		freezero(newpuk, strlen(newpuk));
+	ca_close(ca);
+	if (caf != NULL)
+		fclose(caf);
+	cana_free(args);
+	return (err);
+}
+
+errf_t *
 ca_open(const char *path, struct ca **outca)
 {
 	struct ca *ca;
@@ -3713,7 +4248,7 @@ ca_open(const char *path, struct ca **outca)
 		goto metaerr;
 	}
 
-	err = verify_json(ca->ca_pubkey, robj);
+	err = verify_json(ca->ca_pubkey, NULL, robj);
 	if (err != ERRF_OK) {
 		err = errf("CADataError", err, "Failed to validate CA "
 		    "configuration signature");
@@ -3800,6 +4335,22 @@ ca_open(const char *path, struct ca **outca)
 		if (err != ERRF_OK) {
 			err = errf("InvalidProperty", err, "CA JSON has "
 			    "invalid 'ebox_templates' property");
+			goto out;
+		}
+	}
+
+	obj = json_object_object_get(robj, "eboxes");
+	if (obj == NULL) {
+		err = errf("MissingProperty", NULL, "CA JSON does not have "
+		    "'eboxes' property");
+		goto out;
+	}
+	bzero(&iter, sizeof (iter));
+	json_object_object_foreachC(obj, iter) {
+		err = parse_ebox_spec(ca, iter.key, iter.val);
+		if (err != ERRF_OK) {
+			err = errf("InvalidProperty", err, "CA JSON has "
+			    "invalid 'eboxes' property");
 			goto out;
 		}
 	}

@@ -438,6 +438,15 @@ tlv_write(struct tlv_state *ts, const uint8_t *src, size_t len)
 }
 
 void
+tlv_write_u16(struct tlv_state *ts, uint16_t val)
+{
+	VERIFY3U(tlv_root_rem(ts), >=, sizeof (val));
+	val = htobe16(val);
+	bcopy(&val, &ts->ts_buf[ts->ts_pos], sizeof (val));
+	ts->ts_pos += sizeof (val);
+}
+
+void
 tlv_write_u8to32(struct tlv_state *ts, uint32_t val)
 {
 	uint8_t *buf = ts->ts_buf;

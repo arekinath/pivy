@@ -1,18 +1,14 @@
 CA structure
 
-
-
   /
   --> pivy-ca.json          marker and main config
   					signed with CA key for modification detect
   --> ${CN}.crt			        main CA cert
-  --> ${CN}.serial.ebox		  next cert serial
-  					mirrored in printed info file on card
-  --> ${CN}.seqbase.ebox	  base of serial sequence for verifying
+  --> ${CN}.log.json        CA operations log
   --> ${CN}.pin.ebox		    CA card PIN
-  --> ${CN}.key.ebox		    key backup
+  --> ${CN}.key.ebox		    key backup and base of serial sequence for log
   --> token/
-      --> ${GUID}.json			piv token info, state (revoked?)
+      --> ${GUID}.json			piv token info, signed
       --> ${GUID}-puk.ebox
       --> ${GUID}-admin.ebox		admin key (if enabled, otherwise in pinfo)
       --> ${GUID}-${SLOT}-attest.crt	attestation cert (if available)
@@ -29,17 +25,91 @@ CA structure
       --> ${FROMDATE}-${TODATE}.crl
 
 
+Hash chain
+
+ random 32-byte secret generated at CA setup
+ at each log entry: secret = sha256(prev secret)
+
+ the latest secret is used as an HMAC key to sign that entry
+ also used as HMAC key to generate serial numbers for any certificates in that entry
+
+ secret is stored on CA card in printed info object, overwritten each time
+ never written to disk on issuance workstation
+
+
+CA operations log
+
+  line-separated json
+
+{
+ "time": "2022-03-10T09:38:00Z",
+ "prev_sha256": "base64",
+ "config_sha256": "base64",
+ ---
+ "signature": {"ca": "...", "serial": "hmac-sha256(above, hash chain latest"}
+}
+
+  each line signed separately CA signing key and latest serial hmac
+  includes sha256 of previous log line
+
+{
+ "time": "2022-03-10T09:38:00Z",
+ "prev_sha256": "base64",
+ "provision_token": {
+  "template": "user",
+  "guid": "hex",
+  "variables": { ... },
+  "slots": { "card-auth": { "serial": "hmac(pubkey, hash chain latest)" }, ... }
+ },
+ ---
+ "signature": {"ca": "...", "serial": "hmac-sha256(above, hash chain latest"}
+}
+
+{
+ "time": "2022-03-10T09:38:00Z",
+ "prev_sha256": "base64",
+ "sign_certificate":
+   { "template": "intermediate", "serial": "hmac(pubkey, hash chain latest)", "variables": { ... } },
+ ---
+ "signature": {"ca": "...", "serial": "hmac-sha256(above, hash chain latest"}
+}
+
+{
+ "time": "2022-03-10T09:38:00Z",
+ "prev_sha256": "base64",
+ "revoke_certificates": [
+   { "serial": "hex" },
+   { "serial": "hex" }
+ ],
+ ---
+ "signature": {"ca": "...", "serial": "hmac-sha256(above, hash chain latest"}
+}
+
+{
+ "time": "2022-03-10T09:38:00Z",
+ "prev_sha256": "base64",
+ "sign_crl": {
+  "expiry": "2022-03-14T09:38:00Z"
+ }
+ ---
+ "signature": {"ca": "...", "serial": "hmac-sha256(above, hash chain latest"}
+}
+
+
+
+Commands
+
 pivy-ca setup			interactive setup of a new CA
 piva-ca config			edits and re-signs configuration
 
 pivy-ca shell			unlocks CA PIN and enters a shell with an agent running for it
 
-pivy-ca restore			restores CA to new card from backup
-
 pivy-ca provision		provisions a new PIV card/token for a user
 
-pivy-ca revoke			revokes a card/token and all its certs
+pivy-ca revoke			revokes a card/token and all its certs, or specific cert
 
 pivy-ca sign-req		signs a manual certificate req, incl. for intermediate
 
 pivy-ca crl			signs a new CRL (after verifying all certs are present in state dir)
+
+pivy-ca restore     restores CA to new card from backup

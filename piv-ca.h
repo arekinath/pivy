@@ -129,25 +129,63 @@ enum ca_cert_tpl_flags {
 	CCTF_COPY_DN		= (1<<2),
 	CCTF_COPY_KP		= (1<<3),
 	CCTF_COPY_SAN		= (1<<4),
-	CCTF_COPY_OTHER_EXTS	= (1<<5)
+	CCTF_COPY_OTHER_EXTS	= (1<<5),
+	CCTF_KEY_BACKUP		= (1<<6),
+	CCTF_HOST_KEYGEN	= (1<<7)
+};
+
+enum ca_ebox_type {
+	CA_EBOX_PIN,
+	CA_EBOX_PUK,
+	CA_EBOX_KEY_BACKUP,
+	CA_EBOX_ADMIN_KEY
 };
 
 struct ca_new_args	*cana_new(void);
-void			 cana_free(struct ca_new_args *);
+void	 cana_initial_pin(struct ca_new_args *, const char *);
+void	 cana_initial_puk(struct ca_new_args *, const char *);
+void	 cana_initial_admin_key(struct ca_new_args *, enum piv_alg,
+    uint8_t *, size_t);
+void	 cana_key_alg(struct ca_new_args *, enum piv_alg alg);
+void	 cana_backup_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
+void	 cana_pin_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
+void	 cana_puk_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
+void	 cana_dn(struct ca_new_args *, X509_NAME *);
 
-errf_t		*ca_new(const char *path, struct ca_new_args *,
-    struct ca **outca);
+void	 cana_free(struct ca_new_args *);
+
+errf_t		*ca_generate(const char *path, struct ca_new_args *args,
+    struct piv_token *tkn, struct ca **outca);
 
 errf_t		*ca_open(const char *path, struct ca **outca);
+
 int		 ca_config_dirty(struct ca *ca);
-errf_t		*ca_config_sign(struct ca *ca, struct ca_session *sess);
-errf_t		*ca_config_write(struct ca *ca);
-struct ebox	*ca_pin_ebox(struct ca *ca);
-struct ebox	*ca_key_backup_ebox(struct ca *ca);
+errf_t		*ca_config_write(struct ca *ca, struct ca_session *sess);
+
+uint		 ca_crl_uri_count(const struct ca *ca);
+const char	*ca_crl_uri(const struct ca *ca, uint index);
+errf_t		*ca_crl_uri_remove(struct ca *ca, const char *uri);
+errf_t		*ca_crl_uri_add(struct ca *ca, const char *uri);
+
+uint		 ca_ocsp_uri_count(const struct ca *ca);
+const char	*ca_ocsp_uri(const struct ca *ca, uint index);
+errf_t		*ca_ocsp_uri_remove(struct ca *ca, const char *uri);
+errf_t		*ca_ocsp_uri_add(struct ca *ca, const char *uri);
+
+struct ebox	*ca_get_ebox(struct ca *ca, enum ca_ebox_type type);
+const char	*ca_get_ebox_tpl(struct ca *ca, enum ca_ebox_type type);
+errf_t		*ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type,
+    const char *tplname);
+errf_t		*ca_rekey_ebox(struct ca *ca, enum ca_ebox_type type,
+    struct ebox *unlocked);
+
+struct ebox_tpl	*ca_get_ebox_tpl_name(struct ca *ca, const char *name);
+errf_t		*ca_set_ebox_tpl_name(struct ca *ca, const char *name,
+    struct ebox_tpl *tpl);
+
 void		 ca_close(struct ca *ca);
 
 errf_t		*ca_open_session(struct ca *ca, struct ca_session **outsess);
-int		 ca_session_auth_needed(struct ca_session *sess);
 enum piv_pin	 ca_session_auth_type(struct ca_session *sess);
 errf_t		*ca_session_auth(struct ca_session *sess, const char *pin);
 errf_t		*ca_close_session(struct ca_session *sess);
@@ -184,6 +222,12 @@ void			 ca_token_tpl_free(struct ca_token_tpl *tpl);
 struct ca_token_tpl	*ca_token_tpl_next(struct ca_token_tpl *tpl);
 const char		*ca_token_tpl_name(const struct ca_token_tpl *tpl);
 const char		*ca_token_tpl_help(const struct ca_token_tpl *tpl);
+const char		*ca_token_tpl_get_ebox_tpl(struct ca *ca,
+    enum ca_ebox_type type);
+errf_t			*ca_token_tpl_set_ebox_tpl(struct ca *ca,
+    enum ca_ebox_type type, const char *tplname);
+errf_t			*ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type,
+    const char *tplname);
 enum ca_token_tpl_flags	 ca_token_tpl_flags(const struct ca_token_tpl *tpl);
 struct cert_var_scope	*ca_token_tpl_make_scope(struct ca_token_tpl *tpl,
     struct cert_var_scope *parent);

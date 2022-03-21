@@ -446,11 +446,32 @@ main(int argc, char *argv[])
 		    "failed to initialise libpcsc");
 	}
 
-	struct ca *ca;
+	struct sshbuf *b, *b2;
+	uint8_t *data;
+	size_t dlen;
+	struct piv_fascn *fascn;
 
-	err = ca_open("testca", &ca);
+	b = sshbuf_new();
+	sshbuf_b64tod(b, "0EOUWCEMLBmghG2DaFoQghCM5zmEEIyj/A==");
+
+	err = piv_fascn_decode(sshbuf_ptr(b), sshbuf_len(b), &fascn);
 	if (err != ERRF_OK)
-		errfx(EXIT_FAILURE, err, "ca_open");
+		errfx(EXIT_FAILURE, err, "what");
+
+	fprintf(stderr, "%s\n", piv_fascn_to_string(fascn));
+
+	piv_fascn_set_indiv_cred_issue(fascn, "2");
+
+	fprintf(stderr, "%s\n", piv_fascn_to_string(fascn));
+
+	err = piv_fascn_encode(fascn, &data, &dlen);
+	if (err != ERRF_OK)
+		errfx(EXIT_FAILURE, err, "what");
+
+	b2 = sshbuf_from(data, dlen);
+	sshbuf_reset(b);
+	sshbuf_dtob64(b2, b, 0);
+	fprintf(stderr, "%s\n", sshbuf_dup_string(b));
 
 	return (0);
 }

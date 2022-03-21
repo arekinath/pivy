@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "utils.h"
 #include "debug.h"
@@ -89,7 +90,6 @@ struct errf *
 sshbuf_b16tod(const char *str, struct sshbuf *buf)
 {
 	const uint len = strlen(str);
-	uint idx = 0;
 	uint shift = 4;
 	uint i;
 	int rc;
@@ -150,4 +150,167 @@ int
 sys_tun_open(int tun, int mode, char **ifname)
 {
 	return -1;
+}
+
+enum bitbuf_mode {
+	BITBUF_READ,
+	BITBUF_WRITE
+};
+
+struct bitbuf {
+	enum bitbuf_mode	 bb_mode;
+
+	uint8_t			*bb_buf;
+	size_t			 bb_len;
+
+	size_t			 bb_byte;
+	size_t			 bb_bit;
+};
+
+struct bitbuf *
+bitbuf_new(void)
+{
+	struct bitbuf *b;
+
+	b = calloc(1, sizeof (struct bitbuf));
+	if (b == NULL)
+		return (NULL);
+	b->bb_mode = BITBUF_WRITE;
+	b->bb_len = 128;
+	b->bb_buf = calloc(1, b->bb_len);
+	if (b->bb_buf == NULL) {
+		free(b);
+		return (NULL);
+	}
+
+	return (b);
+}
+
+struct bitbuf *
+bitbuf_from(const uint8_t *buf, size_t len)
+{
+	struct bitbuf *b;
+
+	b = calloc(1, sizeof (struct bitbuf));
+	if (b == NULL)
+		return (NULL);
+	b->bb_mode = BITBUF_READ;
+	b->bb_len = len;
+	b->bb_buf = (uint8_t *)buf;
+
+	return (b);
+}
+
+void
+bitbuf_free(struct bitbuf *b)
+{
+	if (b == NULL)
+		return;
+	if (b->bb_mode == BITBUF_WRITE)
+		free(b->bb_buf);
+	free(b);
+}
+
+uint8_t *
+bitbuf_to_bytes(const struct bitbuf *b, size_t *outlen)
+{
+	uint8_t *buf;
+
+	*outlen = b->bb_byte + (b->bb_bit > 0 ? 1 : 0);
+	buf = malloc(*outlen);
+	if (buf == NULL)
+		return (NULL);
+	bcopy(b->bb_buf, buf, *outlen);
+
+	return (buf);
+}
+
+errf_t *
+bitbuf_expand(struct bitbuf *b)
+{
+	size_t nsz;
+	uint8_t *nbuf;
+
+	nsz = b->bb_len * 2;
+	nbuf = calloc(1, nsz);
+	if (nbuf == NULL)
+		return (errfno("malloc", errno, NULL));
+	bcopy(b->bb_buf, nbuf, b->bb_len);
+	free(b->bb_buf);
+
+	b->bb_buf = nbuf;
+	b->bb_len = nsz;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+bitbuf_write(struct bitbuf *b, uint32_t v, uint nbits)
+{
+	uint rem = nbits;
+	errf_t *err;
+
+	VERIFY(b->bb_mode == BITBUF_WRITE);
+
+	while (rem > 0) {
+		uint take = 8 - b->bb_bit;
+		if (take > rem)
+			take = rem;
+		const uint32_t mask = (1 << take) - 1;
+		const uint32_t vshift = (v >> (rem - take)) & mask;
+		const uint32_t vor = vshift << (8 - take - b->bb_bit);
+		b->bb_buf[b->bb_byte] |= vor;
+
+		b->bb_bit += take;
+		if (b->bb_bit >= 8) {
+			b->bb_byte++;
+			b->bb_bit = 0;
+			if (b->bb_byte + 1 >= b->bb_len) {
+				if ((err = bitbuf_expand(b)))
+					return (err);
+			}
+		}
+
+		rem -= take;
+	}
+
+	return (ERRF_OK);
+}
+
+errf_t *
+bitbuf_read(struct bitbuf *b, uint nbits, uint32_t *out)
+{
+	uint rem = nbits;
+	uint32_t final = 0;
+
+	VERIFY(b->bb_mode == BITBUF_READ);
+
+	while (rem > 0) {
+		uint take = 8 - b->bb_bit;
+		if (take > rem)
+			take = rem;
+
+		const uint32_t mask = (1 << take) - 1;
+		const uint32_t v = b->bb_buf[b->bb_byte];
+		const uint32_t vshift = (v >> (8 - take - b->bb_bit)) & mask;
+		const uint32_t vor = vshift << (rem - take);
+		final |= vor;
+
+		rem -= take;
+
+		b->bb_bit += take;
+		if (b->bb_bit >= 8) {
+			b->bb_byte++;
+			b->bb_bit = 0;
+			if (b->bb_byte >= b->bb_len && rem > 0) {
+				return (errf("ShortBuffer", NULL, "Tried to "
+				    "read %u bits from bitbuf with only "
+				    "%u bits", nbits, nbits - rem));
+			}
+		}
+	}
+
+	*out = final;
+
+	return (ERRF_OK);
 }
