@@ -2196,7 +2196,7 @@ piv_write_pinfo(struct piv_token *pt, const struct piv_pinfo *pinfo)
 	tlv_push(tlv, 0x5C);
 	tlv_write_u8to32(tlv, PIV_TAG_PRINTINFO);
 	tlv_pop(tlv);
-	tlv_pushl(tlv, 0x53, len + 8);
+	tlv_pushl(tlv, 0x53, len);
 	tlv_write(tlv, (uint8_t *)data, len);
 	tlv_pop(tlv);
 
@@ -2257,7 +2257,7 @@ piv_write_chuid(struct piv_token *pt, const struct piv_chuid *chuid)
 	tlv_push(tlv, 0x5C);
 	tlv_write_u8to32(tlv, PIV_TAG_CHUID);
 	tlv_pop(tlv);
-	tlv_pushl(tlv, 0x53, len + 8);
+	tlv_pushl(tlv, 0x53, len);
 	tlv_write(tlv, (uint8_t *)data, len);
 	tlv_pop(tlv);
 
@@ -2324,7 +2324,7 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 	tlv_push(tlv, 0x5C);
 	tlv_write_u8to32(tlv, tag);
 	tlv_pop(tlv);
-	tlv_pushl(tlv, 0x53, len + 8);
+	tlv_pushl(tlv, 0x53, len);
 	tlv_write(tlv, (uint8_t *)data, len);
 	tlv_pop(tlv);
 
@@ -7049,7 +7049,6 @@ piv_chuid_decode(const uint8_t *data, size_t len, struct piv_chuid **out)
 	struct piv_chuid *chuid = NULL;
 	uint8_t *d;
 	size_t dlen;
-	int rc;
 	const uint8_t *p;
 
 	chuid = calloc(1, sizeof (struct piv_chuid));
@@ -7211,7 +7210,7 @@ piv_read_pinfo(struct piv_token *pk, struct piv_pinfo **outp)
 	errf_t *err;
 	struct apdu *apdu;
 	struct tlv_state *tlv;
-	uint tag, i;
+	uint tag;
 
 	VERIFY(pk->pt_intxn == B_TRUE);
 
@@ -7377,7 +7376,7 @@ piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
 		tlv_pushl(tlv, 0x90, len);
 
 		tlv_push(tlv, 0x01);
-		tlv_write(tlv, kv->ppk_name, strlen(kv->ppk_name));
+		tlv_write(tlv, (uint8_t *)kv->ppk_name, strlen(kv->ppk_name));
 		tlv_pop(tlv);
 
 		switch (kv->ppk_type) {
@@ -7392,7 +7391,8 @@ piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
 			break;
 		case PIV_PINFO_KV_STRING:
 			tlv_pushl(tlv, 0x04, strlen(kv->ppk_string));
-			tlv_write(tlv, kv->ppk_string, strlen(kv->ppk_string));
+			tlv_write(tlv, (uint8_t *)kv->ppk_string,
+			    strlen(kv->ppk_string));
 			tlv_pop(tlv);
 			break;
 		case PIV_PINFO_KV_DATA:
