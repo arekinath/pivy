@@ -770,6 +770,8 @@ cmd_init(void)
 	struct piv_chuid *chuid;
 	struct piv_fascn *fascn;
 	struct piv_pinfo *pinfo;
+	char *tmp, *p;
+	unsigned long lifetime_secs;
 	char serial[32] = {0};
 	uint8_t cardId[21] = {
 		/* GSC-RID: GSC-IS data model */
@@ -828,22 +830,110 @@ cmd_init(void)
 	chuid = piv_chuid_new();
 
 	fascn = piv_fascn_zero();
+
+	err = scope_eval(cvroot, "agency_code", &tmp);
+	if (err == ERRF_OK) {
+		piv_fascn_set_agency_code(fascn, tmp);
+		free(tmp);
+	}
+	errf_free(err);
+
+	err = scope_eval(cvroot, "system_code", &tmp);
+	if (err == ERRF_OK) {
+		piv_fascn_set_system_code(fascn, tmp);
+		free(tmp);
+	}
+	errf_free(err);
+
+	err = scope_eval(cvroot, "cred_number", &tmp);
+	if (err == ERRF_OK) {
+		piv_fascn_set_cred_number(fascn, tmp);
+		free(tmp);
+	}
+	errf_free(err);
+
+	err = scope_eval(cvroot, "person_id", &tmp);
+	if (err == ERRF_OK) {
+		piv_fascn_set_person_id(fascn, PIV_FASCN_POA_EMPLOYEE, tmp);
+		free(tmp);
+	}
+	errf_free(err);
+
 	piv_chuid_set_fascn(chuid, fascn);
 	piv_fascn_free(fascn);
 
 	piv_chuid_set_random_guid(chuid);
-	piv_chuid_set_expiry_rel(chuid, 3600*24*365*10);
+
+	lifetime_secs = 3600*24*365*10;
+	err = scope_eval(cvroot, "lifetime", &tmp);
+	if (err == ERRF_OK) {
+		errno = 0;
+		lifetime_secs = strtoul(tmp, &p, 10);
+		if (errno != 0) {
+			return (errf("SyntaxError", errfno("strtoul", errno,
+			    NULL), "Error parsing contents of 'lifetime' "
+			    "variable: '%s'", tmp));
+		}
+		if (*p == 'h' && *(p + 1) == '\0') {
+			++p;
+			lifetime_secs *= 3600;
+		} else if (*p == 'd' && *(p + 1) == '\0') {
+			++p;
+			lifetime_secs *= 3600*24;
+		} else if (*p == 'w' && *(p + 1) == '\0') {
+			++p;
+			lifetime_secs *= 3600*24*7;
+		} else if (*p == 'y' && *(p + 1) == '\0') {
+			++p;
+			lifetime_secs *= 3600*24*365;
+		}
+		if (*p != '\0') {
+			return (errf("SyntaxError", NULL, "Error parsing "
+			    "contents of 'lifetime' variable: "
+			    "trailing garbage '%s'", p));
+		}
+		free(tmp);
+	}
+	errf_free(err);
+	piv_chuid_set_expiry_rel(chuid, lifetime_secs);
 
 	/* And set up printed info */
 	pinfo = piv_pinfo_new();
 
 	piv_pinfo_set_name(pinfo, "pivy user");
-	piv_pinfo_set_expiry_rel(pinfo, 3600*24*365*10);
+	err = scope_eval(cvroot, "name", &tmp);
+	if (err == ERRF_OK) {
+		piv_pinfo_set_name(pinfo, tmp);
+		free(tmp);
+	}
+	errf_free(err);
+
+	err = scope_eval(cvroot, "affiliation", &tmp);
+	if (err == ERRF_OK) {
+		piv_pinfo_set_affiliation(pinfo, tmp);
+		free(tmp);
+	}
+	errf_free(err);
+
+	err = scope_eval(cvroot, "issuer", &tmp);
+	if (err == ERRF_OK) {
+		piv_pinfo_set_issuer(pinfo, tmp);
+		free(tmp);
+	}
+	errf_free(err);
+
+	piv_pinfo_set_expiry_rel(pinfo, lifetime_secs);
 	if (ykpiv_token_has_serial(selk)) {
 		snprintf(serial, sizeof (serial), "%u",
 		    ykpiv_token_serial(selk));
 		piv_pinfo_set_serial(pinfo, serial);
 	}
+	err = scope_eval(cvroot, "serial", &tmp);
+	if (err == ERRF_OK) {
+		piv_pinfo_set_serial(pinfo, tmp);
+		free(tmp);
+	}
+	errf_free(err);
 	piv_pinfo_set_kv_string(pinfo, "generator", "pivy");
 
 	if ((err = piv_txn_begin(selk)))
