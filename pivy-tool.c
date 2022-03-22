@@ -504,8 +504,8 @@ cmd_list(void)
 			printf("%10s: %s\n", "chuid", "ok");
 		}
 		printf("%10s: %s\n", "guid", piv_token_guid_hex(pk));
-		temp = piv_chuid_get_chuuid(chuid);
-		if (temp != NULL) {
+		if (chuid != NULL &&
+		    (temp = piv_chuid_get_chuuid(chuid)) != NULL) {
 			buf = buf_to_hex(temp, 16, B_FALSE);
 			printf("%10s: %s\n", "owner", buf);
 			free(buf);
@@ -514,8 +514,9 @@ cmd_list(void)
 			printf("%10s: %s\n", "fasc-n",
 			    piv_fascn_to_string(fascn));
 		}
-		temp = piv_chuid_get_expiry(chuid, &len);
-		if (len == 8 && temp[0] >= '0' && temp[0] <= '9') {
+		if (chuid != NULL &&
+		    (temp = piv_chuid_get_expiry(chuid, &len)) != NULL &&
+		    len == 8 && temp[0] >= '0' && temp[0] <= '9') {
 			printf("%10s: %c%c%c%c-%c%c-%c%c\n", "expiry",
 			    temp[0], temp[1], temp[2], temp[3],
 			    temp[4], temp[5], temp[6], temp[7]);

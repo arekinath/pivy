@@ -529,8 +529,9 @@ pam_pivy.so :		LDFLAGS+=	$(PAMPIVY_LDFLAGS)
 pam_pivy.so :		HEADERS=	$(PAMPIVY_HEADERS)
 
 pam_pivy.so: $(PAMPIVY_OBJS) $(LIBSSH) $(LIBCRYPTO)
-	$(CC) -shared -o $@ $(LDFLAGS) $(LIBSSH) $(LIBS) \
-	    -Wl,--version-script=pam_pivy.version $(PAMPIVY_OBJS) $(LIBCRYPTO)
+	$(CC) -shared -o $@ $(LDFLAGS) \
+	    -Wl,--version-script=pam_pivy.version $(PAMPIVY_OBJS) \
+	    $(LIBSSH) $(LIBS)
 
 all: pam_pivy.so
 

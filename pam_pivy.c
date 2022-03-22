@@ -528,3 +528,9 @@ pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	/* We don't do anything else currently. */
 	return (PAM_SUCCESS);
 }
+
+void
+cleanup_exit(int i)
+{
+	exit(i);
+}
