@@ -38,8 +38,8 @@ tlv_init(const uint8_t *buf, size_t offset, size_t len)
 	ts->ts_root = tc;
 	ts->ts_now = tc;
 
-	ts->ts_buf = (uint8_t *)buf;
-	ts->ts_pos = offset;
+	tc->tc_buf = (uint8_t *)buf;
+	tc->tc_pos = offset;
 
 	tc->tc_begin = offset;
 	tc->tc_end = offset + len;
@@ -66,13 +66,13 @@ tlv_init_write(void)
 	ts->ts_root = tc;
 	ts->ts_now = tc;
 
-	ts->ts_buf = calloc(1, MAX_APDU_SIZE);
-	if (ts->ts_buf == NULL) {
+	tc->tc_buf = calloc(1, MAX_APDU_SIZE);
+	if (tc->tc_buf == NULL) {
 		free(ts);
 		free(tc);
 		return (NULL);
 	}
-	ts->ts_freebuf = B_TRUE;
+	tc->tc_freebuf = B_TRUE;
 	tc->tc_end = MAX_APDU_SIZE;
 	return (ts);
 }
@@ -97,78 +97,90 @@ tlv_ctx_pop(struct tlv_state *ts)
 }
 
 void
-tlv_pushl(struct tlv_state *ts, uint tag, size_t maxlen)
+tlv_push(struct tlv_state *ts, uint tag)
 {
-	uint8_t *buf = ts->ts_buf;
 	struct tlv_context *tc;
+	struct tlv_context *p = ts->ts_now;
 
 	tc = calloc(1, sizeof (struct tlv_context));
 	VERIFY(tc != NULL);
 
+	/* Write the tag into our parent buffer now */
 	tlv_write_u8to32(ts, tag);
 
-	tc->tc_lenptr = ts->ts_pos;
+	/*
+	 * Reserve enough space in the new context for the longest possible
+	 * length
+	 */
+	tc->tc_end = p->tc_end - p->tc_pos - 4;
 
-	if (maxlen < (1 << 7)) {
-		buf[ts->ts_pos++] = 0x00;
-	} else if (maxlen < (1 << 8)) {
-		buf[ts->ts_pos++] = 0x81;
-		ts->ts_pos++;
-	} else if (maxlen < (1 << 16)) {
-		buf[ts->ts_pos++] = 0x82;
-		ts->ts_pos += 2;
-	} else if (maxlen < (1 << 24)) {
-		buf[ts->ts_pos++] = 0x83;
-		ts->ts_pos += 3;
-	} else {
-		VERIFY(0);
-	}
+	tc->tc_buf = malloc(tc->tc_end);
+	VERIFY(tc->tc_buf != NULL);
+	tc->tc_freebuf = B_TRUE;
 
-	tc->tc_begin = ts->ts_pos;
 	tlv_ctx_push(ts, tc);
 }
 
 void
 tlv_pop(struct tlv_state *ts)
 {
-	uint8_t *buf = ts->ts_buf;
 	struct tlv_context *tc = tlv_ctx_pop(ts);
-	size_t len = (ts->ts_pos - tc->tc_begin);
+	struct tlv_context *p = ts->ts_now;
+	uint8_t *buf = p->tc_buf;
+	size_t len = tc->tc_pos;
 
-	if (buf[tc->tc_lenptr] == 0x00) {
-		VERIFY3U(len, <, (1 << 7));
-		buf[tc->tc_lenptr] = len;
-	} else if (buf[tc->tc_lenptr] == 0x81) {
-		VERIFY3U(len, <, (1 << 8));
-		buf[tc->tc_lenptr + 1] = len;
-	} else if (buf[tc->tc_lenptr] == 0x82) {
-		VERIFY3U(len, <, (1 << 16));
-		buf[tc->tc_lenptr + 1] = (len & 0xFF00) >> 8;
-		buf[tc->tc_lenptr + 2] = (len & 0x00FF);
-	} else if (buf[tc->tc_lenptr] == 0x83) {
-		VERIFY3U(len, <, (1 << 24));
-		buf[tc->tc_lenptr + 1] = (len & 0xFF0000) >> 16;
-		buf[tc->tc_lenptr + 2] = (len & 0x00FF00) >> 8;
-		buf[tc->tc_lenptr + 3] = (len & 0x0000FF);
+	/*
+	 * We wrote just the tag in tlv_push(), now we know the length, so
+	 * write that and then the actual data inside the tag.
+	 */
+	if (len < (1 << 7)) {
+		VERIFY3U(p->tc_pos + len + 1, <=, p->tc_end);
+		buf[p->tc_pos++] = len;
+	} else if (len < (1 << 8)) {
+		VERIFY3U(p->tc_pos + len + 2, <=, p->tc_end);
+		buf[p->tc_pos++] = 0x81;
+		buf[p->tc_pos++] = len;
+	} else if (len < (1 << 16)) {
+		VERIFY3U(p->tc_pos + len + 3, <=, p->tc_end);
+		buf[p->tc_pos++] = 0x82;
+		buf[p->tc_pos++] = (len & 0xFF00) >> 8;
+		buf[p->tc_pos++] = (len & 0x00FF);
+	} else if (len < (1 << 24)) {
+		VERIFY3U(p->tc_pos + len + 4, <=, p->tc_end);
+		buf[p->tc_pos++] = 0x83;
+		buf[p->tc_pos++] = (len & 0xFF0000) >> 16;
+		buf[p->tc_pos++] = (len & 0x00FF00) >> 8;
+		buf[p->tc_pos++] = (len & 0x0000FF);
+	} else {
+		VERIFY(0);
 	}
+	bcopy(tc->tc_buf, &buf[p->tc_pos], len);
+	p->tc_pos += len;
 
+	/* We're done with the child tag context now. */
+	VERIFY(tc->tc_freebuf);
+	explicit_bzero(tc->tc_buf, tc->tc_pos);
+	free(tc->tc_buf);
 	free(tc);
 }
 
 errf_t *
 tlv_read_tag(struct tlv_state *ts, uint *ptag)
 {
-	const uint8_t *buf = ts->ts_buf;
+	struct tlv_context *p = ts->ts_now;
+	const uint8_t *buf = p->tc_buf;
 	uint8_t d;
 	uint tag, octs;
 	size_t len;
 	struct tlv_context *tc;
-	size_t origin = ts->ts_pos;
+	size_t origin = p->tc_pos;
 	errf_t *error;
 
 	tc = calloc(1, sizeof (struct tlv_context));
 	if (tc == NULL)
 		return (ERRF_NOMEM);
+
+	tc->tc_buf = p->tc_buf;
 
 	if (tlv_at_end(ts)) {
 		error = errf("LengthError", NULL, "tlv_read_tag called "
@@ -176,7 +188,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 		free(tc);
 		return (error);
 	}
-	d = buf[ts->ts_pos++];
+	d = buf[p->tc_pos++];
 	tag = d;
 
 	if ((d & TLV_TAG_MASK) == TLV_TAG_CONT) {
@@ -187,13 +199,11 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 				free(tc);
 				return (error);
 			}
-			d = buf[ts->ts_pos++];
+			d = buf[p->tc_pos++];
 			tag <<= 8;
 			tag |= d;
 		} while ((d & TLV_CONT) == TLV_CONT);
 	}
-
-	tc->tc_lenptr = ts->ts_pos;
 
 	if (tlv_at_end(ts)) {
 		error = errf("LengthError", NULL, "TLV tag length continued "
@@ -201,7 +211,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 		free(tc);
 		return (error);
 	}
-	d = buf[ts->ts_pos++];
+	d = buf[p->tc_pos++];
 	if ((d & TLV_CONT) == TLV_CONT) {
 		octs = d & (~TLV_CONT);
 		if (octs < 1 || octs > 4) {
@@ -218,7 +228,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 			return (error);
 		}
 		for (; octs > 0; --octs) {
-			d = buf[ts->ts_pos++];
+			d = buf[p->tc_pos++];
 			len <<= 8;
 			len |= d;
 		}
@@ -238,8 +248,11 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 		return (error);
 	}
 
-	tc->tc_begin = ts->ts_pos;
-	tc->tc_end = ts->ts_pos + len;
+	tc->tc_begin = p->tc_pos;
+	tc->tc_pos = p->tc_pos;
+	tc->tc_end = p->tc_pos + len;
+
+	p->tc_pos += len;
 
 	tlv_ctx_push(ts, tc);
 
@@ -256,14 +269,15 @@ errf_t *
 tlv_end(struct tlv_state *ts)
 {
 	struct tlv_context *tc = tlv_ctx_pop(ts);
+	struct tlv_context *p = ts->ts_now;
 	if (ts->ts_debug) {
 		fprintf(stderr, "%*send tag from +%zu (%zu bytes left)\n",
-		    tc->tc_depth, "", tc->tc_begin, tc->tc_end - ts->ts_pos);
+		    tc->tc_depth, "", tc->tc_begin, tc->tc_end - tc->tc_pos);
 	}
-	VERIFY3U(ts->ts_pos, >=, tc->tc_begin);
-	if (ts->ts_pos != tc->tc_end) {
+	VERIFY3U(p->tc_pos, >=, tc->tc_end);
+	if (tc->tc_pos != tc->tc_end) {
 		return (errf("LengthError", NULL, "tlv_end() called at +%zu "
-		    "but tag ends at +%zu", ts->ts_pos, tc->tc_end));
+		    "but tag ends at +%zu", tc->tc_pos, tc->tc_end));
 	}
 	free(tc);
 	return (NULL);
@@ -273,13 +287,14 @@ void
 tlv_skip(struct tlv_state *ts)
 {
 	struct tlv_context *tc = tlv_ctx_pop(ts);
+	struct tlv_context *p = ts->ts_now;
 	if (ts->ts_debug) {
 		fprintf(stderr, "%*sskip tag from +%zu (%zu bytes left)\n",
-		    tc->tc_depth, "", tc->tc_begin, tc->tc_end - ts->ts_pos);
+		    tc->tc_depth, "", tc->tc_begin, tc->tc_end - tc->tc_pos);
 	}
-	VERIFY3U(ts->ts_pos, >=, tc->tc_begin);
-	VERIFY3U(ts->ts_pos, <=, tc->tc_end);
-	ts->ts_pos = tc->tc_end;
+	VERIFY3U(tc->tc_pos, >=, tc->tc_begin);
+	VERIFY3U(tc->tc_pos, <=, tc->tc_end);
+	VERIFY3U(p->tc_pos, >=, tc->tc_end);
 	free(tc);
 }
 
@@ -290,43 +305,48 @@ tlv_abort(struct tlv_state *ts)
 	while (tc != ts->ts_root) {
 		struct tlv_context *tofree = tc;
 		tc = tc->tc_next;
-		VERIFY3U(ts->ts_pos, >=, tc->tc_begin);
-		VERIFY3U(ts->ts_pos, <=, tc->tc_end);
+		VERIFY3U(tc->tc_pos, >=, tc->tc_begin);
+		VERIFY3U(tc->tc_pos, <=, tc->tc_end);
+		if (tofree->tc_freebuf)
+			free(tofree->tc_buf);
 		free(tofree);
 	}
 	ts->ts_now = ts->ts_root;
-	ts->ts_pos = ts->ts_root->tc_end;
+	ts->ts_root->tc_pos = ts->ts_root->tc_end;
 }
 
 
 errf_t *
 tlv_read_u8(struct tlv_state *ts, uint8_t *out)
 {
+	struct tlv_context *tc = ts->ts_now;
 	if (tlv_at_end(ts)) {
 		return (errf("LengthError", NULL, "tlv_read_u8() called "
 		    "with no bytes remaining"));
 	}
-	*out = ts->ts_buf[ts->ts_pos++];
+	*out = tc->tc_buf[tc->tc_pos++];
 	return (NULL);
 }
 
 errf_t *
 tlv_read_u16(struct tlv_state *ts, uint16_t *out)
 {
+	struct tlv_context *tc = ts->ts_now;
 	if (tlv_rem(ts) < 2) {
 		return (errf("LengthError", NULL, "tlv_read_u16() called "
 		    "with only %zu bytes remaining", tlv_rem(ts)));
 	}
-	*out = ts->ts_buf[ts->ts_pos++] << 8;
-	*out |= ts->ts_buf[ts->ts_pos++];
+	*out = tc->tc_buf[tc->tc_pos++] << 8;
+	*out |= tc->tc_buf[tc->tc_pos++];
 	return (NULL);
 }
 
 errf_t *
 tlv_read_u8to32(struct tlv_state *ts, uint32_t *out)
 {
+	struct tlv_context *tc = ts->ts_now;
 	*out = 0;
-	const uint8_t *buf = ts->ts_buf;
+	const uint8_t *buf = tc->tc_buf;
 	if (tlv_rem(ts) < 1) {
 		return (errf("LengthError", NULL, "tlv_read_u8to32() called "
 		    "with no bytes remaining"));
@@ -337,7 +357,7 @@ tlv_read_u8to32(struct tlv_state *ts, uint32_t *out)
 	}
 	while (!tlv_at_end(ts)) {
 		*out <<= 8;
-		*out |= buf[ts->ts_pos++];
+		*out |= buf[tc->tc_pos++];
 	}
 	return (NULL);
 }
@@ -346,6 +366,7 @@ errf_t *
 tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
     size_t *plen)
 {
+	struct tlv_context *tc = ts->ts_now;
 	size_t len = maxLen;
 	if (len > tlv_rem(ts))
 		len = tlv_rem(ts);
@@ -353,8 +374,8 @@ tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
 		return (errf("LengthError", NULL, "tlv_read() called "
 		    "with no bytes remaining"));
 	}
-	bcopy(&ts->ts_buf[ts->ts_pos], dest, len);
-	ts->ts_pos += len;
+	bcopy(&tc->tc_buf[tc->tc_pos], dest, len);
+	tc->tc_pos += len;
 	*plen = len;
 	return (NULL);
 }
@@ -362,6 +383,7 @@ tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
 errf_t *
 tlv_read_string(struct tlv_state *ts, char **dest)
 {
+	struct tlv_context *tc = ts->ts_now;
 	const size_t len = tlv_rem(ts);
 	char *buf;
 	size_t i;
@@ -371,12 +393,12 @@ tlv_read_string(struct tlv_state *ts, char **dest)
 		return (ERRF_NOMEM);
 
 	for (i = 0; i < len; ++i) {
-		if (ts->ts_buf[ts->ts_pos] == 0) {
+		if (tc->tc_buf[tc->tc_pos] == 0) {
 			free(buf);
 			return (errf("StringError", NULL, "tlv_read_string() "
 			    "encountered a NUL character unexpectedly"));
 		}
-		buf[i] = (char)ts->ts_buf[ts->ts_pos++];
+		buf[i] = (char)tc->tc_buf[tc->tc_pos++];
 	}
 	buf[len] = '\0';
 	*dest = buf;
@@ -387,14 +409,15 @@ tlv_read_string(struct tlv_state *ts, char **dest)
 errf_t *
 tlv_read_alloc(struct tlv_state *ts, uint8_t **pdata, size_t *plen)
 {
+	struct tlv_context *tc = ts->ts_now;
 	size_t len = tlv_rem(ts);
 	uint8_t *data;
 	data = calloc(1, len);
 	if (data == NULL)
 		return (ERRF_NOMEM);
 	*plen = len;
-	bcopy(&ts->ts_buf[ts->ts_pos], data, len);
-	ts->ts_pos += len;
+	bcopy(&tc->tc_buf[tc->tc_pos], data, len);
+	tc->tc_pos += len;
 	*pdata = data;
 	return (NULL);
 }
@@ -402,13 +425,14 @@ tlv_read_alloc(struct tlv_state *ts, uint8_t **pdata, size_t *plen)
 errf_t *
 tlv_read(struct tlv_state *ts, uint8_t *dest, size_t len)
 {
+	struct tlv_context *tc = ts->ts_now;
 	if (tlv_rem(ts) != len) {
 		return (errf("LengthError", NULL, "tlv_read() called "
 		    "for %zu bytes but %zu are left in tag", len,
 		    tlv_rem(ts)));
 	}
-	bcopy(&ts->ts_buf[ts->ts_pos], dest, len);
-	ts->ts_pos += len;
+	bcopy(&tc->tc_buf[tc->tc_pos], dest, len);
+	tc->tc_pos += len;
 	return (NULL);
 }
 
@@ -420,10 +444,10 @@ tlv_free(struct tlv_state *ts)
 		return;
 	root = ts->ts_root;
 	VERIFY(root == ts->ts_now);
-	if (ts->ts_freebuf) {
-		explicit_bzero(&ts->ts_buf[root->tc_begin],
+	if (root->tc_freebuf) {
+		explicit_bzero(&root->tc_buf[root->tc_begin],
 		    root->tc_end - root->tc_begin);
-		free(ts->ts_buf);
+		free(root->tc_buf);
 	}
 	free(root);
 	free(ts);
@@ -432,31 +456,34 @@ tlv_free(struct tlv_state *ts)
 void
 tlv_write(struct tlv_state *ts, const uint8_t *src, size_t len)
 {
-	VERIFY3U(tlv_root_rem(ts), >=, len);
-	bcopy(src, &ts->ts_buf[ts->ts_pos], len);
-	ts->ts_pos += len;
+	struct tlv_context *tc = ts->ts_now;
+	VERIFY3U(tlv_rem(ts), >=, len);
+	bcopy(src, &tc->tc_buf[tc->tc_pos], len);
+	tc->tc_pos += len;
 }
 
 void
 tlv_write_u16(struct tlv_state *ts, uint16_t val)
 {
-	VERIFY3U(tlv_root_rem(ts), >=, sizeof (val));
+	struct tlv_context *tc = ts->ts_now;
+	VERIFY3U(tlv_rem(ts), >=, sizeof (val));
 	val = htobe16(val);
-	bcopy(&val, &ts->ts_buf[ts->ts_pos], sizeof (val));
-	ts->ts_pos += sizeof (val);
+	bcopy(&val, &tc->tc_buf[tc->tc_pos], sizeof (val));
+	tc->tc_pos += sizeof (val);
 }
 
 void
 tlv_write_u8to32(struct tlv_state *ts, uint32_t val)
 {
-	uint8_t *buf = ts->ts_buf;
+	struct tlv_context *tc = ts->ts_now;
+	uint8_t *buf = tc->tc_buf;
 	uint32_t mask = 0xFF << 24;
 	int shift = 24;
 	uint32_t part;
 
 	if (val == 0) {
-		VERIFY(!tlv_at_root_end(ts));
-		buf[ts->ts_pos++] = 0;
+		VERIFY(!tlv_at_end(ts));
+		buf[tc->tc_pos++] = 0;
 		return;
 	}
 
@@ -471,8 +498,8 @@ tlv_write_u8to32(struct tlv_state *ts, uint32_t val)
 	/* And then write out the rest. */
 	while (shift >= 0) {
 		part = (val & mask) >> shift;
-		VERIFY(!tlv_at_root_end(ts));
-		buf[ts->ts_pos++] = part;
+		VERIFY(!tlv_at_end(ts));
+		buf[tc->tc_pos++] = part;
 		mask >>= 8;
 		shift -= 8;
 	}
@@ -481,6 +508,7 @@ tlv_write_u8to32(struct tlv_state *ts, uint32_t val)
 void
 tlv_write_byte(struct tlv_state *ts, uint8_t val)
 {
-	VERIFY(!tlv_at_root_end(ts));
-	ts->ts_buf[ts->ts_pos++] = val;
+	struct tlv_context *tc = ts->ts_now;
+	VERIFY(!tlv_at_end(ts));
+	tc->tc_buf[tc->tc_pos++] = val;
 }

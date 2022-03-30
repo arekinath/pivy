@@ -2196,7 +2196,7 @@ piv_write_pinfo(struct piv_token *pt, const struct piv_pinfo *pinfo)
 	tlv_push(tlv, 0x5C);
 	tlv_write_u8to32(tlv, PIV_TAG_PRINTINFO);
 	tlv_pop(tlv);
-	tlv_pushl(tlv, 0x53, len);
+	tlv_push(tlv, 0x53);
 	tlv_write(tlv, (uint8_t *)data, len);
 	tlv_pop(tlv);
 
@@ -2257,7 +2257,7 @@ piv_write_chuid(struct piv_token *pt, const struct piv_chuid *chuid)
 	tlv_push(tlv, 0x5C);
 	tlv_write_u8to32(tlv, PIV_TAG_CHUID);
 	tlv_pop(tlv);
-	tlv_pushl(tlv, 0x53, len);
+	tlv_push(tlv, 0x53);
 	tlv_write(tlv, (uint8_t *)data, len);
 	tlv_pop(tlv);
 
@@ -2324,7 +2324,7 @@ piv_write_file(struct piv_token *pt, uint tag, const uint8_t *data, size_t len)
 	tlv_push(tlv, 0x5C);
 	tlv_write_u8to32(tlv, tag);
 	tlv_pop(tlv);
-	tlv_pushl(tlv, 0x53, len);
+	tlv_push(tlv, 0x53);
 	tlv_write(tlv, (uint8_t *)data, len);
 	tlv_pop(tlv);
 
@@ -2827,7 +2827,7 @@ tlv_write_bignum(struct tlv_state *tlv, uint tag, const BIGNUM *v)
 		make_sslerrf(err, "BN_bn2bin", "bignum too long");
 		goto out;
 	}
-	tlv_pushl(tlv, tag, len);
+	tlv_push(tlv, tag);
 	tlv_write(tlv, d, len);
 	tlv_pop(tlv);
 
@@ -3022,7 +3022,7 @@ piv_write_cert(struct piv_token *pk, enum piv_slotid slotid,
 	}
 
 	tlv = tlv_init_write();
-	tlv_pushl(tlv, 0x70, datalen + 3);
+	tlv_push(tlv, 0x70);
 	tlv_write(tlv, data, datalen);
 	tlv_pop(tlv);
 	tlv_push(tlv, 0x71);
@@ -4336,12 +4336,12 @@ piv_sign_prehash(struct piv_token *pk, struct piv_slot *pc,
 	VERIFY(pk->pt_intxn == B_TRUE);
 
 	tlv = tlv_init_write();
-	tlv_pushl(tlv, 0x7C, hashlen + 16);
+	tlv_push(tlv, 0x7C);
 	/* Push an empty RESPONSE tag to say that's what we're asking for. */
 	tlv_push(tlv, GA_TAG_RESPONSE);
 	tlv_pop(tlv);
 	/* And now push the data we're providing (the CHALLENGE). */
-	tlv_pushl(tlv, GA_TAG_CHALLENGE, hashlen);
+	tlv_push(tlv, GA_TAG_CHALLENGE);
 	tlv_write(tlv, hash, hashlen);
 	tlv_pop(tlv);
 	tlv_pop(tlv);
@@ -4448,10 +4448,10 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 	VERIFY3U(*buf, ==, 0x04);
 
 	tlv = tlv_init_write();
-	tlv_pushl(tlv, 0x7C, len + 16);
+	tlv_push(tlv, 0x7C);
 	tlv_push(tlv, GA_TAG_RESPONSE);
 	tlv_pop(tlv);
-	tlv_pushl(tlv, GA_TAG_EXP, len);
+	tlv_push(tlv, GA_TAG_EXP);
 	tlv_write(tlv, buf, len);
 	sshbuf_free(sbuf);
 	tlv_pop(tlv);
@@ -6916,7 +6916,7 @@ piv_chuid_write_tbs_tlv(const struct piv_chuid *pc, struct tlv_state *tlv)
 			    "FASC-N in CHUID");
 			goto out;
 		}
-		tlv_pushl(tlv, 0x30, len);
+		tlv_push(tlv, 0x30);
 		tlv_write(tlv, buf, len);
 		tlv_pop(tlv);
 		free(buf);
@@ -6924,29 +6924,29 @@ piv_chuid_write_tbs_tlv(const struct piv_chuid *pc, struct tlv_state *tlv)
 	}
 
 	if (pc->pc_orgid != NULL) {
-		tlv_pushl(tlv, 0x32, pc->pc_orgid_len);
+		tlv_push(tlv, 0x32);
 		tlv_write(tlv, pc->pc_orgid, pc->pc_orgid_len);
 		tlv_pop(tlv);
 	}
 
 	if (pc->pc_duns != NULL) {
-		tlv_pushl(tlv, 0x32, pc->pc_duns_len);
+		tlv_push(tlv, 0x32);
 		tlv_write(tlv, pc->pc_duns, pc->pc_duns_len);
 		tlv_pop(tlv);
 	}
 
-	tlv_pushl(tlv, 0x34, sizeof (pc->pc_guid));
+	tlv_push(tlv, 0x34);
 	tlv_write(tlv, pc->pc_guid, sizeof (pc->pc_guid));
 	tlv_pop(tlv);
 
 	if (pc->pc_expiry != NULL) {
-		tlv_pushl(tlv, 0x35, pc->pc_expiry_len);
+		tlv_push(tlv, 0x35);
 		tlv_write(tlv, pc->pc_expiry, pc->pc_expiry_len);
 		tlv_pop(tlv);
 	}
 
 	if (pc->pc_flags & PIV_CHUID_HAS_CHUUID) {
-		tlv_pushl(tlv, 0x36, sizeof (pc->pc_chuuid));
+		tlv_push(tlv, 0x36);
 		tlv_write(tlv, pc->pc_chuuid, sizeof (pc->pc_chuuid));
 		tlv_pop(tlv);
 	}
@@ -7012,7 +7012,7 @@ piv_chuid_encode(const struct piv_chuid *pc, uint8_t **out, size_t *outlen)
 			    "CHUID signature");
 			goto out;
 		}
-		tlv_pushl(tlv, 0x3E, len);
+		tlv_push(tlv, 0x3E);
 		tlv_write(tlv, buf, len);
 		tlv_pop(tlv);
 	} else {
@@ -7314,7 +7314,7 @@ piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
 	tlv = tlv_init_write();
 
 	if (pp->pp_name != NULL) {
-		tlv_pushl(tlv, 0x01, strlen(pp->pp_name));
+		tlv_push(tlv, 0x01);
 		tlv_write(tlv, (uint8_t *)pp->pp_name, strlen(pp->pp_name));
 		tlv_pop(tlv);
 	}
@@ -7351,8 +7351,8 @@ piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
 	}
 
 	if (pp->pp_yk_admin != NULL && pp->pp_yk_admin_len > 0) {
-		tlv_pushl(tlv, 0x88, pp->pp_yk_admin_len + 4);
-		tlv_pushl(tlv, 0x89, pp->pp_yk_admin_len);
+		tlv_push(tlv, 0x88);
+		tlv_push(tlv, 0x89);
 		tlv_write(tlv, pp->pp_yk_admin, pp->pp_yk_admin_len);
 		tlv_pop(tlv);
 		tlv_pop(tlv);
@@ -7373,7 +7373,7 @@ piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
 		default:
 			break;
 		}
-		tlv_pushl(tlv, 0x90, len);
+		tlv_push(tlv, 0x90);
 
 		tlv_push(tlv, 0x01);
 		tlv_write(tlv, (uint8_t *)kv->ppk_name, strlen(kv->ppk_name));
@@ -7390,13 +7390,13 @@ piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
 			tlv_pop(tlv);
 			break;
 		case PIV_PINFO_KV_STRING:
-			tlv_pushl(tlv, 0x04, strlen(kv->ppk_string));
+			tlv_push(tlv, 0x04);
 			tlv_write(tlv, (uint8_t *)kv->ppk_string,
 			    strlen(kv->ppk_string));
 			tlv_pop(tlv);
 			break;
 		case PIV_PINFO_KV_DATA:
-			tlv_pushl(tlv, 0x05, kv->ppk_len);
+			tlv_push(tlv, 0x05);
 			tlv_write(tlv, kv->ppk_data, kv->ppk_len);
 			tlv_pop(tlv);
 			break;

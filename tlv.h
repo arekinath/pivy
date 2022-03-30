@@ -35,22 +35,33 @@
  * Each time we read a tag in tlv_read_tag() we create a new one of these
  * which spans some subset of the context above it and set ts_now to point at
  * it.
+ *
+ * For a tlv_state that's reading from a fixed buffer, all the tc_buf pointers
+ * will be the same for every tag (the begin/end/depth/pos etc will be
+ * different).
+ *
+ * When writing, however, we allocate a separate tc_buf with each tlv_context,
+ * because we can spool up the data that's going inside each child tag there
+ * without knowing the length in advance. We'll copy it back up into the parent
+ * context's buffer in tlv_pop(). tc_end is populated on write contexts with
+ * the remaining space in our parent buffer after the tag+length, to make sure
+ * we don't overflow the parent context's buffer in tlv_pop().
  */
 struct tlv_context {
-	struct tlv_context *tc_next;
-	size_t tc_begin;	/* beginning index in ts_buf */
-	size_t tc_end;		/* final index in ts_buf */
-	size_t tc_lenptr;	/* index of the first byte of len */
-	int tc_depth;		/* root = 0, tag = 1, child tag = 2, etc */
+	struct tlv_context 	*tc_next;
+	size_t		 tc_begin;	/* R: beginning index in tc_buf */
+	size_t		 tc_end;	/* RW: final index in tc_buf */
+	int		 tc_depth;	/* RW: root = 0, tag = 1, child = 2 */
+	uint8_t		*tc_buf;	/* RW: data buffer */
+	size_t	 	 tc_pos;	/* RW: pos in tc_buf */
+	boolean_t	 tc_freebuf;	/* W: we should free tc_buf */
+
 };
 
 struct tlv_state {
-	struct tlv_context *ts_root;	/* top-level ctx spanning whole buf */
-	struct tlv_context *ts_now;	/* current tag ctx */
-	uint8_t *ts_buf;
-	size_t ts_pos;
-	boolean_t ts_freebuf;		/* if B_TRUE we malloc'd the buffer */
-	boolean_t ts_debug;
+	struct tlv_context	*ts_root; /* top-level ctx spanning whole buf */
+	struct tlv_context	*ts_now;  /* current tag ctx */
+	boolean_t		 ts_debug;
 };
 
 /*
@@ -128,43 +139,44 @@ errf_t *tlv_read_string(struct tlv_state *ts, char **dest);
 static inline boolean_t
 tlv_at_root_end(const struct tlv_state *ts)
 {
-	return (ts->ts_pos >= ts->ts_root->tc_end);
+	return (ts->ts_now->tc_pos >= ts->ts_root->tc_end);
 }
 
 static inline boolean_t
 tlv_at_end(const struct tlv_state *ts)
 {
-	return (tlv_at_root_end(ts) || ts->ts_pos >= ts->ts_now->tc_end);
+	return (tlv_at_root_end(ts) || ts->ts_now->tc_pos >= ts->ts_now->tc_end);
 }
 
 static inline size_t
 tlv_root_rem(const struct tlv_state *ts)
 {
-	return (ts->ts_root->tc_end - ts->ts_pos);
+	return (ts->ts_root->tc_end - ts->ts_now->tc_pos);
 }
 
 static inline size_t
 tlv_rem(const struct tlv_state *ts)
 {
-	return (ts->ts_now->tc_end - ts->ts_pos);
+	return (ts->ts_now->tc_end - ts->ts_now->tc_pos);
 }
 
 static inline uint8_t *
 tlv_buf(const struct tlv_state *ts)
 {
-	return (ts->ts_buf);
+	return (ts->ts_root->tc_buf);
 }
 
 static inline uint8_t *
 tlv_ptr(const struct tlv_state *ts)
 {
-	return (&ts->ts_buf[ts->ts_pos]);
+	const struct tlv_context *tc = ts->ts_now;
+	return (&tc->tc_buf[tc->tc_pos]);
 }
 
 /* Begins a write-mode BER-TLV generator with an internal buffer. */
 struct tlv_state *tlv_init_write(void);
 
-void tlv_pushl(struct tlv_state *ts, uint tag, size_t maxlen);
+void tlv_push(struct tlv_state *ts, uint tag);
 void tlv_pop(struct tlv_state *ts);
 
 void tlv_write(struct tlv_state *ts, const uint8_t *src, size_t len);
@@ -175,25 +187,8 @@ void tlv_write_byte(struct tlv_state *ts, uint8_t val);
 static inline size_t
 tlv_len(const struct tlv_state *ts)
 {
-	return (ts->ts_pos);
+	return (ts->ts_root->tc_pos);
 }
 
-static inline void
-tlv_push(struct tlv_state *ts, uint tag)
-{
-	tlv_pushl(ts, tag, 127);
-}
-
-static inline void
-tlv_push256(struct tlv_state *ts, uint tag)
-{
-	tlv_pushl(ts, tag, 255);
-}
-
-static inline void
-tlv_push64k(struct tlv_state *ts, uint tag)
-{
-	tlv_pushl(ts, tag, 65535);
-}
 
 #endif
