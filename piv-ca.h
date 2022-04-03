@@ -57,6 +57,7 @@ void			 cert_var_set_help(struct cert_var *, const char *);
 char			*cert_var_raw_value(const struct cert_var *);
 errf_t			*cert_var_set(struct cert_var *, const char *);
 errf_t			*cert_var_eval(struct cert_var *var, char **out);
+boolean_t		 cert_var_defined(const struct cert_var *);
 int			 cert_var_required(const struct cert_var *,
     enum requirement_type);
 void			 cert_var_set_required(struct cert_var *,
@@ -151,6 +152,7 @@ void	 cana_backup_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
 void	 cana_pin_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
 void	 cana_puk_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
 void	 cana_dn(struct ca_new_args *, X509_NAME *);
+void	 cana_scope(struct ca_new_args *, struct cert_var_scope *);
 
 void	 cana_free(struct ca_new_args *);
 
@@ -188,7 +190,7 @@ void		 ca_close(struct ca *ca);
 errf_t		*ca_open_session(struct ca *ca, struct ca_session **outsess);
 enum piv_pin	 ca_session_auth_type(struct ca_session *sess);
 errf_t		*ca_session_auth(struct ca_session *sess, const char *pin);
-errf_t		*ca_close_session(struct ca_session *sess);
+void		 ca_close_session(struct ca_session *sess);
 
 struct cert_var_scope	*ca_make_scope(struct ca *ca,
     struct cert_var_scope *parent);

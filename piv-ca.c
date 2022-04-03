@@ -172,7 +172,6 @@ struct ca_session_agent {
 };
 struct ca_session_direct {
 	SCARDCONTEXT		 csd_context;
-	struct piv_token	*csd_all_tokens;
 	struct piv_token	*csd_token;
 	struct piv_slot		*csd_cakslot;
 	struct piv_slot		*csd_slot;
@@ -180,6 +179,7 @@ struct ca_session_direct {
 struct ca_session {
 	struct ca_session	*cs_prev;
 	struct ca_session	*cs_next;
+	struct ca		*cs_ca;
 	enum ca_session_type	 cs_type;
 	union {
 		struct ca_session_agent		cs_agent;
@@ -250,6 +250,8 @@ struct ca_new_args {
 	struct ca_ebox_tpl	*cna_puk_tpl;
 
 	X509_NAME		*cna_dn;
+
+	struct cert_var_scope	*cna_scope;
 };
 
 static struct cert_var *get_or_define_empty_var(struct cert_var_scope *,
@@ -258,6 +260,8 @@ static errf_t *cert_var_eval_into(struct cert_var *, struct sshbuf *);
 static struct cert_var *add_undefined_deps(struct cert_var *, struct cert_var *);
 static struct cert_var *cert_var_clone(struct cert_var *);
 static struct cert_var *find_var(struct cert_var *, const char *);
+
+static errf_t *scope_to_json(struct cert_var_scope *cvs, json_object **robjp);
 
 static errf_t *load_ossl_config(const char *section,
     struct cert_var_scope *cs, CONF **out);
@@ -599,6 +603,10 @@ scope_lookup(struct cert_var_scope *cvs, const char *name, int undef)
 {
 	struct cert_var *cv;
 
+	VERIFY(cvs != NULL);
+	VERIFY(name != NULL);
+	VERIFY(undef == 1 || undef == 0);
+
 	cv = get_or_define_empty_var(cvs, name, NULL, 0);
 	if (undef)
 		return (cv);
@@ -610,6 +618,7 @@ scope_lookup(struct cert_var_scope *cvs, const char *name, int undef)
 void
 cert_var_set_help(struct cert_var *cv, const char *help)
 {
+	VERIFY(cv != NULL);
 	VERIFY(cv->cv_scope != NULL);
 	free(cv->cv_help);
 	cv->cv_help = strdup(help);
@@ -621,6 +630,7 @@ cert_var_set(struct cert_var *var, const char *value)
 	struct varval *vv;
 	struct cert_var *cv;
 
+	VERIFY(var != NULL);
 	VERIFY(var->cv_scope != NULL);
 
 	vv = varval_parse(value);
@@ -648,6 +658,8 @@ scope_set(struct cert_var_scope *cvs, const char *name, const char *value)
 {
 	struct cert_var *cv, *var = NULL;
 	struct varval *vv;
+
+	VERIFY(cvs != NULL);
 
 	vv = varval_parse(value);
 	if (vv == NULL) {
@@ -699,7 +711,9 @@ cert_var_eval(struct cert_var *var, char **out)
 	struct sshbuf *buf;
 	errf_t *err;
 
+	VERIFY(var != NULL);
 	VERIFY(var->cv_scope != NULL);
+	VERIFY(out != NULL);
 
 	buf = sshbuf_new();
 	VERIFY(buf != NULL);
@@ -744,6 +758,36 @@ scope_undef_vars(struct cert_var_scope *cvs)
 		rcv = add_undefined_deps(cv, rcv);
 
 	return (rcv);
+}
+
+static errf_t *
+scope_to_json(struct cert_var_scope *cvs, json_object **robjp)
+{
+	json_object *robj = NULL, *obj;
+	struct cert_var *cv;
+	errf_t *err;
+
+	robj = json_object_new_object();
+	VERIFY(robj != NULL);
+
+	for (cv = cvs->cvs_vars; cv != NULL; cv = cv->cv_next) {
+		char *vstr;
+		if (cv->cv_value == NULL)
+			continue;
+		vstr = varval_unparse(cv->cv_value);
+		VERIFY(vstr != NULL);
+		obj = json_object_new_string(vstr);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, cv->cv_name, obj);
+	}
+
+	*robjp = robj;
+	robj = NULL;
+	err = ERRF_OK;
+
+out:
+	json_object_put(robj);
+	return (err);
 }
 
 static struct cert_var *
@@ -1167,6 +1211,8 @@ get_or_define_empty_var(struct cert_var_scope *rcs, const char *name,
 	struct cert_var *rvar = NULL, *pvar = NULL;
 	struct cert_var_scope *cs = rcs;
 
+	VERIFY(rcs != NULL);
+
 	for (cs = rcs; cs != NULL; cs = cs->cvs_parent) {
 		struct cert_var *var;
 
@@ -1196,6 +1242,14 @@ get_or_define_empty_var(struct cert_var_scope *rcs, const char *name,
 	}
 
 	return (rvar);
+}
+
+boolean_t
+cert_var_defined(const struct cert_var *cv)
+{
+	while (cv->cv_value == NULL && cv->cv_parent != NULL)
+		cv = cv->cv_parent;
+	return (cv->cv_value != NULL);
 }
 
 static errf_t *
@@ -3918,8 +3972,10 @@ cana_new(void)
 	cna = calloc(1, sizeof (struct ca_new_args));
 	if (cna == NULL)
 		return (cna);
-
 	cna->cna_key_alg = PIV_ALG_RSA2048;
+	cna->cna_scope = scope_new_root();
+
+	return (cna);
 }
 
 void
@@ -3995,6 +4051,15 @@ cana_dn(struct ca_new_args *cna, X509_NAME *name)
 }
 
 void
+cana_scope(struct ca_new_args *cna, struct cert_var_scope *scope)
+{
+	const struct cert_tpl *tpl = cert_tpl_find("ca");
+	VERIFY(tpl != NULL);
+	cna->cna_scope = scope_new_for_tpl(scope, tpl);
+	VERIFY(cna->cna_scope != NULL);
+}
+
+void
 cana_backup_tpl(struct ca_new_args *cna, const char *tplname,
     struct ebox_tpl *tpl)
 {
@@ -4049,6 +4114,263 @@ generate_pin(void)
 	return (out);
 }
 
+static errf_t *
+ca_write_key_backup(struct ca *ca, struct sshkey *privkey)
+{
+	struct sshbuf *kbuf = NULL, *buf = NULL;
+	struct ebox_stream *kbackup = NULL;
+	struct ebox_stream_chunk *chunk = NULL;
+	size_t done;
+	int rc;
+	FILE *baf = NULL;
+	char fname[PATH_MAX];
+	errf_t *err;
+
+	buf = sshbuf_new();
+	if (buf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	kbuf = sshbuf_new();
+	if (kbuf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	err = ebox_stream_new(ca->ca_backup_tpl->cet_tpl, &kbackup);
+	if (err != ERRF_OK) {
+		goto out;
+	}
+
+	rc = sshkey_private_serialize(privkey, kbuf);
+	if (rc != 0) {
+		err = ssherrf("sshkey_private_serialize", rc);
+		goto out;
+	}
+
+	err = ebox_stream_chunk_new(kbackup, sshbuf_ptr(kbuf), sshbuf_len(kbuf),
+	    0, &chunk);
+	if (err != ERRF_OK) {
+		goto out;
+	}
+	err = ebox_stream_encrypt_chunk(chunk);
+	if (err != ERRF_OK) {
+		goto out;
+	}
+
+	err = sshbuf_put_ebox_stream(buf, kbackup);
+	if (err != ERRF_OK)
+		goto out;
+	err = sshbuf_put_ebox_stream_chunk(buf, chunk);
+	if (err != ERRF_OK)
+		goto out;
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".key.ebox", sizeof (fname));
+
+	baf = fopen(fname, "w");
+	if (baf == NULL) {
+		err = errf("MetadataError", errfno("fopen", errno, NULL),
+		    "Failed to open CA key backup file '%s' for writing",
+		    fname);
+		goto out;
+	}
+
+	done = fwrite(sshbuf_ptr(buf), 1, sshbuf_len(buf), baf);
+	if (done < 0) {
+		err = errf("MetadataError", errfno("fwrite", errno, NULL),
+		    "Failed to write to CA key backup file '%s'",
+		    fname);
+		goto out;
+	}
+	if (done != sshbuf_len(buf)) {
+		err = errf("MetadataError", errf("ShortWrite", NULL,
+		    "Short write: %zu instead of %zu", done, sshbuf_len(buf)),
+		    "Failed to write to CA key backup file '%s'",
+		    fname);
+		goto out;
+	}
+
+out:
+	sshbuf_free(buf);
+	sshbuf_free(kbuf);
+	ebox_stream_chunk_free(chunk);
+	ebox_stream_free(kbackup);
+	if (baf != NULL)
+		fclose(baf);
+	return (err);
+}
+
+static errf_t *
+ca_write_pukpin(struct ca *ca, enum piv_pin type, const char *pin)
+{
+	struct sshbuf *buf = NULL;
+	struct ebox *box = NULL;
+	size_t done;
+	int rc;
+	FILE *baf = NULL;
+	char fname[PATH_MAX];
+	errf_t *err;
+	struct ca_ebox_tpl *cet;
+	const char *typeslug;
+
+	buf = sshbuf_new();
+	if (buf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	switch (type) {
+	case PIV_PIN:
+	case PIV_GLOBAL_PIN:
+		cet = ca->ca_pin_tpl;
+		typeslug = "pin";
+		break;
+	case PIV_PUK:
+		cet = ca->ca_puk_tpl;
+		typeslug = "puk";
+		break;
+	default:
+		VERIFY(0);
+	}
+
+	err = ebox_create(cet->cet_tpl, pin, strlen(pin), NULL, 0, &box);
+	if (err != ERRF_OK) {
+		goto out;
+	}
+
+	err = sshbuf_put_ebox(buf, box);
+	if (err != ERRF_OK)
+		goto out;
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".", sizeof (fname));
+	strlcat(fname, typeslug, sizeof (fname));
+	strlcat(fname, ".ebox", sizeof (fname));
+
+	baf = fopen(fname, "w");
+	if (baf == NULL) {
+		err = errf("MetadataError", errfno("fopen", errno, NULL),
+		    "Failed to open CA %s file '%s' for writing",
+		    typeslug, fname);
+		goto out;
+	}
+
+	done = fwrite(sshbuf_ptr(buf), 1, sshbuf_len(buf), baf);
+	if (done < 0) {
+		err = errf("MetadataError", errfno("fwrite", errno, NULL),
+		    "Failed to write to CA %s file '%s'",
+		    typeslug, fname);
+		goto out;
+	}
+	if (done != sshbuf_len(buf)) {
+		err = errf("MetadataError", errf("ShortWrite", NULL,
+		    "Short write: %zu instead of %zu", done, sshbuf_len(buf)),
+		    "Failed to write to CA %s file '%s'",
+		    typeslug, fname);
+		goto out;
+	}
+
+out:
+	sshbuf_free(buf);
+	ebox_free(box);
+	if (baf != NULL)
+		fclose(baf);
+	return (err);
+}
+
+static errf_t *
+ca_gen_ebox_tpls(struct ca *ca, json_object **robjp)
+{
+	json_object *robj = NULL, *obj;
+	struct ca_ebox_tpl *cet;
+	errf_t *err;
+	struct sshbuf *buf;
+
+	robj = json_object_new_object();
+	VERIFY(robj != NULL);
+
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+
+	for (cet = ca->ca_ebox_tpls; cet != NULL; cet = cet->cet_next) {
+		char *tmp;
+
+		if (cet->cet_refcnt == 0 || cet->cet_tpl == NULL)
+			continue;
+
+		sshbuf_reset(buf);
+
+		err = sshbuf_put_ebox_tpl(buf, cet->cet_tpl);
+		if (err != ERRF_OK)
+			goto out;
+
+		tmp = sshbuf_dtob64_string(buf, 0);
+		VERIFY(tmp != NULL);
+		obj = json_object_new_string(tmp);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, cet->cet_name, obj);
+		free(tmp);
+	}
+
+	*robjp = robj;
+	robj = NULL;
+	err = ERRF_OK;
+
+out:
+	json_object_put(robj);
+	sshbuf_free(buf);
+	return (err);
+}
+
+static errf_t *
+ca_gen_ebox_assigns(struct ca *ca, json_object **robjp)
+{
+	json_object *robj = NULL, *obj;
+	struct ca_ebox_tpl *cet;
+	errf_t *err;
+
+	robj = json_object_new_object();
+	VERIFY(robj != NULL);
+
+	if (ca->ca_pin_tpl != NULL) {
+		obj = json_object_new_string(ca->ca_pin_tpl->cet_name);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "pin", obj);
+	}
+
+	if (ca->ca_backup_tpl != NULL) {
+		obj = json_object_new_string(ca->ca_backup_tpl->cet_name);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "backup", obj);
+	}
+
+	if (ca->ca_puk_tpl != NULL) {
+		obj = json_object_new_string(ca->ca_puk_tpl->cet_name);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "puk", obj);
+	}
+
+	if (ca->ca_admin_tpl != NULL) {
+		obj = json_object_new_string(ca->ca_admin_tpl->cet_name);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "admin", obj);
+	}
+
+	*robjp = robj;
+	robj = NULL;
+	err = ERRF_OK;
+
+out:
+	json_object_put(robj);
+	return (err);
+}
+
 errf_t *
 ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
     struct ca **out)
@@ -4056,13 +4378,37 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	struct ca *ca;
 	errf_t *err;
 	char fname[PATH_MAX];
-	FILE *caf = NULL;
-	struct sshkey *cakey = NULL;
+	FILE *caf = NULL, *crtf = NULL;
+	struct sshkey *cakey = NULL, *pubkey = NULL;
 	int sshkt;
 	uint sshksz;
 	int rc;
+	size_t done;
 	char *newpin = NULL, *newpuk = NULL;
-	struct tlv_state *tlv;
+	struct piv_chuid *chuid = NULL;
+	struct piv_fascn *fascn = NULL;
+	struct piv_pinfo *pinfo = NULL;
+	struct ebox_stream *kbackup = NULL;
+	struct ebox_stream_chunk *chunk;
+	struct sshbuf *buf = NULL;
+	struct piv_slot *caslot, *slot;
+	X509 *cert = NULL;
+	struct cert_var *cv;
+	BIGNUM *serial = NULL;
+	ASN1_INTEGER *serial_asn1 = NULL;
+	const struct cert_tpl *tpl;
+	size_t cdlen;
+	uint8_t *cdata = NULL;
+	uint flags;
+	uint8_t *nadmin_key = NULL;
+	size_t nadmin_len = 0;
+	uint8_t *hcroot = NULL;
+	size_t hcroot_len = 0;
+	struct sshkey *cak;
+	struct cert_var_scope *scope;
+	json_object *robj = NULL, *obj = NULL;
+	char *dnstr = NULL, *guidhex = NULL;
+	const char *jsonstr;
 
 	ca = calloc(1, sizeof(struct ca));
 	if (ca == NULL)
@@ -4071,6 +4417,12 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	ca->ca_base_path = strdup(path);
 	if (ca->ca_base_path == NULL) {
 		err = errfno("strdup", errno, NULL);
+		goto out;
+	}
+
+	rc = mkdir(path, 0700);
+	if (rc != 0 && errno != EEXIST) {
+		err = errfno("mkdir(%s)", rc, path);
 		goto out;
 	}
 
@@ -4090,10 +4442,84 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 
 	ca_recalc_slug(ca);
 
+	ca->ca_ebox_tpls = args->cna_ebox_tpls;
+	args->cna_ebox_tpls = NULL;
+
+	ca->ca_backup_tpl = args->cna_backup_tpl;
+	ca->ca_pin_tpl = args->cna_pin_tpl;
+	ca->ca_puk_tpl = args->cna_puk_tpl;
+
 	arc4random_buf(ca->ca_guid, sizeof (ca->ca_guid));
 
-	tlv = tlv_init_write();
+	nadmin_key = malloc_conceal(args->cna_init_admin_len);
+	if (nadmin_key == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	nadmin_len = args->cna_init_admin_len;
 
+	arc4random_buf(nadmin_key, nadmin_len);
+
+	hcroot = malloc_conceal(64);
+	if (hcroot == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	hcroot_len = 64;
+
+	arc4random_buf(hcroot, hcroot_len);
+
+	newpin = generate_pin();
+	newpuk = generate_pin();
+
+	fascn = piv_fascn_zero();
+	chuid = piv_chuid_new();
+	piv_chuid_set_fascn(chuid, fascn);
+	piv_chuid_set_guid(chuid, ca->ca_guid);
+	piv_chuid_set_expiry_rel(chuid, 3600*24*365*20);
+
+	pinfo = piv_pinfo_new();
+	piv_pinfo_set_expiry_rel(pinfo, 3600*24*365*20);
+	piv_pinfo_set_name(pinfo, ca->ca_slug);
+	piv_pinfo_set_affiliation(pinfo, "Certification Authority");
+
+	ykpiv_pinfo_set_admin_key(pinfo, nadmin_key, nadmin_len);
+
+	piv_pinfo_set_kv(pinfo, "ca_hc", hcroot, hcroot_len);
+
+	if ((err = piv_txn_begin(tkn)) ||
+	    (err = piv_select(tkn)))
+		goto out;
+
+	err = piv_auth_admin(tkn, args->cna_init_admin,
+	    args->cna_init_admin_len, args->cna_init_admin_alg);
+	if (err != ERRF_OK) {
+		err = errf("InitialStateError", err, "Initial admin key given "
+		    "to ca_generate does not match token");
+		goto out;
+	}
+
+	err = piv_write_chuid(tkn, chuid);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_write_pinfo(tkn, pinfo);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = ca_write_pukpin(ca, PIV_PIN, newpin);
+	if (err != ERRF_OK)
+		goto out;
+	err = ca_write_pukpin(ca, PIV_PUK, newpuk);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_change_pin(tkn, PIV_PUK, args->cna_init_puk, newpuk);
+	if (err != ERRF_OK)
+		goto out;
+	err = piv_change_pin(tkn, PIV_PIN, args->cna_init_pin, newpin);
+	if (err != ERRF_OK)
+		goto out;
 
 	switch (args->cna_key_alg) {
 	case PIV_ALG_RSA1024:
@@ -4124,15 +4550,287 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 		goto out;
 	}
 
+	rc = sshkey_demote(cakey, &pubkey);
+	if (rc != 0) {
+		err = ssherrf("sshkey_demote", rc);
+		goto out;
+	}
+
+	err = ca_write_key_backup(ca, cakey);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = ykpiv_import(tkn, PIV_SLOT_SIGNATURE, cakey, YKPIV_PIN_ALWAYS,
+	    YKPIV_TOUCH_NEVER);
+	if (err)
+		goto out;
+
+	caslot = piv_force_slot(tkn, PIV_SLOT_SIGNATURE, args->cna_key_alg);
+
+	serial = BN_new();
+	serial_asn1 = ASN1_INTEGER_new();
+	VERIFY(serial != NULL);
+	VERIFY(BN_pseudo_rand(serial, 160, 0, 0) == 1);
+	VERIFY(BN_to_ASN1_INTEGER(serial, serial_asn1) != NULL);
+
+	cert = X509_new();
+	VERIFY(cert != NULL);
+	VERIFY(X509_set_version(cert, 2) == 1);
+	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
+
+	tpl = cert_tpl_find("ca");
+
+	cv = scope_lookup(args->cna_scope, "lifetime", 1);
+	if (!cert_var_defined(cv)) {
+		err = cert_var_set(cv, "20y");
+		if (err)
+			goto out;
+	}
+	err = scope_set(args->cna_scope, "dn", "cn=dummy");
+	if (err != ERRF_OK)
+		goto out;
+
+	err = cert_tpl_populate(tpl, args->cna_scope, cert);
+	if (err != ERRF_OK) {
+		err = errf("CertificateError", err, "Error populating "
+		    "CA certificate attributes");
+		goto out;
+	}
+
+	VERIFY(X509_set_subject_name(cert, ca->ca_dn) == 1);
+	VERIFY(X509_set_issuer_name(cert, ca->ca_dn) == 1);
+
+	err = piv_verify_pin(tkn, PIV_PIN, newpin, NULL, B_FALSE);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_selfsign_cert(tkn, caslot, pubkey, cert);
+	if (err != ERRF_OK) {
+		err = errf("CertificateError", err, "Error self-signing "
+		    "CA certificate");
+		goto out;
+	}
+
+	rc = X509_verify(cert, X509_get_pubkey(cert));
+	if (rc != 1) {
+		make_sslerrf(err, "X509_verify", "verifying cert");
+		err = errf("CertificateError", err, "Error verifying "
+		    "self-signed CA certificate");
+		goto out;
+	}
+
+	rc = i2d_X509(cert, &cdata);
+	if (cdata == NULL || rc <= 0) {
+		make_sslerrf(err, "i2d_X509", "serialising cert");
+		goto out;
+	}
+	cdlen = (size_t)rc;
+
+	flags = PIV_COMP_NONE;
+	err = piv_write_cert(tkn, PIV_SLOT_SIGNATURE, cdata, cdlen, flags);
+	if (err != ERRF_OK)
+		goto out;
+
+	strlcpy(fname, path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".crt", sizeof (fname));
+
+	crtf = fopen(fname, "w");
+	if (crtf == NULL) {
+		err = errf("MetadataError", errfno("fopen", errno, NULL),
+		    "Failed to open CA cert file '%s' for writing",
+		    fname);
+		goto out;
+	}
+
+	rc = PEM_write_X509(crtf, cert);
+	if (rc != 1) {
+		make_sslerrf(err, "PEM_write_X509", "writing out CA cert");
+		goto out;
+	}
+
+	fclose(crtf);
+	crtf = NULL;
+
+	ca->ca_cert = cert;
+	cert = NULL;
+
+	OPENSSL_free(cdata);
+	cdata = NULL;
+
+	err = piv_generate(tkn, PIV_SLOT_CARD_AUTH, PIV_ALG_ECCP256, &cak);
+	if (err != ERRF_OK)
+		goto out;
+
+	slot = piv_force_slot(tkn, PIV_SLOT_CARD_AUTH, PIV_ALG_ECCP256);
+
+	VERIFY(BN_pseudo_rand(serial, 160, 0, 0) == 1);
+	VERIFY(BN_to_ASN1_INTEGER(serial, serial_asn1) != NULL);
+
+	cert = X509_new();
+	VERIFY(cert != NULL);
+	VERIFY(X509_set_version(cert, 2) == 1);
+	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
+
+	tpl = cert_tpl_find("user-auth");
+	scope = scope_new_root();
+	VERIFY(scope != NULL);
+	if ((err = scope_set(scope, "slug", ca->ca_slug)) ||
+	    (err = scope_set(scope, "dn", "cn=ca-card-auth, ou=%{slug}")) ||
+	    (err = scope_set(scope, "lifetime", "20y")))
+		goto out;
+
+	err = cert_tpl_populate(tpl, scope, cert);
+	if (err != ERRF_OK) {
+		err = errf("CertificateError", err, "Error populating "
+		    "CA certificate attributes");
+		goto out;
+	}
+
+	err = piv_selfsign_cert(tkn, slot, cak, cert);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_verify_pin(tkn, PIV_PIN, newpin, NULL, B_FALSE);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_sign_cert(tkn, caslot, pubkey, cert);
+	if (err != ERRF_OK) {
+		err = errf("CertificateError", err, "Error signing "
+		    "CAK certificate");
+		goto out;
+	}
+
+	rc = i2d_X509(cert, &cdata);
+	if (cdata == NULL || rc <= 0) {
+		make_sslerrf(err, "i2d_X509", "serialising cert");
+		goto out;
+	}
+	cdlen = (size_t)rc;
+
+	flags = PIV_COMP_NONE;
+	err = piv_write_cert(tkn, PIV_SLOT_CARD_AUTH, cdata, cdlen, flags);
+	if (err != ERRF_OK)
+		goto out;
+
+	ca->ca_cak = cak;
+	cak = NULL;
+
+	robj = json_object_new_object();
+	VERIFY(robj != NULL);
+
+	err = unparse_dn(ca->ca_dn, &dnstr);
+	if (err != ERRF_OK)
+		goto out;
+	obj = json_object_new_string(dnstr);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "dn", obj);
+
+	buf = sshbuf_from(ca->ca_guid, sizeof (ca->ca_guid));
+	guidhex = sshbuf_dtob16(buf);
+	obj = json_object_new_string(guidhex);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "guid", obj);
+
+	sshbuf_free(buf);
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+	rc = sshkey_format_text(ca->ca_cak, buf);
+	if (rc != 0) {
+		err = ssherrf("sshkey_format_text", rc);
+		goto out;
+	}
+	VERIFY0(sshbuf_put_u8(buf, '\0'));
+	obj = json_object_new_string((char *)sshbuf_ptr(buf));
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "cak", obj);
+
+	obj = json_object_new_array();
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "crl", obj);
+
+	obj = json_object_new_array();
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "ocsp", obj);
+
+	err = ca_gen_ebox_tpls(ca, &obj);
+	if (err != ERRF_OK)
+		goto out;
+	json_object_object_add(robj, "ebox_templates", obj);
+
+	err = ca_gen_ebox_assigns(ca, &obj);
+	if (err != ERRF_OK)
+		goto out;
+	json_object_object_add(robj, "eboxes", obj);
+
+	obj = json_object_new_object();
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "cert_templates", obj);
+
+	obj = json_object_new_object();
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "token_templates", obj);
+
+	obj = json_object_new_object();
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "variables", obj);
+
+	err = piv_verify_pin(tkn, PIV_PIN, newpin, NULL, B_FALSE);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_sign_json(tkn, caslot, NULL, robj);
+	if (err != ERRF_OK)
+		goto out;
+
+	jsonstr = json_object_to_json_string_ext(robj, JSON_C_TO_STRING_PRETTY);
+	done = fwrite(jsonstr, 1, strlen(jsonstr), caf);
+	if (done < 0) {
+		err = errfno("fwrite", errno, "writing CA json");
+		goto out;
+	} else if (done < strlen(jsonstr)) {
+		err = errf("ShortWrite", NULL, "wrote %zu bytes instead of "
+		    "%zu", done, strlen(jsonstr));
+		goto out;
+	}
+	fclose(caf);
+	caf = NULL;
+
+	*out = ca;
+	ca = NULL;
+	err = ERRF_OK;
+
 out:
+	if (piv_token_in_txn(tkn))
+		piv_txn_end(tkn);
+	sshbuf_free(buf);
+	scope_free_root(scope);
 	sshkey_free(cakey);
+	sshkey_free(pubkey);
+	sshkey_free(cak);
+	X509_free(cert);
+	OPENSSL_free(cdata);
+	piv_chuid_free(chuid);
+	piv_fascn_free(fascn);
+	piv_pinfo_free(pinfo);
+	json_object_put(robj);
+	free(dnstr);
+	free(guidhex);
+	BN_free(serial);
+	ASN1_INTEGER_free(serial_asn1);
 	if (newpin != NULL)
 		freezero(newpin, strlen(newpin));
 	if (newpuk != NULL)
 		freezero(newpuk, strlen(newpuk));
+	freezero(nadmin_key, nadmin_len);
+	freezero(hcroot, hcroot_len);
 	ca_close(ca);
 	if (caf != NULL)
 		fclose(caf);
+	if (crtf != NULL)
+		fclose(crtf);
 	cana_free(args);
 	return (err);
 }
@@ -4567,4 +5265,154 @@ ca_cert_tpl_make_scope(struct ca_cert_tpl *tpl, struct cert_var_scope *parent)
 	}
 
 	return (sc);
+}
+
+errf_t *
+ca_open_session(struct ca *ca, struct ca_session **outsess)
+{
+	struct ca_session *sess = NULL;
+	struct ca_session_agent *sa;
+	struct ca_session_direct *sd;
+	errf_t *err;
+	int rc;
+	long rv;
+	uint i;
+	int found = 0, in_txn = 0;
+	struct sshkey *k;
+
+	sess = calloc(1, sizeof (struct ca_session));
+	if (sess == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	sess->cs_ca = ca;
+
+	sess->cs_type = CA_SESSION_AGENT;
+	sa = &sess->cs_agent;
+
+	rc = ssh_get_authentication_socket(&sa->csa_fd);
+	if (rc != 0) {
+		goto direct;
+	}
+
+	rc = ssh_fetch_identitylist(sa->csa_fd, &sa->csa_idl);
+	if (rc != 0) {
+		close(sa->csa_fd);
+		goto direct;
+	}
+
+	for (i = 0; i < sa->csa_idl.nkeys; ++i) {
+		k = sa->csa_idl.keys[i];
+		if (sshkey_equal_public(k, ca->ca_pubkey)) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found) {
+		ssh_free_identitylist(sa->csa_idl);
+		close(sa->csa_fd);
+		goto direct;
+	}
+
+	rc = sshkey_generate(KEY_ECDSA, 256, &sa->csa_rebox_key);
+	if (rc != 0) {
+		err = ssherrf("sshkey_generate", rc);
+		goto out;
+	}
+
+	goto good;
+
+direct:
+	sess->cs_type = CA_SESSION_DIRECT;
+	sd = &sess->cs_direct;
+	bzero(sd, sizeof (*sd));
+
+	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
+	    &sd->csd_context);
+	if (rv != SCARD_S_SUCCESS) {
+		err = pcscerrf("SCardEstablishContext", rv);
+		goto out;
+	}
+
+	err = piv_find(sd->csd_context, ca->ca_guid, sizeof (ca->ca_guid),
+	    &sd->csd_token);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_txn_begin(sd->csd_token);
+	if (err != ERRF_OK)
+		goto out;
+	in_txn = 1;
+
+	err = piv_select(sd->csd_token);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_read_cert(sd->csd_token, PIV_SLOT_CARD_AUTH);
+	if (err != ERRF_OK)
+		goto out;
+
+	sd->csd_cakslot = piv_get_slot(sd->csd_token, PIV_SLOT_CARD_AUTH);
+
+	err = piv_auth_key(sd->csd_token, sd->csd_cakslot, ca->ca_cak);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_read_cert(sd->csd_token, PIV_SLOT_SIGNATURE);
+	if (err != ERRF_OK)
+		goto out;
+
+	sd->csd_slot = piv_get_slot(sd->csd_token, PIV_SLOT_SIGNATURE);
+
+	k = piv_slot_pubkey(sd->csd_slot);
+	if (!sshkey_equal_public(ca->ca_pubkey, k)) {
+		err = errf("KeyAuthError", NULL, "CA public key does not "
+		    "match key in slot 9C");
+		goto out;
+	}
+
+	piv_txn_end(sd->csd_token);
+	in_txn = 0;
+
+good:
+	sess->cs_next = ca->ca_sessions;
+	if (ca->ca_sessions != NULL)
+		ca->ca_sessions->cs_prev = sess;
+	ca->ca_sessions = sess->cs_next;
+	*outsess = sess;
+	sess = NULL;
+
+out:
+	if (in_txn)
+		piv_txn_end(sess->cs_direct.csd_token);
+	ca_close_session(sess);
+	return (err);
+}
+
+void
+ca_close_session(struct ca_session *sess)
+{
+	if (sess->cs_ca->ca_sessions == sess)
+		sess->cs_ca->ca_sessions = sess->cs_next;
+	if (sess->cs_next != NULL)
+		sess->cs_next->cs_prev = sess->cs_prev;
+	if (sess->cs_prev != NULL)
+		sess->cs_prev->cs_next = sess->cs_next;
+
+	if (sess->cs_type == CA_SESSION_AGENT) {
+		struct ca_session_agent *csa = &sess->cs_agent;
+		ssh_free_identitylist(csa->csa_idl);
+		close(csa->csa_fd);
+		sshkey_free(csa->csa_rebox_key);
+
+	} else if (sess->cs_type == CA_SESSION_DIRECT) {
+		struct ca_session_direct *csd = &sess->cs_direct;
+		piv_release(csd->csd_token);
+		SCardReleaseContext(csd->csd_context);
+
+	} else {
+		VERIFY(0);
+	}
+
+	free(sess);
 }

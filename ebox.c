@@ -1596,6 +1596,14 @@ ebox_stream_chunk_data(const struct ebox_stream_chunk *esc, size_t *size)
 	return (esc->esc_plain);
 }
 
+struct sshbuf *
+ebox_stream_chunk_data_buf(const struct ebox_stream_chunk *esc)
+{
+	struct sshbuf *b;
+	b = sshbuf_from(esc->esc_plain, esc->esc_plainlen);
+	return (b);
+}
+
 errf_t *
 ebox_stream_chunk_new(const struct ebox_stream *es, const void *data,
     size_t len, size_t seqnr, struct ebox_stream_chunk **chunk)

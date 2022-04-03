@@ -349,6 +349,7 @@ MUST_CHECK
 errf_t *ebox_stream_encrypt_chunk(struct ebox_stream_chunk *chunk);
 const uint8_t *ebox_stream_chunk_data(const struct ebox_stream_chunk *chunk,
     size_t *size);
+struct sshbuf *ebox_stream_chunk_data_buf(const struct ebox_stream_chunk *chunk);
 
 void ebox_stream_free(struct ebox_stream *str);
 void ebox_stream_chunk_free(struct ebox_stream_chunk *chunk);
