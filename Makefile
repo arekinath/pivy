@@ -117,6 +117,7 @@ ifeq ($(SYSTEM), Darwin)
 	PCSC_LIBS	= -framework PCSC
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
 	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto
+	CRYPTO_LDFLAGS	= -L$(LIBRESSL_LIB)
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
@@ -637,7 +638,7 @@ OPENSSH_CONFIG_ARGS+=	\
 $(LIBRESSL_LIB)/libcrypto.a: .libressl.configure
 	cd libressl/crypto && \
 	    $(MAKE) && \
-	    rm -f $(LIBRESSL_LIB)/*.so $(LIBRESSL_LIB)/*.so.*
+	    rm -f $(LIBRESSL_LIB)/*.so $(LIBRESSL_LIB)/*.so.* $(LIBRESSL_LIB)/*.dylib
 
 endif
 

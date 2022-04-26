@@ -18,6 +18,13 @@
 #include "debug.h"
 #include "openssh/sshbuf.h"
 
+#if defined(__sun) || defined(__APPLE__)
+#include <netinet/in.h>
+#define htobe16(v)      (htons(v))
+#else
+#include <endian.h>
+#endif
+
 enum tlv_tag_bits {
 	TLV_TYPE_MASK = (1 << 7 | 1 << 6 | 1 << 5),
 	TLV_TAG_MASK = ~(TLV_TYPE_MASK),

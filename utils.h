@@ -61,7 +61,10 @@ char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 
 void *reallocarray(void *, size_t, size_t);
+void *recallocarray(void *, size_t, size_t, size_t);
 void explicit_bzero(void *, size_t);
+
+typedef unsigned char u_char;
 #endif
 
 struct sshbuf;

@@ -88,15 +88,16 @@
 #include <unistd.h>
 #include <libgen.h>
 
+#include "utils.h"
+#include "debug.h"
+
 #include "openssh/ssh2.h"
 #include "openssh/sshbuf.h"
 #include "openssh/sshkey.h"
 #include "openssh/authfd.h"
 #include "openssh/ssherr.h"
 
-#include "utils.h"
 #include "bunyan.h"
-#include "debug.h"
 #include "tlv.h"
 #include "piv.h"
 #include "errf.h"
@@ -2567,51 +2568,6 @@ mktemp_proto(char *s, size_t len)
 	if (r < 0 || (size_t)r >= len)
 		fatal("%s: template string too short", __func__);
 }
-
-#if defined(__APPLE__)
-#define INVALID 	1
-#define TOOSMALL 	2
-#define TOOLARGE 	3
-
-static long long
-strtonum(const char *numstr, long long minval, long long maxval,
-    const char **errstrp)
-{
-	long long ll = 0;
-	char *ep;
-	int error = 0;
-	struct errval {
-		const char *errstr;
-		int err;
-	} ev[4] = {
-		{ NULL,		0 },
-		{ "invalid",	EINVAL },
-		{ "too small",	ERANGE },
-		{ "too large",	ERANGE },
-	};
-
-	ev[0].err = errno;
-	errno = 0;
-	if (minval > maxval)
-		error = INVALID;
-	else {
-		ll = strtoll(numstr, &ep, 10);
-		if (numstr == ep || *ep != '\0')
-			error = INVALID;
-		else if ((ll == LLONG_MIN && errno == ERANGE) || ll < minval)
-			error = TOOSMALL;
-		else if ((ll == LLONG_MAX && errno == ERANGE) || ll > maxval)
-			error = TOOLARGE;
-	}
-	if (errstrp != NULL)
-		*errstrp = ev[error].errstr;
-	errno = ev[error].err;
-	if (error)
-		ll = 0;
-
-	return (ll);
-}
-#endif
 
 int
 main(int ac, char **av)

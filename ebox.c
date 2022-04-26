@@ -18,6 +18,9 @@
 #include <inttypes.h>
 #include <sys/errno.h>
 
+#include "utils.h"
+#include "debug.h"
+
 #include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"
 #include "openssh/digest.h"
@@ -26,14 +29,12 @@
 #include "openssh/hmac.h"
 #include "openssh/ssherr.h"
 
-#include "sss/hazmat.h"
-
-#include "utils.h"
-#include "debug.h"
 #include "tlv.h"
 #include "ebox.h"
 #include "piv.h"
 #include "bunyan.h"
+
+#include "sss/hazmat.h"
 
 #include "piv-internal.h"
 
