@@ -33,7 +33,7 @@ VERSION		= 0.8.0
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
-	-D_FORTIFY_SOURCE=2 -Wall -g -O0 -gdwarf-2
+	-D_FORTIFY_SOURCE=2 -Wall -g -O2 -gdwarf-2
 
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
@@ -120,9 +120,9 @@ ifeq ($(SYSTEM), Darwin)
 	CRYPTO_LDFLAGS	= -L$(LIBRESSL_LIB)
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
-	SYSTEM_CFLAGS	=
+	SYSTEM_CFLAGS	= -arch x86_64 -arch arm64
 	SYSTEM_LIBS	= -lproc
-	SYSTEM_LDFLAGS	=
+	SYSTEM_LDFLAGS	= -arch x86_64 -arch arm64
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ledit
 	HAVE_ZFS	:= no

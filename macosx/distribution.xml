@@ -3,7 +3,7 @@
     <title>pivy</title>
     <organization>org.someid</organization>
     <domains enable_localSystem="true"/>
-    <options customize="never" require-scripts="true" rootVolumeOnly="true" />
+    <options customize="never" require-scripts="true" rootVolumeOnly="true" hostArchitectures="x86_64,arm64" />
     <!-- Define documents displayed at various steps -->
     <welcome    file="welcome.html"    mime-type="text/html" />
     <license    file="license.html"    mime-type="text/html" />
