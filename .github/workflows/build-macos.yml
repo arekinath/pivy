@@ -1,0 +1,13 @@
+name: build-macos
+on: [push]
+
+jobs:
+  build-macos11:
+    runs-on: macos-12
+    steps:
+      - uses: actions/checkout@v2
+      - run: make && sudo make package
+      - uses: actions/upload-artifact@v3
+        with:
+          name: macos12
+          path: 'macosx/pivy-*.pkg'

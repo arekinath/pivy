@@ -621,11 +621,26 @@ else
 	    mv libressl-$(LIBRESSL_VER) libressl && \
 	    touch $(CURDIR)/$@
 
+ifeq ($(SYSTEM), Darwin)
+.libressl.patch: .libressl.extract
+	# patch out some x86-specific stuff that will break us cross-compiling
+	# for arm64 on macos
+	cp libressl/crypto/Makefile.in{,.bak} && \
+	    grep -v HOST_CPU_IS_INTEL libressl/crypto/Makefile.in.bak \
+	    > libressl/crypto/Makefile.in && \
+	    touch $(CURDIR)/$@
+else
 .libressl.patch: .libressl.extract
 	touch $(CURDIR)/$@
+endif
 
 LIBRESSL_CONFIG_ARGS=	\
 	--enable-static
+ifeq ($(SYSTEM), Darwin)
+	# making a universal binary on macos with the asm bits is hard
+	# let's go shopping (pivy doesn't need super fast crypto anyway)
+	LIBRESSL_CONFIG_ARGS+=	--disable-asm
+endif
 OPENSSH_CONFIG_ARGS+=	\
 	--with-ssl-dir=$(LIBRESSL)
 
