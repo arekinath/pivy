@@ -263,10 +263,10 @@ PIV_COMMON_HEADERS=		\
 	debug.h			\
 	utils.h			\
 
-PIV_CA_SOURCES=			\
-	piv-ca.c		\
+PIV_CERT_SOURCES=			\
+	piv-certs.c		\
 	pkinit_asn1.c
-PIV_CA_HEADERS=			\
+PIV_CERT_HEADERS=			\
 	piv-ca.h		\
 	pkinit_asn1.h
 
@@ -280,10 +280,10 @@ EBOX_COMMON_HEADERS=		\
 PIVTOOL_SOURCES=		\
 	pivy-tool.c		\
 	$(PIV_COMMON_SOURCES)	\
-	$(PIV_CA_SOURCES)
+	$(PIV_CERT_SOURCES)
 PIVTOOL_HEADERS=		\
 	$(PIV_COMMON_HEADERS)	\
-	$(PIV_CA_HEADERS)
+	$(PIV_CERT_HEADERS)
 
 PIVTOOL_OBJS=		$(PIVTOOL_SOURCES:%.c=%.o)
 PIVTOOL_CFLAGS=		$(PCSC_CFLAGS) \
@@ -316,8 +316,9 @@ ifeq (yes, $(HAVE_JSONC))
 
 PIVYCA_SOURCES=			\
 	pivy-ca.c		\
+	piv-ca.c		\
 	$(PIV_COMMON_SOURCES)	\
-	$(PIV_CA_SOURCES)	\
+	$(PIV_CERT_SOURCES)	\
 	$(EBOX_COMMON_SOURCES)	\
 	$(SSS_SOURCES)
 PIVYCA_HEADERS=			\

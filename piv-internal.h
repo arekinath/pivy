@@ -85,4 +85,39 @@ enum piv_certinfo_flags {
 	PIV_CI_COMPTYPE = 0x03,
 };
 
+enum vvtype {
+        VV_STRING,
+        VV_VAR
+};
+
+struct varval {
+        struct varval           *vv_next;
+        enum vvtype              vv_type;
+        union {
+                char            *vv_string;
+                struct cert_var *vv_var;
+        };
+};
+
+struct cert_var_scope {
+        struct cert_var_scope   *cvs_parent;
+        struct cert_var_scope   *cvs_children;
+        struct cert_var_scope   *cvs_next;
+        struct cert_var         *cvs_vars;
+};
+
+struct cert_var {
+        struct cert_var_scope   *cv_scope;
+        struct cert_var         *cv_next;
+        struct cert_var         *cv_parent;
+        char                    *cv_name;
+        char                    *cv_help;
+        uint                     cv_flags;
+        struct varval           *cv_value;
+};
+
+struct varval *varval_parse(const char *);
+void varval_free(struct varval *);
+char *varval_unparse(const struct varval *);
+
 #endif

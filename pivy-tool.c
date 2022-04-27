@@ -103,14 +103,6 @@ const char *cvtpl_name = NULL;
 
 SCARDCONTEXT ctx;
 
-#ifndef LINT
-#define	funcerrf(cause, fmt, ...)	\
-    errf(__func__, cause, fmt , ##__VA_ARGS__)
-#define pcscerrf(call, rv)	\
-    errf("PCSCError", NULL, call " failed: %d (%s)", \
-    rv, pcsc_stringify_error(rv))
-#endif
-
 static errf_t *set_default_slot_cert_vars(uint slotid);
 
 enum pivtool_exit_status {

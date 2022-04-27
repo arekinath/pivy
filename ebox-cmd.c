@@ -1423,8 +1423,7 @@ interactive_select_local_token(struct ebox_tpl_part **ppart)
 	char *shortid;
 	enum piv_slotid slotid = PIV_SLOT_KEY_MGMT;
 	char k = '0';
-	char *line, *p;
-	unsigned long parsed;
+	char *line;
 
 	if (!ebox_ctx_init) {
 		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,

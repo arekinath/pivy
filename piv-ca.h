@@ -92,6 +92,7 @@ errf_t	*piv_sign_cert(struct piv_token *tkn, struct piv_slot *slot,
     struct sshkey *pubkey, X509 *cert);
 errf_t	*piv_sign_cert_req(struct piv_token *tkn, struct piv_slot *slot,
     struct sshkey *pubkey, X509_REQ *req);
+errf_t	*agent_sign_cert(int fd, struct sshkey *pubkey, X509 *cert);
 
 /*
  * CA state and stuff

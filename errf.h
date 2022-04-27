@@ -112,6 +112,12 @@ struct errf *errf_cause(const struct errf *e);
     "Argument " param " must be " mustbe " but is " butis, \
     ##__VA_ARGS__)
 
+#define	funcerrf(cause, fmt, ...)	\
+    errf(__func__, cause, fmt , ##__VA_ARGS__)
+#define pcscerrf(call, rv)	\
+    errf("PCSCError", NULL, call " failed: %d (%s)", \
+    rv, pcsc_stringify_error(rv))
+
 #else
 
 /* smatch and similar don't support varargs macros */
