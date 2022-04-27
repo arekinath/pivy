@@ -1,6 +1,6 @@
 all: pivy-tool pivy-agent pivy-box
 
-LIBRESSL_VER	= 3.5.0
+LIBRESSL_VER	= 3.5.2
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
 OPENSSH_VER	= 8.9p1
@@ -29,7 +29,7 @@ libdir		?= $(prefix)/lib
 binowner	?= root
 bingroup	?= wheel
 
-VERSION		= 0.8.0
+VERSION		= 0.9.0
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
@@ -622,8 +622,7 @@ else
 	    touch $(CURDIR)/$@
 
 .libressl.patch: .libressl.extract
-	patch -p0 <libressl-x509-namecons.patch && \
-	    touch $(CURDIR)/$@
+	touch $(CURDIR)/$@
 
 LIBRESSL_CONFIG_ARGS=	\
 	--enable-static
