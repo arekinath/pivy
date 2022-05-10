@@ -2176,13 +2176,15 @@ handle_socket_read(u_int socknum)
 	}
 	snprintf(fn, sizeof (fn), "/proc/%d/cmdline", (int)pid);
 	f = fopen(fn, "r");
-	len = fread(ln, 1, sizeof (ln) - 1, f);
-	fclose(f);
-	for (i = 0; i < len; ++i) {
-		if (ln[i] == '\0')
-			ln[i] = ' ';
+	if (f != NULL) {
+		len = fread(ln, 1, sizeof (ln) - 1, f);
+		fclose(f);
+		for (i = 0; i < len; ++i) {
+			if (ln[i] == '\0')
+				ln[i] = ' ';
+		}
+		exeargs = strndup(ln, len);
 	}
-	exeargs = strndup(ln, len);
 #else
 	if (getpeereid(fd, &euid, &egid) < 0) {
 		error("getpeereid %d failed: %s", fd, strerror(errno));
