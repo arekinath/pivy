@@ -1465,6 +1465,9 @@ ebox_stream_encrypt_chunk(struct ebox_stream_chunk *esc)
 	    authlen));
 	cipher_free(cctx);
 
+	freezero(plain, plainlen);
+	freezero(iv, ivlen);
+
 	if (dgalg != -1) {
 		hctx = ssh_hmac_start(dgalg);
 		VERIFY(hctx != NULL);
@@ -1558,6 +1561,9 @@ ebox_stream_decrypt_chunk(struct ebox_stream_chunk *esc)
 	rc = cipher_crypt(cctx, esc->esc_seqnr, plain, enc,
 	    enclen - authlen - maclen, 0, authlen);
 	cipher_free(cctx);
+
+	free(iv);
+	iv = NULL;
 
 	if (rc != 0) {
 		err = ssherrf("cipher_crypt", rc);
