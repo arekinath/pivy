@@ -1208,7 +1208,6 @@ again:
 			warnx("PINs do not match");
 			goto again;
 		}
-		free(guidhex);
 	}
 	if (strlen(newpin) < 4 || strlen(newpin) > 8) {
 		warnx("PIN must be 4-8 %s", charType);
