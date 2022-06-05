@@ -314,3 +314,78 @@ bitbuf_read(struct bitbuf *b, uint nbits, uint32_t *out)
 
 	return (ERRF_OK);
 }
+
+errf_t *
+parse_lifetime(char *lifetime, unsigned long *outp)
+{
+	unsigned long lifetime_secs;
+	char *p;
+
+	errno = 0;
+	lifetime_secs = strtoul(lifetime, &p, 10);
+	if (errno != 0) {
+		return (errf("SyntaxError", errfno("strtoul", errno,
+		    NULL), "Error parsing lifetime spec: '%s'", lifetime));
+	}
+	if (*p == 's' && *(p + 1) == '\0') {
+		++p;
+	} else if (*p == 'm' && *(p + 1) == '\0') {
+		++p;
+		lifetime_secs *= 60;
+	} else if (*p == 'h' && *(p + 1) == '\0') {
+		++p;
+		lifetime_secs *= 3600;
+	} else if (*p == 'd' && *(p + 1) == '\0') {
+		++p;
+		lifetime_secs *= 3600*24;
+	} else if (*p == 'w' && *(p + 1) == '\0') {
+		++p;
+		lifetime_secs *= 3600*24*7;
+	} else if (*p == 'y' && *(p + 1) == '\0') {
+		++p;
+		lifetime_secs *= 3600*24*365;
+	}
+	if (*p != '\0') {
+		return (errf("SyntaxError", NULL, "Error parsing contents "
+		    "of 'lifetime' certificate variable: trailing garbage '%s'",
+		    p));
+	}
+
+	*outp = lifetime_secs;
+	return (ERRF_OK);
+}
+
+char *
+unparse_lifetime(unsigned long secs)
+{
+	struct sshbuf *buf = sshbuf_new();
+	int rc;
+	char *ret;
+	VERIFY(buf != NULL);
+	const char *unit = "s";
+
+	if (secs >= 3600*24*365 && secs % 3600*24*365 == 0) {
+		secs /= 3600*24*365;
+		unit = "y";
+	} else if (secs >= 3600*24*7 && secs % 3600*24*7 == 0) {
+		secs /= 3600*24*7;
+		unit = "w";
+	} else if (secs >= 3600*24 && secs % 3600*24 == 0) {
+		secs /= 3600*24;
+		unit = "d";
+	} else if (secs >= 3600 && secs % 3600 == 0) {
+		secs /= 3600;
+		unit = "h";
+	} else if (secs >= 60 && secs % 60 == 0) {
+		secs /= 60;
+		unit = "m";
+	}
+
+	rc = sshbuf_putf(buf, "%lu%s", secs, unit);
+	VERIFY(rc == 0);
+
+	ret = sshbuf_dup_string(buf);
+	sshbuf_free(buf);
+
+	return (ret);
+}

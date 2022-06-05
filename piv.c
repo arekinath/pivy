@@ -266,6 +266,7 @@ struct piv_chuid {
 	uint8_t			*pc_duns;
 	size_t			 pc_duns_len;
 	CMS_ContentInfo		*pc_sig;
+	char			*pc_guidhex;
 };
 
 enum piv_pinfo_kv_type {
@@ -1033,6 +1034,9 @@ piv_read_chuid(struct piv_token *pk)
 			err = tagerrf("INS_GET_DATA(CHUID)", tag);
 			goto invdata;
 		}
+		if (pk->pt_chuid != NULL)
+			piv_chuid_free(pk->pt_chuid);
+		pk->pt_chuid = NULL;
 	    	err = piv_chuid_decode(tlv_ptr(tlv), tlv_rem(tlv),
 	    	    &pk->pt_chuid);
 	    	if (err != ERRF_OK)
@@ -1307,6 +1311,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 				piv_txn_end(key);
 				(void) SCardDisconnect(card, SCARD_RESET_CARD);
 				free((char *)key->pt_rdrname);
+				piv_chuid_free(key->pt_chuid);
 				free(key);
 				piv_txn_end(found);
 				(void) SCardDisconnect(found->pt_cardhdl,
@@ -1334,6 +1339,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			piv_txn_end(key);
 			(void) SCardDisconnect(card, SCARD_RESET_CARD);
 			free((char *)key->pt_rdrname);
+			piv_chuid_free(key->pt_chuid);
 			free(key);
 			piv_txn_end(found);
 			(void) SCardDisconnect(found->pt_cardhdl,
@@ -1353,9 +1359,12 @@ nope:
 nopenotxn:
 		(void) SCardDisconnect(card, SCARD_RESET_CARD);
 		free((char *)key->pt_rdrname);
+		piv_chuid_free(key->pt_chuid);
 		bzero(key, sizeof (struct piv_token));
 	}
 
+	free((char *)key->pt_rdrname);
+	piv_chuid_free(key->pt_chuid);
 	free(key);
 
 	if (found == NULL) {
@@ -5193,7 +5202,7 @@ piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 		if (bcmp(pt->pt_guid, box->pdb_guid,
 		    sizeof (pt->pt_guid)) == 0) {
 			s = piv_get_slot(pt, box->pdb_slot);
-			if (s == NULL) {
+			if (s == NULL && !pt->pt_did_read_all) {
 				if ((err = piv_txn_begin(pt)))
 					return (err);
 				if ((err = piv_select(pt)) ||
@@ -5223,10 +5232,14 @@ piv_box_find_token(struct piv_token *tks, struct piv_ecdh_box *box,
 		slotid = PIV_SLOT_KEY_MGMT;
 	for (pt = tks; pt != NULL; pt = pt->pt_next) {
 		s = piv_get_slot(pt, slotid);
-		if (s == NULL) {
-			if (piv_txn_begin(pt))
+		if (s == NULL && !pt->pt_did_read_all) {
+			if ((err = piv_txn_begin(pt))) {
+				errf_free(err);
 				continue;
-			if (piv_select(pt) || piv_read_cert(pt, slotid)) {
+			}
+			if ((err = piv_select(pt)) ||
+			    (err = piv_read_cert(pt, slotid))) {
+				errf_free(err);
 				piv_txn_end(pt);
 				continue;
 			}
@@ -6733,6 +6746,7 @@ piv_chuid_free(struct piv_chuid *chuid)
 	free(chuid->pc_orgid);
 	free(chuid->pc_duns);
 	CMS_ContentInfo_free(chuid->pc_sig);
+	free(chuid->pc_guidhex);
 	free(chuid);
 }
 
@@ -6842,6 +6856,8 @@ void
 piv_chuid_set_random_guid(struct piv_chuid *pc)
 {
 	arc4random_buf(pc->pc_guid, sizeof (pc->pc_guid));
+	free(pc->pc_guidhex);
+	pc->pc_guidhex = NULL;
 }
 
 void
@@ -6855,6 +6871,20 @@ void
 piv_chuid_set_guid(struct piv_chuid *pc, uint8_t *v)
 {
 	bcopy(v, pc->pc_guid, sizeof (pc->pc_guid));
+	free(pc->pc_guidhex);
+	pc->pc_guidhex = NULL;
+}
+
+const char *
+piv_chuid_get_guidhex(const struct piv_chuid *pc)
+{
+	if (pc->pc_guidhex == NULL) {
+		struct piv_chuid *pcw = (struct piv_chuid *)pc;
+		pcw->pc_guidhex = buf_to_hex(pc->pc_guid, sizeof (pc->pc_guid),
+		    B_FALSE);
+		return (pcw->pc_guidhex);
+	}
+	return (pc->pc_guidhex);
 }
 
 void

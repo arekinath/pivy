@@ -72,6 +72,9 @@ struct errf *sshbuf_b16tod(const char *str, struct sshbuf *buf);
 
 int timingsafe_bcmp(const void *, const void *, size_t);
 
+struct errf *parse_lifetime(char *, unsigned long *out);
+char *unparse_lifetime(unsigned long);
+
 #define	jsonerrf(func, ...)	\
     errf("JSONError", NULL, func " returned error: %s", \
     ##__VA_ARGS__, json_util_get_last_err())

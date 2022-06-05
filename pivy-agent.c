@@ -1943,6 +1943,19 @@ process_lock_agent(socket_entry_t *e, int lock)
 		drop_pin();
 		send_status(e, 1);
 	} else {
+		/*
+		 * If they sent an empty password, return the current lock
+		 * status. This is an easy way to test whether the agent
+		 * is currently unlocked or not.
+		 */
+		if (pwlen == 0) {
+			if (pin_len == 0)
+				send_status(e, 0);
+			else
+				send_status(e, 1);
+			goto out;
+		}
+
 		if ((err = valid_pin(passwd)))
 			goto out;
 

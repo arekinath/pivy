@@ -39,6 +39,7 @@
 #endif
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 
 #include <json.h>
 
@@ -48,6 +49,7 @@
 #include "openssh/ssherr.h"
 #include "openssh/authfd.h"
 
+#include <openssl/asn1.h>
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -82,12 +84,17 @@ struct ca {
 	char			*ca_base_path;
 	char			*ca_slug;
 	uint8_t			 ca_guid[16];
+	char			*ca_guidhex;
 	struct sshkey		*ca_cak;
 	X509_NAME		*ca_dn;
+	boolean_t		 ca_crls_want_idp;
+
+	unsigned long		 ca_crl_lifetime;
 
 	boolean_t		 ca_dirty;
 
 	json_object		*ca_vars;
+	json_object		*ca_req_vars;
 
 	X509			*ca_cert;
 	struct sshkey		*ca_pubkey;
@@ -101,6 +108,12 @@ struct ca {
 	struct ca_ebox_tpl	*ca_backup_tpl;
 	struct ca_ebox_tpl	*ca_puk_tpl;
 	struct ca_ebox_tpl	*ca_admin_tpl;
+
+	struct ebox		*ca_pin_ebox;
+	struct ebox		*ca_old_pin_ebox;
+	struct ebox		*ca_backup_ebox;
+	struct ebox		*ca_puk_ebox;
+	struct ebox		*ca_admin_ebox;
 
 	struct ca_session	*ca_sessions;
 
@@ -122,6 +135,8 @@ struct ca_session_direct {
 	struct piv_token	*csd_token;
 	struct piv_slot		*csd_cakslot;
 	struct piv_slot		*csd_slot;
+	char			*csd_pin;
+	enum piv_pin		 csd_pintype;
 };
 struct ca_session {
 	struct ca_session	*cs_prev;
@@ -146,6 +161,7 @@ struct ca_token_tpl {
 	struct ca_ebox_tpl		*ctt_backup_tpl;
 	struct ca_ebox_tpl		*ctt_admin_tpl;
 	json_object			*ctt_vars;
+	json_object			*ctt_req_vars;
 	struct ca_token_slot_tpl	*ctt_slots;
 
 };
@@ -164,6 +180,7 @@ struct ca_token_slot_tpl {
 	enum ca_cert_tpl_flags		 ctst_flags;
 
 	json_object			*ctst_vars;
+	json_object			*ctst_req_vars;
 
 	struct ca_cert_tpl		*ctst_ctpl_cache;
 };
@@ -180,6 +197,7 @@ struct ca_cert_tpl {
 
 	const struct cert_tpl		*cct_tpl;
 	json_object			*cct_vars;
+	json_object			*cct_req_vars;
 };
 
 struct ca_new_args {
@@ -209,9 +227,28 @@ static errf_t *piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
     const char *subprop, json_object *obj);
 static errf_t *verify_json(struct sshkey *pubkey, const char *subprop,
     json_object *obj);
+static errf_t *ca_sign_json(struct ca *ca, struct ca_session *sess,
+    json_object *obj);
+static errf_t *ca_sign_cert(struct ca *ca, struct ca_session *sess, X509 *cert);
+
+struct json_sign_ctx;
+static struct json_sign_ctx *json_sign_new(void);
+static errf_t *json_sign_begin(struct json_sign_ctx *ctx, json_object *obj,
+    const char *subprop);
+static struct sshbuf *json_sign_get_tbs(struct json_sign_ctx *ctx);
+static struct sshbuf *json_sign_get_signature(struct json_sign_ctx *ctx);
+static errf_t *json_sign_set_signature(struct json_sign_ctx *ctx,
+    struct sshbuf *sigbuf);
+static void json_sign_abort(struct json_sign_ctx *ctx);
+static errf_t *json_sign_finish(struct json_sign_ctx *ctx);
 
 errf_t *read_text_file(const char *path, char **out, size_t *outlen);
 errf_t *validate_cstring(const char *buf, size_t len, size_t maxlen);
+
+static errf_t *ca_log_init(struct ca *ca, struct ca_session *sess,
+    BIGNUM *ca_serial, const char *dnstr);
+static errf_t *ca_log_new_cert(struct ca *ca, struct ca_session *sess,
+    const char *tpl, struct cert_var_scope *scope, X509 *cert);
 
 static struct ca_ebox_tpl *get_ebox_tpl(struct ca_ebox_tpl **, const char *,
     int);
@@ -224,6 +261,44 @@ set_ca_ebox_ptr(struct ca_ebox_tpl **ptr, struct ca_ebox_tpl *newval)
 	*ptr = newval;
 	if (newval != NULL)
 		newval->cet_refcnt++;
+}
+
+const char *
+ca_slug(const struct ca *ca)
+{
+	return (ca->ca_slug);
+}
+
+const char *
+ca_guidhex(const struct ca *ca)
+{
+	return (ca->ca_guidhex);
+}
+
+const struct sshkey *
+ca_pubkey(const struct ca *ca)
+{
+	return (ca->ca_pubkey);
+}
+
+const struct sshkey *
+ca_cak(const struct ca *ca)
+{
+	return (ca->ca_cak);
+}
+
+char *
+ca_dn(const struct ca *ca)
+{
+	errf_t *err;
+	char *out;
+
+	err = unparse_dn(ca->ca_dn, &out);
+	if (err != ERRF_OK) {
+		errf_free(err);
+		return (NULL);
+	}
+	return (out);
 }
 
 static errf_t *
@@ -245,13 +320,13 @@ scope_to_json(struct cert_var_scope *cvs, json_object **robjp)
 		obj = json_object_new_string(vstr);
 		VERIFY(obj != NULL);
 		json_object_object_add(robj, cv->cv_name, obj);
+		free(vstr);
 	}
 
 	*robjp = robj;
 	robj = NULL;
 	err = ERRF_OK;
 
-out:
 	json_object_put(robj);
 	return (err);
 }
@@ -276,66 +351,223 @@ best_sign_alg_for_key(struct sshkey *pubkey)
 	}
 }
 
+struct json_sign_ctx {
+	json_object	*jsc_obj;
+	boolean_t	 jsc_hadsig;
+	boolean_t	 jsc_setsig;
+	json_object	*jsc_sigprop;
+	json_object	*jsc_sigsubprop;
+	struct sshbuf	*jsc_tbsbuf;
+	struct sshbuf	*jsc_sigbuf;
+};
+
+static struct json_sign_ctx *
+json_sign_new(void)
+{
+	struct json_sign_ctx *ctx;
+
+	ctx = calloc(1, sizeof (struct json_sign_ctx));
+	if (ctx == NULL)
+		return (NULL);
+
+	ctx->jsc_tbsbuf = sshbuf_new();
+	if (ctx->jsc_tbsbuf == NULL) {
+		free(ctx);
+		return (NULL);
+	}
+
+	return (ctx);
+}
+
+static errf_t *
+json_sign_begin(struct json_sign_ctx *ctx, json_object *obj,
+    const char *subprop)
+{
+	const char *tmp;
+	errf_t *err;
+	int rc;
+	struct sshbuf *tbsbuf = ctx->jsc_tbsbuf;
+
+	VERIFY(ctx->jsc_obj == NULL);
+	VERIFY(ctx->jsc_tbsbuf != NULL);
+
+	json_object_get(obj);
+	ctx->jsc_obj = obj;
+
+	ctx->jsc_sigprop = json_object_object_get(obj, "signature");
+	if (ctx->jsc_sigprop == NULL) {
+		ctx->jsc_hadsig = B_FALSE;
+		ctx->jsc_sigprop = json_object_new_object();
+	} else {
+		ctx->jsc_hadsig = B_TRUE;
+		VERIFY(json_object_is_type(ctx->jsc_sigprop, json_type_object));
+		json_object_get(ctx->jsc_sigprop);
+		json_object_object_del(obj, "signature");
+	}
+	VERIFY(ctx->jsc_sigprop != NULL);
+
+	ctx->jsc_sigsubprop = json_object_object_get(ctx->jsc_sigprop,
+	    subprop);
+	if (ctx->jsc_sigsubprop == NULL) {
+		ctx->jsc_sigsubprop = json_object_new_string("");
+		VERIFY(ctx->jsc_sigsubprop != NULL);
+		rc = json_object_object_add(ctx->jsc_sigprop, subprop,
+		    ctx->jsc_sigsubprop);
+		if (rc != 0) {
+			err = jsonerrf("json_object_object_add");
+			goto out;
+		}
+	} else {
+		tmp = json_object_get_string(ctx->jsc_sigsubprop);
+		if (tmp == NULL) {
+			err = errf("JSONSignatureError", NULL, "Signature "
+			    "'%s' is null", subprop);
+			goto out;
+		}
+		ctx->jsc_sigbuf = sshbuf_new();
+		if (ctx->jsc_sigbuf == NULL) {
+			err = errfno("sshbuf_new", errno, NULL);
+			goto out;
+		}
+		rc = sshbuf_b64tod(ctx->jsc_sigbuf, tmp);
+		if (rc != 0) {
+			err = errf("JSONSignatureError",
+			    ssherrf("sshbuf_b64tod", rc),
+			    "Failed to parse signature '%s' as base64",
+			    subprop);
+			goto out;
+		}
+	}
+	VERIFY(json_object_is_type(ctx->jsc_sigsubprop,
+	    json_type_string));
+
+	tmp = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
+
+	if ((rc = sshbuf_put_cstring8(tbsbuf, "piv-ca-json-signature")) ||
+	    (rc = sshbuf_put_cstring8(tbsbuf, subprop)) ||
+	    (rc = sshbuf_put_cstring(tbsbuf, tmp))) {
+		err = ssherrf("sshbuf_put_cstring", rc);
+		goto out;
+	}
+
+	err = ERRF_OK;
+
+out:
+	return (err);
+}
+
+static struct sshbuf *
+json_sign_get_tbs(struct json_sign_ctx *ctx)
+{
+	VERIFY(ctx->jsc_obj != NULL);
+	return (ctx->jsc_tbsbuf);
+}
+
+static struct sshbuf *
+json_sign_get_signature(struct json_sign_ctx *ctx)
+{
+	return (ctx->jsc_sigbuf);
+}
+
+static errf_t *
+json_sign_set_signature(struct json_sign_ctx *ctx, struct sshbuf *sigbuf)
+{
+	errf_t *err;
+	char *sigb64 = NULL;
+	int rc;
+
+	sigb64 = sshbuf_dtob64_string(sigbuf, 0);
+	if (sigb64 == NULL) {
+		err = errf("ConversionError", NULL, "Failed to convert "
+		    "signature value to base64");
+		goto out;
+	}
+
+	rc = json_object_set_string(ctx->jsc_sigsubprop, sigb64);
+	if (rc != 1) {
+		err = jsonerrf("json_object_set_string");
+		goto out;
+	}
+
+	ctx->jsc_setsig = B_TRUE;
+	err = ERRF_OK;
+
+out:
+	free(sigb64);
+	return (err);
+}
+
+static void
+json_sign_abort(struct json_sign_ctx *ctx)
+{
+	errf_t *err;
+
+	if (ctx == NULL)
+		return;
+	ctx->jsc_setsig = B_FALSE;
+	err = json_sign_finish(ctx);
+	errf_free(err);
+}
+
+static errf_t *
+json_sign_finish(struct json_sign_ctx *ctx)
+{
+	errf_t *err;
+	int rc;
+
+	if (ctx == NULL)
+		return (ERRF_OK);
+
+	if (ctx->jsc_hadsig || ctx->jsc_setsig) {
+		rc = json_object_object_add(ctx->jsc_obj, "signature",
+		    ctx->jsc_sigprop);
+		if (rc != 0) {
+			err = jsonerrf("json_object_object_add");
+			goto out;
+		}
+		/* json_object_object_add takes ownership */
+		ctx->jsc_sigprop = NULL;
+		ctx->jsc_sigsubprop = NULL;
+	}
+
+	err = ERRF_OK;
+
+out:
+	json_object_put(ctx->jsc_sigprop);
+	sshbuf_free(ctx->jsc_tbsbuf);
+	sshbuf_free(ctx->jsc_sigbuf);
+	json_object_put(ctx->jsc_obj);
+	free(ctx);
+
+	return (err);
+}
+
 static errf_t *
 agent_sign_json(int fd, struct sshkey *pubkey, const char *subprop,
     json_object *obj)
 {
 	int rc;
 	errf_t *err;
-	json_object *sigprop = NULL, *sigsubprop;
-	char *sigb64 = NULL;
-	struct sshbuf *sigbuf = NULL, *tbsbuf = NULL;
+	struct json_sign_ctx *ctx = NULL;
+	struct sshbuf *sigbuf = NULL, *tbsbuf;
 	uint8_t *sig = NULL;
 	size_t siglen;
 	const char *alg = NULL;
-	const char *tmp;
 
 	if (pubkey->type == KEY_RSA)
 		alg = "rsa-sha2-256";
 
-	tbsbuf = sshbuf_new();
-	if (tbsbuf == NULL) {
-		err = errfno("sshbuf_new", errno, NULL);
+	ctx = json_sign_new();
+	if (ctx == NULL) {
+		err = ERRF_NOMEM;
 		goto out;
 	}
 
-	sigprop = json_object_object_get(obj, "signature");
-	if (sigprop == NULL) {
-		if (subprop != NULL)
-			sigprop = json_object_new_object();
-		else
-			sigprop = json_object_new_string("");
-	} else {
-		VERIFY(json_object_is_type(sigprop, json_type_object));
-		json_object_get(sigprop);
-		json_object_object_del(obj, "signature");
-	}
-	VERIFY(sigprop != NULL);
-
-	if (subprop == NULL) {
-		sigsubprop = sigprop;
-	} else {
-		sigsubprop = json_object_object_get(sigprop, subprop);
-		if (sigsubprop == NULL) {
-			sigsubprop = json_object_new_string("");
-			VERIFY(sigsubprop != NULL);
-			rc = json_object_object_add(sigprop, subprop,
-			    sigsubprop);
-			if (rc != 0) {
-				err = jsonerrf("json_object_object_add");
-				goto out;
-			}
-		}
-		VERIFY(json_object_is_type(sigsubprop, json_type_string));
-	}
-
-	tmp = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
-
-	if ((rc = sshbuf_put_cstring8(tbsbuf, "piv-ca-json-signature")) ||
-	    (rc = sshbuf_put_cstring(tbsbuf, tmp))) {
-		err = ssherrf("sshbuf_put_cstring", rc);
+	err = json_sign_begin(ctx, obj, subprop);
+	if (err != ERRF_OK)
 		goto out;
-	}
+
+	tbsbuf = json_sign_get_tbs(ctx);
 
 	rc = ssh_agent_sign(fd, pubkey, &sig, &siglen, sshbuf_ptr(tbsbuf),
 	    sshbuf_len(tbsbuf), alg, 0);
@@ -350,35 +582,17 @@ agent_sign_json(int fd, struct sshkey *pubkey, const char *subprop,
 		goto out;
 	}
 
-	sigb64 = sshbuf_dtob64_string(sigbuf, 0);
-	if (sigb64 == NULL) {
-		err = errf("ConversionError", NULL, "Failed to convert "
-		    "signature value to base64");
+	err = json_sign_set_signature(ctx, sigbuf);
+	if (err != ERRF_OK)
 		goto out;
-	}
 
-	rc = json_object_set_string(sigsubprop, sigb64);
-	if (rc != 1) {
-		err = jsonerrf("json_object_set_string");
-		goto out;
-	}
-
-	rc = json_object_object_add(obj, "signature", sigprop);
-	if (rc != 0) {
-		err = jsonerrf("json_object_object_add");
-		goto out;
-	}
-	/* json_object_object_add takes ownership */
-	sigprop = NULL;
-
-	err = ERRF_OK;
+	err = json_sign_finish(ctx);
+	ctx = NULL;
 
 out:
-	free(sigb64);
 	sshbuf_free(sigbuf);
 	free(sig);
-	sshbuf_free(tbsbuf);
-	json_object_put(sigprop);
+	json_sign_abort(ctx);
 	return (err);
 }
 
@@ -388,14 +602,12 @@ piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
 {
 	int rc;
 	errf_t *err;
-	json_object *sigprop = NULL, *sigsubprop;
-	char *sigb64 = NULL;
+	struct json_sign_ctx *ctx = NULL;
 	struct sshbuf *sigbuf = NULL, *tbsbuf = NULL;
 	enum sshdigest_types hashalg;
 	struct sshkey *pubkey;
 	uint8_t *sig = NULL;
 	size_t siglen;
-	const char *tmp;
 
 	pubkey = piv_slot_pubkey(slot);
 	if (pubkey == NULL) {
@@ -406,49 +618,17 @@ piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
 
 	hashalg = best_sign_alg_for_key(pubkey);
 
-	tbsbuf = sshbuf_new();
-	if (tbsbuf == NULL) {
-		err = errfno("sshbuf_new", errno, NULL);
+	ctx = json_sign_new();
+	if (ctx == NULL) {
+		err = ERRF_NOMEM;
 		goto out;
 	}
 
-	sigprop = json_object_object_get(obj, "signature");
-	if (sigprop == NULL) {
-		if (subprop != NULL)
-			sigprop = json_object_new_object();
-		else
-			sigprop = json_object_new_string("");
-	} else {
-		VERIFY(json_object_is_type(sigprop, json_type_object));
-		json_object_get(sigprop);
-		json_object_object_del(obj, "signature");
-	}
-	VERIFY(sigprop != NULL);
-
-	if (subprop == NULL) {
-		sigsubprop = sigprop;
-	} else {
-		sigsubprop = json_object_object_get(sigprop, subprop);
-		if (sigsubprop == NULL) {
-			sigsubprop = json_object_new_string("");
-			VERIFY(sigsubprop != NULL);
-			rc = json_object_object_add(sigprop, subprop,
-			    sigsubprop);
-			if (rc != 0) {
-				err = jsonerrf("json_object_object_add");
-				goto out;
-			}
-		}
-		VERIFY(json_object_is_type(sigsubprop, json_type_string));
-	}
-
-	tmp = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
-
-	if ((rc = sshbuf_put_cstring8(tbsbuf, "piv-ca-json-signature")) ||
-	    (rc = sshbuf_put_cstring(tbsbuf, tmp))) {
-		err = ssherrf("sshbuf_put_cstring", rc);
+	err = json_sign_begin(ctx, obj, subprop);
+	if (err != ERRF_OK)
 		goto out;
-	}
+
+	tbsbuf = json_sign_get_tbs(ctx);
 
 	err = piv_sign(tkn, slot, sshbuf_ptr(tbsbuf), sshbuf_len(tbsbuf),
 	    &hashalg, &sig, &siglen);
@@ -470,35 +650,17 @@ piv_sign_json(struct piv_token *tkn, struct piv_slot *slot,
 		goto out;
 	}
 
-	sigb64 = sshbuf_dtob64_string(sigbuf, 0);
-	if (sigb64 == NULL) {
-		err = errf("ConversionError", NULL, "Failed to convert "
-		    "signature value to base64");
+	err = json_sign_set_signature(ctx, sigbuf);
+	if (err != ERRF_OK)
 		goto out;
-	}
 
-	rc = json_object_set_string(sigsubprop, sigb64);
-	if (rc != 1) {
-		err = jsonerrf("json_object_set_string");
-		goto out;
-	}
-
-	rc = json_object_object_add(obj, "signature", sigprop);
-	if (rc != 0) {
-		err = jsonerrf("json_object_object_add");
-		goto out;
-	}
-	/* json_object_object_add takes ownership */
-	sigprop = NULL;
-
-	err = ERRF_OK;
+	err = json_sign_finish(ctx);
+	ctx = NULL;
 
 out:
 	free(sig);
-	free(sigb64);
 	sshbuf_free(sigbuf);
-	sshbuf_free(tbsbuf);
-	json_object_put(sigprop);
+	json_sign_abort(ctx);
 	return (err);
 }
 
@@ -506,60 +668,32 @@ static errf_t *
 verify_json(struct sshkey *pubkey, const char *subprop, json_object *obj)
 {
 	int rc;
-	const char *tmp;
-	json_object *sigprop = NULL, *sigsubprop;
 	errf_t *err;
-	struct sshbuf *sigbuf = NULL, *tbsbuf = NULL;
+	struct sshbuf *sigbuf, *tbsbuf;
+	struct json_sign_ctx *ctx = NULL;
 
-	sigprop = json_object_object_get(obj, "signature");
-	if (sigprop == NULL) {
-		err = errf("JSONSignatureError", NULL, "No 'signature' "
-		    "property found in JSON object");
+	ctx = json_sign_new();
+	if (ctx == NULL) {
+		err = ERRF_NOMEM;
 		goto out;
 	}
-	json_object_get(sigprop);
 
-	if (subprop == NULL) {
-		sigsubprop = sigprop;
-	} else {
-		sigsubprop = json_object_object_get(sigprop, subprop);
-		if (sigsubprop == NULL) {
-			err = errf("JSONSignatureError", NULL, "No '%s' sub-"
-			    "property found in signature of JSON object",
-			    subprop);
+	err = json_sign_begin(ctx, obj, subprop);
+	if (err != ERRF_OK)
+		goto out;
+
+	tbsbuf = json_sign_get_tbs(ctx);
+	sigbuf = json_sign_get_signature(ctx);
+
+	if (sigbuf == NULL) {
+		const char *v = getenv("PIVY_CA_UNSIGNED");
+		if (v == NULL ||
+		    strcasecmp(v, "yes-i-really-want-no-security") != 0) {
+			err = errf("InvalidSignature", NULL, "No JSON "
+			    "signature policy found on CA configuration");
 			goto out;
 		}
-	}
-
-	tmp = json_object_get_string(sigsubprop);
-	if (tmp == NULL) {
-		err = errf("JSONSignatureError", NULL, "Property 'signature' "
-		    "is null");
-		goto out;
-	}
-
-	sigbuf = sshbuf_new();
-	if (sigbuf == NULL) {
-		err = errfno("sshbuf_new", errno, NULL);
-		goto out;
-	}
-	rc = sshbuf_b64tod(sigbuf, tmp);
-	if (rc != 0) {
-		err = ssherrf("sshbuf_b64tod", rc);
-		goto out;
-	}
-
-	json_object_object_del(obj, "signature");
-	tmp = json_object_to_json_string_ext(obj, JSON_C_TO_STRING_PLAIN);
-
-	tbsbuf = sshbuf_new();
-	if (tbsbuf == NULL) {
-		err = errfno("sshbuf_new", errno, NULL);
-		goto out;
-	}
-	if ((rc = sshbuf_put_cstring8(tbsbuf, "piv-ca-json-signature")) ||
-	    (rc = sshbuf_put_cstring(tbsbuf, tmp))) {
-		err = ssherrf("sshbuf_put_cstring", rc);
+		err = ERRF_OK;
 		goto out;
 	}
 
@@ -572,21 +706,11 @@ verify_json(struct sshkey *pubkey, const char *subprop, json_object *obj)
 			err = ssherrf("sshkey_verify", rc);
 			goto out;
 		}
+		err = ERRF_OK;
 	}
 
-	rc = json_object_object_add(obj, "signature", sigprop);
-	if (rc != 0) {
-		err = jsonerrf("json_object_object_add");
-		goto out;
-	}
-	/* json_object_object_add takes ownership */
-	sigprop = NULL;
-
-	err = ERRF_OK;
 out:
-	sshbuf_free(sigbuf);
-	sshbuf_free(tbsbuf);
-	json_object_put(sigprop);
+	json_sign_abort(ctx);
 	return (err);
 }
 
@@ -614,9 +738,16 @@ ca_close(struct ca *ca)
 
 	free(ca->ca_base_path);
 	free(ca->ca_slug);
+	free(ca->ca_guidhex);
+	ebox_free(ca->ca_pin_ebox);
+	ebox_free(ca->ca_old_pin_ebox);
+	ebox_free(ca->ca_backup_ebox);
+	ebox_free(ca->ca_puk_ebox);
+	ebox_free(ca->ca_admin_ebox);
 	sshkey_free(ca->ca_cak);
 	X509_NAME_free(ca->ca_dn);
 	json_object_put(ca->ca_vars);
+	json_object_put(ca->ca_req_vars);
 	X509_free(ca->ca_cert);
 	sshkey_free(ca->ca_pubkey);
 	for (cet = ca->ca_ebox_tpls; cet != NULL; cet = ncet) {
@@ -768,9 +899,73 @@ ca_cert_tpl_free(struct ca_cert_tpl *tpl)
 	VERIFY(tpl->cct_prev == NULL);
 	free(tpl->cct_help);
 	free(tpl->cct_name);
-	if (tpl->cct_vars != NULL)
-		json_object_put(tpl->cct_vars);
+	json_object_put(tpl->cct_vars);
+	json_object_put(tpl->cct_req_vars);
 	free(tpl);
+}
+
+static errf_t *
+unparse_cert_template(struct ca *ca, struct ca_cert_tpl *tpl, json_object *robj)
+{
+	json_object *obj, *prop;
+
+	obj = json_object_new_object();
+	VERIFY(obj != NULL);
+
+	if (tpl->cct_help != NULL && strlen(tpl->cct_help) > 0) {
+		prop = json_object_new_string(tpl->cct_help);
+		VERIFY(prop != NULL);
+		json_object_object_add(obj, "help", prop);
+	}
+
+	if (tpl->cct_flags & CCTF_SELF_SIGNED) {
+		prop = json_object_new_boolean(1);
+		VERIFY(prop != NULL);
+		json_object_object_add(obj, "self_signed", prop);
+	}
+	if (tpl->cct_flags & CCTF_ALLOW_REQS) {
+		prop = json_object_new_boolean(1);
+		VERIFY(prop != NULL);
+		json_object_object_add(obj, "allow_reqs", prop);
+	}
+	if (tpl->cct_flags & CCTF_COPY_DN) {
+		prop = json_object_new_boolean(1);
+		VERIFY(prop != NULL);
+		json_object_object_add(obj, "copy_dn", prop);
+	}
+	if (tpl->cct_flags & CCTF_COPY_KP) {
+		prop = json_object_new_boolean(1);
+		VERIFY(prop != NULL);
+		json_object_object_add(obj, "copy_kp", prop);
+	}
+	if (tpl->cct_flags & CCTF_COPY_SAN) {
+		prop = json_object_new_boolean(1);
+		VERIFY(prop != NULL);
+		json_object_object_add(obj, "copy_san", prop);
+	}
+	if (tpl->cct_flags & CCTF_COPY_OTHER_EXTS) {
+		prop = json_object_new_boolean(1);
+		VERIFY(prop != NULL);
+		json_object_object_add(obj, "copy_other_exts", prop);
+	}
+
+	prop = json_object_new_string(cert_tpl_name(tpl->cct_tpl));
+	VERIFY(prop != NULL);
+	json_object_object_add(obj, "template", prop);
+
+	if (tpl->cct_vars != NULL) {
+		json_object_get(tpl->cct_vars);
+		json_object_object_add(obj, "variables", tpl->cct_vars);
+	}
+	if (tpl->cct_req_vars != NULL) {
+		json_object_get(tpl->cct_req_vars);
+		json_object_object_add(obj, "require_variables",
+		    tpl->cct_req_vars);
+	}
+
+	json_object_object_add(robj, tpl->cct_name, obj);
+
+	return (ERRF_OK);
 }
 
 static errf_t *
@@ -827,6 +1022,9 @@ parse_cert_template(struct ca *ca, const char *name, json_object *robj)
 	tpl->cct_vars = json_object_object_get(robj, "variables");
 	if (tpl->cct_vars != NULL)
 		json_object_get(tpl->cct_vars);
+	tpl->cct_req_vars = json_object_object_get(robj, "require_variables");
+	if (tpl->cct_req_vars != NULL)
+		json_object_get(tpl->cct_req_vars);
 
 	tpl->cct_next = ca->ca_cert_tpls;
 	if (ca->ca_cert_tpls != NULL)
@@ -864,8 +1062,8 @@ ca_token_slot_tpl_free(struct ca_token_slot_tpl *tpl)
 		return;
 	VERIFY(tpl->ctst_prev == NULL);
 	VERIFY(tpl->ctst_next == NULL);
-	if (tpl->ctst_vars != NULL)
-		json_object_put(tpl->ctst_vars);
+	json_object_put(tpl->ctst_vars);
+	json_object_put(tpl->ctst_req_vars);
 	ca_cert_tpl_free(tpl->ctst_ctpl_cache);
 	free(tpl);
 }
@@ -968,6 +1166,9 @@ parse_token_slot_template(struct ca_token_tpl *ctt, enum piv_slotid slotid,
 	tpl->ctst_vars = json_object_object_get(robj, "variables");
 	if (tpl->ctst_vars != NULL)
 		json_object_get(tpl->ctst_vars);
+	tpl->ctst_req_vars = json_object_object_get(robj, "require_variables");
+	if (tpl->ctst_req_vars != NULL)
+		json_object_get(tpl->ctst_req_vars);
 
 	tpl->ctst_next = ctt->ctt_slots;
 	if (ctt->ctt_slots != NULL)
@@ -1084,6 +1285,9 @@ parse_token_template(struct ca *ca, const char *name, json_object *robj)
 	tpl->ctt_vars = json_object_object_get(robj, "variables");
 	if (tpl->ctt_vars != NULL)
 		json_object_get(tpl->ctt_vars);
+	tpl->ctt_req_vars = json_object_object_get(robj, "require_variables");
+	if (tpl->ctt_req_vars != NULL)
+		json_object_get(tpl->ctt_req_vars);
 
 	tpl->ctt_next = ca->ca_token_tpls;
 	if (ca->ca_token_tpls != NULL)
@@ -1091,6 +1295,133 @@ parse_token_template(struct ca *ca, const char *name, json_object *robj)
 	ca->ca_token_tpls = tpl;
 
 	return (ERRF_OK);
+}
+
+static char *
+calc_cert_slug(X509_NAME *subj, const STACK_OF(X509_EXTENSION) *exts,
+    BIGNUM *serial)
+{
+	struct sshbuf *buf;
+	X509_NAME_ENTRY *ent;
+	ASN1_STRING *val;
+	int nid;
+	uint i, j, max, gmax;
+	const unsigned char *p;
+	int run = 0;
+	char *ret;
+	X509_EXTENSION *ext;
+	ASN1_OBJECT *obj;
+	STACK_OF(GENERAL_NAME) *gns;
+	GENERAL_NAME *gn;
+	void *v;
+	int ptype;
+	char *serialhex = NULL;
+
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+
+	/* First, see if we can find a commonName (CN) attribute */
+	max = X509_NAME_entry_count(subj);
+	for (i = 0; i < max; ++i) {
+		ent = X509_NAME_get_entry(subj, i);
+
+		obj = X509_NAME_ENTRY_get_object(ent);
+		val = X509_NAME_ENTRY_get_data(ent);
+
+		nid = OBJ_obj2nid(obj);
+		if (nid == NID_commonName)
+			goto done;
+	}
+
+	/* Otherwise look through extensions for a SAN */
+	max = 0;
+	if (exts != NULL)
+		max = sk_X509_EXTENSION_num(exts);
+	for (i = 0; i < max; ++i) {
+		ext = (X509_EXTENSION *)sk_X509_EXTENSION_value(exts, i);
+		obj = X509_EXTENSION_get_object(ext);
+		nid = OBJ_obj2nid(obj);
+		if (nid != NID_subject_alt_name)
+			continue;
+		gns = X509V3_EXT_d2i(ext);
+		gmax = sk_GENERAL_NAME_num(gns);
+
+		for (j = 0; j < gmax; ++j) {
+			gn = sk_GENERAL_NAME_value(gns, j);
+			v = GENERAL_NAME_get0_value(gn, &ptype);
+			switch (ptype) {
+			case GEN_EMAIL:
+			case GEN_DNS:
+				val = v;
+				goto done;
+			}
+		}
+	}
+
+done:
+	p = ASN1_STRING_get0_data(val);
+	for (j = 0; j < ASN1_STRING_length(val); ++j) {
+		char c = p[j];
+		if ((c >= 'a' && c <= 'z') ||
+		    (c >= 'A' && c <= 'Z') ||
+		    (c >= '0' && c <= '9')) {
+			run = 0;
+			VERIFY0(sshbuf_put_u8(buf, c));
+			continue;
+		}
+		if (run)
+			continue;
+		run = 1;
+		VERIFY0(sshbuf_put_u8(buf, '-'));
+	}
+
+	serialhex = BN_bn2hex(serial);
+	VERIFY(serialhex != NULL);
+	VERIFY3U(strlen(serialhex), >, 9);
+	serialhex[9] = '\0';
+	VERIFY0(sshbuf_putf(buf, "-%s", serialhex));
+
+	ret = sshbuf_dup_string(buf);
+	sshbuf_free(buf);
+	free(serialhex);
+	return (ret);
+}
+
+static char *
+calc_cert_slug_X509(X509 *cert)
+{
+	X509_NAME *subj;
+	const STACK_OF(X509_EXTENSION) *exts;
+	ASN1_INTEGER *asn1_serial;
+	BIGNUM *serial;
+	char *ret;
+
+	asn1_serial = X509_get_serialNumber(cert);
+	serial = ASN1_INTEGER_to_BN(asn1_serial, NULL);
+
+	exts = X509_get0_extensions(cert);
+
+	subj = X509_get_subject_name(cert);
+
+	ret = calc_cert_slug(subj, exts, serial);
+
+	BN_free(serial);
+	return (ret);
+}
+
+static char *
+calc_cert_slug_X509_REQ(X509_REQ *req, BIGNUM *serial)
+{
+	X509_NAME *subj;
+	STACK_OF(X509_EXTENSION) *exts;
+	char *ret;
+
+	exts = X509_REQ_get_extensions(req);
+	subj = X509_REQ_get_subject_name(req);
+
+	ret = calc_cert_slug(subj, exts, serial);
+
+	return (ret);
 }
 
 static void
@@ -1165,6 +1496,21 @@ read_uri_array(json_object *array, struct ca_uri **head)
 	return (ERRF_OK);
 }
 
+static errf_t *
+write_uri_array(json_object *array, struct ca_uri *head)
+{
+	json_object *obj;
+	struct ca_uri *u;
+
+	for (u = head; u != NULL; u = u->cu_next) {
+		obj = json_object_new_string(u->cu_uri);
+		VERIFY(obj != NULL);
+		json_object_array_add(array, obj);
+	}
+
+	return (ERRF_OK);
+}
+
 errf_t *
 ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type, const char *tplname)
 {
@@ -1179,6 +1525,7 @@ ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type, const char *tplname)
 
 	switch (type) {
 	case CA_EBOX_PIN:
+	case CA_EBOX_OLD_PIN:
 		ptr = &ca->ca_pin_tpl;
 		break;
 	case CA_EBOX_PUK:
@@ -1270,8 +1617,8 @@ cana_initial_puk(struct ca_new_args *cna, const char *puk)
 }
 
 void
-cana_initial_admin_key(struct ca_new_args *cna, enum piv_alg alg, uint8_t *key,
-    size_t keylen)
+cana_initial_admin_key(struct ca_new_args *cna, enum piv_alg alg,
+    const uint8_t *key, size_t keylen)
 {
 	freezero(cna->cna_init_admin, cna->cna_init_admin_len);
 	cna->cna_init_admin_alg = alg;
@@ -1450,12 +1797,12 @@ out:
 }
 
 static errf_t *
-ca_write_pukpin(struct ca *ca, enum piv_pin type, const char *pin)
+ca_write_pukpin(struct ca *ca, enum piv_pin type, boolean_t old,
+    const char *pin)
 {
 	struct sshbuf *buf = NULL;
 	struct ebox *box = NULL;
 	size_t done;
-	int rc;
 	FILE *baf = NULL;
 	char fname[PATH_MAX];
 	errf_t *err;
@@ -1473,6 +1820,8 @@ ca_write_pukpin(struct ca *ca, enum piv_pin type, const char *pin)
 	case PIV_GLOBAL_PIN:
 		cet = ca->ca_pin_tpl;
 		typeslug = "pin";
+		if (old)
+			typeslug = "old-pin";
 		break;
 	case PIV_PUK:
 		cet = ca->ca_puk_tpl;
@@ -1482,7 +1831,8 @@ ca_write_pukpin(struct ca *ca, enum piv_pin type, const char *pin)
 		VERIFY(0);
 	}
 
-	err = ebox_create(cet->cet_tpl, pin, strlen(pin), NULL, 0, &box);
+	err = ebox_create(cet->cet_tpl, (const uint8_t *)pin, strlen(pin),
+	    NULL, 0, &box);
 	if (err != ERRF_OK) {
 		goto out;
 	}
@@ -1526,6 +1876,99 @@ out:
 	ebox_free(box);
 	if (baf != NULL)
 		fclose(baf);
+	return (err);
+}
+
+errf_t *
+ca_rotate_pin(struct ca_session *sess)
+{
+	struct ca *ca = sess->cs_ca;
+	char *newpin = NULL;
+	struct ca_session_direct *csd = &sess->cs_direct;
+	errf_t *err;
+	boolean_t in_txn = B_FALSE;
+
+	if (sess->cs_type != CA_SESSION_DIRECT) {
+		err = errf("SessionTypeError", NULL, "A direct session (not "
+		    "via pivy-agent) is required for PIN rotation");
+		goto out;
+	}
+
+	if (csd->csd_pin == NULL) {
+		err = errf("CAAuthError", NULL, "CA session is not "
+		    "currently authenticated");
+		goto out;
+	}
+
+	newpin = generate_pin();
+
+	err = piv_txn_begin(csd->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("PINRotateError", err, "Failed to open transaction "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+	in_txn = B_TRUE;
+
+	err = piv_select(csd->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("PINRotateError", err, "Failed to select PIV applet "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_auth_key(csd->csd_token, csd->csd_cakslot, ca->ca_cak);
+	if (err != ERRF_OK) {
+		err = errf("PINRotateError", err, "PIV CAK check failed "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_verify_pin(csd->csd_token, csd->csd_pintype, csd->csd_pin,
+	    NULL, B_FALSE);
+	if (err != ERRF_OK) {
+		err = errf("PINRotateError", err, "Failed to verify PIN "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = ca_write_pukpin(ca, PIV_PIN, B_TRUE, csd->csd_pin);
+	if (err != ERRF_OK) {
+		err = errf("PINRotateError", err,
+		    "Failed to write old PIN backup ebox");
+		goto out;
+	}
+
+	ebox_free(ca->ca_pin_ebox);
+	ca->ca_pin_ebox = NULL;
+
+	err = ca_write_pukpin(ca, PIV_PIN, B_FALSE, newpin);
+	if (err != ERRF_OK) {
+		err = errf("PINRotateError", err,
+		    "Failed to write new PIN ebox");
+		goto out;
+	}
+
+	err = piv_change_pin(csd->csd_token, csd->csd_pintype, csd->csd_pin,
+	    newpin);
+	if (err != ERRF_OK) {
+		err = errf("PINRotateError", err, "Failed to change PIN "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	explicit_bzero(csd->csd_pin, strlen(csd->csd_pin));
+	free(csd->csd_pin);
+
+	csd->csd_pin = newpin;
+	newpin = NULL;
+
+out:
+	if (in_txn)
+		piv_txn_end(csd->csd_token);
+	if (newpin != NULL)
+		explicit_bzero(newpin, strlen(newpin));
+	free(newpin);
 	return (err);
 }
 
@@ -1576,42 +2019,52 @@ out:
 static errf_t *
 ca_gen_ebox_assigns(struct ca *ca, json_object **robjp)
 {
-	json_object *robj = NULL, *obj;
-	struct ca_ebox_tpl *cet;
+	json_object *robj = NULL, *tobj, *obj;
 	errf_t *err;
 
 	robj = json_object_new_object();
 	VERIFY(robj != NULL);
 
 	if (ca->ca_pin_tpl != NULL) {
+		tobj = json_object_new_object();
+		VERIFY(tobj != NULL);
 		obj = json_object_new_string(ca->ca_pin_tpl->cet_name);
 		VERIFY(obj != NULL);
-		json_object_object_add(robj, "pin", obj);
+		json_object_object_add(tobj, "template", obj);
+		json_object_object_add(robj, "pin", tobj);
 	}
 
 	if (ca->ca_backup_tpl != NULL) {
+		tobj = json_object_new_object();
+		VERIFY(tobj != NULL);
 		obj = json_object_new_string(ca->ca_backup_tpl->cet_name);
 		VERIFY(obj != NULL);
-		json_object_object_add(robj, "backup", obj);
+		json_object_object_add(tobj, "template", obj);
+		json_object_object_add(robj, "backup", tobj);
 	}
 
 	if (ca->ca_puk_tpl != NULL) {
+		tobj = json_object_new_object();
+		VERIFY(tobj != NULL);
 		obj = json_object_new_string(ca->ca_puk_tpl->cet_name);
 		VERIFY(obj != NULL);
-		json_object_object_add(robj, "puk", obj);
+		json_object_object_add(tobj, "template", obj);
+		json_object_object_add(robj, "puk", tobj);
 	}
 
 	if (ca->ca_admin_tpl != NULL) {
+		tobj = json_object_new_object();
+		VERIFY(tobj != NULL);
 		obj = json_object_new_string(ca->ca_admin_tpl->cet_name);
 		VERIFY(obj != NULL);
-		json_object_object_add(robj, "admin", obj);
+		json_object_object_add(tobj, "template", obj);
+		json_object_object_add(robj, "admin", tobj);
 	}
 
 	*robjp = robj;
 	robj = NULL;
 	err = ERRF_OK;
 
-out:
 	json_object_put(robj);
 	return (err);
 }
@@ -1633,8 +2086,6 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	struct piv_chuid *chuid = NULL;
 	struct piv_fascn *fascn = NULL;
 	struct piv_pinfo *pinfo = NULL;
-	struct ebox_stream *kbackup = NULL;
-	struct ebox_stream_chunk *chunk;
 	struct sshbuf *buf = NULL;
 	struct piv_slot *caslot, *slot;
 	X509 *cert = NULL;
@@ -1652,8 +2103,9 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	struct sshkey *cak;
 	struct cert_var_scope *scope;
 	json_object *robj = NULL, *obj = NULL;
-	char *dnstr = NULL, *guidhex = NULL;
+	char *dnstr = NULL;
 	const char *jsonstr;
+	struct ca_session sess;
 
 	ca = calloc(1, sizeof(struct ca));
 	if (ca == NULL)
@@ -1667,7 +2119,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 
 	rc = mkdir(path, 0700);
 	if (rc != 0 && errno != EEXIST) {
-		err = errfno("mkdir(%s)", rc, path);
+		err = errfno("mkdir", rc, "%s", path);
 		goto out;
 	}
 
@@ -1695,6 +2147,11 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	ca->ca_puk_tpl = args->cna_puk_tpl;
 
 	arc4random_buf(ca->ca_guid, sizeof (ca->ca_guid));
+	buf = sshbuf_from(ca->ca_guid, sizeof (ca->ca_guid));
+	VERIFY(buf != NULL);
+	ca->ca_guidhex = sshbuf_dtob16(buf);
+	sshbuf_free(buf);
+	buf = NULL;
 
 	nadmin_key = malloc_conceal(args->cna_init_admin_len);
 	if (nadmin_key == NULL) {
@@ -1752,10 +2209,10 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	if (err != ERRF_OK)
 		goto out;
 
-	err = ca_write_pukpin(ca, PIV_PIN, newpin);
+	err = ca_write_pukpin(ca, PIV_PIN, B_FALSE, newpin);
 	if (err != ERRF_OK)
 		goto out;
-	err = ca_write_pukpin(ca, PIV_PUK, newpuk);
+	err = ca_write_pukpin(ca, PIV_PUK, B_FALSE, newpuk);
 	if (err != ERRF_OK)
 		goto out;
 
@@ -1800,6 +2257,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 		err = ssherrf("sshkey_demote", rc);
 		goto out;
 	}
+	ca->ca_pubkey = pubkey;
 
 	err = ca_write_key_backup(ca, cakey);
 	if (err != ERRF_OK)
@@ -1873,6 +2331,10 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 
 	flags = PIV_COMP_NONE;
 	err = piv_write_cert(tkn, PIV_SLOT_SIGNATURE, cdata, cdlen, flags);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = piv_read_cert(tkn, PIV_SLOT_SIGNATURE);
 	if (err != ERRF_OK)
 		goto out;
 
@@ -1960,6 +2422,10 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	if (err != ERRF_OK)
 		goto out;
 
+	err = piv_read_cert(tkn, PIV_SLOT_CARD_AUTH);
+	if (err != ERRF_OK)
+		goto out;
+
 	ca->ca_cak = cak;
 	cak = NULL;
 
@@ -1973,9 +2439,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	VERIFY(obj != NULL);
 	json_object_object_add(robj, "dn", obj);
 
-	buf = sshbuf_from(ca->ca_guid, sizeof (ca->ca_guid));
-	guidhex = sshbuf_dtob16(buf);
-	obj = json_object_new_string(guidhex);
+	obj = json_object_new_string(ca->ca_guidhex);
 	VERIFY(obj != NULL);
 	json_object_object_add(robj, "guid", obj);
 
@@ -2000,6 +2464,11 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	VERIFY(obj != NULL);
 	json_object_object_add(robj, "ocsp", obj);
 
+	obj = json_object_new_string("1w");
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "crl_lifetime", obj);
+	ca->ca_crl_lifetime = 7*24*3600;
+
 	err = ca_gen_ebox_tpls(ca, &obj);
 	if (err != ERRF_OK)
 		goto out;
@@ -2022,11 +2491,15 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	VERIFY(obj != NULL);
 	json_object_object_add(robj, "variables", obj);
 
+	obj = json_object_new_object();
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "require_variables", obj);
+
 	err = piv_verify_pin(tkn, PIV_PIN, newpin, NULL, B_FALSE);
 	if (err != ERRF_OK)
 		goto out;
 
-	err = piv_sign_json(tkn, caslot, NULL, robj);
+	err = piv_sign_json(tkn, caslot, "ca", robj);
 	if (err != ERRF_OK)
 		goto out;
 
@@ -2043,6 +2516,25 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	fclose(caf);
 	caf = NULL;
 
+	bzero(&sess, sizeof (sess));
+	sess.cs_ca = ca;
+	sess.cs_type = CA_SESSION_DIRECT;
+	sess.cs_direct.csd_token = tkn;
+	sess.cs_direct.csd_slot = caslot;
+	sess.cs_direct.csd_cakslot = slot;
+	sess.cs_direct.csd_pin = newpin;
+	sess.cs_direct.csd_pintype = PIV_PIN;
+
+	piv_txn_end(tkn);
+
+	err = ca_log_init(ca, &sess, serial, dnstr);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = ca_log_new_cert(ca, &sess, "ca-cak", NULL, cert);
+	if (err != ERRF_OK)
+		goto out;
+
 	*out = ca;
 	ca = NULL;
 	err = ERRF_OK;
@@ -2053,7 +2545,6 @@ out:
 	sshbuf_free(buf);
 	scope_free_root(scope);
 	sshkey_free(cakey);
-	sshkey_free(pubkey);
 	sshkey_free(cak);
 	X509_free(cert);
 	OPENSSL_free(cdata);
@@ -2062,7 +2553,6 @@ out:
 	piv_pinfo_free(pinfo);
 	json_object_put(robj);
 	free(dnstr);
-	free(guidhex);
 	BN_free(serial);
 	ASN1_INTEGER_free(serial_asn1);
 	if (newpin != NULL)
@@ -2078,6 +2568,132 @@ out:
 		fclose(crtf);
 	cana_free(args);
 	return (err);
+}
+
+static errf_t *
+load_ebox_file(struct ca *ca, const char *typeslug, struct ebox **outp)
+{
+	errf_t *err;
+	char fname[PATH_MAX];
+	FILE *f = NULL;
+	size_t buflen;
+	uint8_t *buf = NULL;
+	struct sshbuf *sbuf = NULL;
+	struct stat st;
+	struct ebox *box = NULL;
+	int rc;
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".", sizeof (fname));
+	strlcat(fname, typeslug, sizeof (fname));
+	strlcat(fname, ".ebox", sizeof (fname));
+
+	f = fopen(fname, "r");
+	if (f == NULL) {
+		err = errf("EboxError", errfno("fopen", errno, NULL),
+		    "Failed to open CA ebox file '%s' for reading",
+		    fname);
+		goto out;
+	}
+
+	bzero(&st, sizeof (st));
+	rc = fstat(fileno(f), &st);
+	if (rc != 0) {
+		err = errfno("stat", errno, "on '%s'", fname);
+		goto out;
+	}
+
+	if (S_ISDIR(st.st_mode) || S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode)
+#if defined(S_ISSOCK)
+	    || S_ISSOCK(st.st_mode)
+#endif
+	    ) {
+		err = errf("InvalidFileType", NULL, "file '%s' is not "
+		    "a regular file", fname);
+		goto out;
+	}
+
+	if (st.st_size < 1) {
+		err = ERRF_OK;
+		goto out;
+	}
+
+	buflen = st.st_size;
+	buf = mmap(NULL, buflen, PROT_READ, MAP_PRIVATE, fileno(f), 0);
+	if (buf == MAP_FAILED) {
+		err = errf("EboxError", errfno("mmap", errno, NULL),
+		    "Failed to open CA ebox file '%s' for reading",
+		    fname);
+		goto out;
+	}
+
+	sbuf = sshbuf_from(buf, buflen);
+	if (sbuf == NULL) {
+		err = errf("EboxError",
+		    ssherrf("sshbuf_from", SSH_ERR_ALLOC_FAIL),
+		    "Failed to open CA ebox file '%s' for reading",
+		    fname);
+		goto out;
+	}
+
+	err = sshbuf_get_ebox(sbuf, &box);
+	if (err != ERRF_OK) {
+		err = errf("EboxError", err,
+		    "Failed to read CA ebox from file '%s'", fname);
+		goto out;
+	}
+
+	*outp = box;
+	box = NULL;
+
+out:
+	if (buf != NULL)
+		munmap(buf, buflen);
+	if (f != NULL)
+		fclose(f);
+	sshbuf_free(sbuf);
+	ebox_free(box);
+	return (err);
+}
+
+struct ebox *
+ca_get_ebox(struct ca *ca, enum ca_ebox_type type)
+{
+	errf_t *err;
+	struct ebox **p;
+	const char *typeslug;
+
+	switch (type) {
+	case CA_EBOX_PIN:
+		p = &ca->ca_pin_ebox;
+		typeslug = "pin";
+		break;
+	case CA_EBOX_OLD_PIN:
+		p = &ca->ca_old_pin_ebox;
+		typeslug = "old-pin";
+		break;
+	case CA_EBOX_PUK:
+		p = &ca->ca_puk_ebox;
+		typeslug = "puk";
+		break;
+	case CA_EBOX_ADMIN_KEY:
+		p = &ca->ca_admin_ebox;
+		typeslug = "admin";
+		break;
+	case CA_EBOX_KEY_BACKUP:
+		VERIFY(0);
+	}
+
+	if (*p != NULL)
+		return (*p);
+
+	err = load_ebox_file(ca, typeslug, p);
+	if (err != ERRF_OK)
+		return (NULL);
+
+	return (*p);
 }
 
 errf_t *
@@ -2165,6 +2781,9 @@ ca_open(const char *path, struct ca **outca)
 	strlcat(fname, ca->ca_slug, sizeof (fname));
 	strlcat(fname, ".crt", sizeof (fname));
 
+	free(buf);
+	buf = NULL;
+
 	err = read_text_file(fname, &buf, &len);
 	if (err != ERRF_OK)
 		goto metaerr;
@@ -2191,7 +2810,31 @@ ca_open(const char *path, struct ca **outca)
 		goto metaerr;
 	}
 
-	err = verify_json(ca->ca_pubkey, NULL, robj);
+	rc = X509_NAME_cmp(X509_get_subject_name(ca->ca_cert), ca->ca_dn);
+	if (rc != 0) {
+		err = errf("NameMismatch", NULL, "CA cert DN and config DN "
+		    "do not match");
+		goto metaerr;
+	}
+
+	/*
+	 * Use the DN from the actual cert, to make sure we encode it exactly
+	 * the same way (e.g. IA5String vs UTF8String)
+	 */
+	X509_NAME_free(ca->ca_dn);
+	ca->ca_dn = X509_NAME_dup(X509_get_subject_name(ca->ca_cert));
+	VERIFY(ca->ca_dn != NULL);
+
+	/*
+	 * Check to see if the root cert has the CRL dist points extension on
+	 * it: if it does, we should place the IDP extension in CRLs. Otherwise
+	 * we must not insert it (OpenSSL will refuse to trust the CRLs).
+	 */
+	rc = X509_get_ext_by_NID(ca->ca_cert, NID_crl_distribution_points, -1);
+	if (rc != -1)
+		ca->ca_crls_want_idp = B_TRUE;
+
+	err = verify_json(ca->ca_pubkey, "ca", robj);
 	if (err != ERRF_OK) {
 		err = errf("CADataError", err, "Failed to validate CA "
 		    "configuration signature");
@@ -2217,11 +2860,8 @@ ca_open(const char *path, struct ca **outca)
 		    sshbuf_len(sbuf), sizeof (ca->ca_guid));
 		goto out;
 	}
-	rc = sshbuf_get(sbuf, ca->ca_guid, sizeof (ca->ca_guid));
-	if (rc != 0) {
-		err = ssherrf("sshbuf_get", rc);
-		goto out;
-	}
+	bcopy(sshbuf_ptr(sbuf), ca->ca_guid, sizeof (ca->ca_guid));
+	ca->ca_guidhex = sshbuf_dtob16(sbuf);
 
 	obj = json_object_object_get(robj, "cak");
 	if (obj == NULL) {
@@ -2251,6 +2891,20 @@ ca_open(const char *path, struct ca **outca)
 		err = errf("InvalidProperty", err, "CA JSON has invalid "
 		    "'crl' property: '%s'", json_object_get_string(obj));
 		goto out;
+	}
+
+	ca->ca_crl_lifetime = 7*24*3600;
+	obj = json_object_object_get(robj, "crl_lifetime");
+	if (obj != NULL) {
+		p = strdup(json_object_get_string(obj));
+		err = parse_lifetime(p, &ca->ca_crl_lifetime);
+		free(p);
+		if (err != ERRF_OK) {
+			err = errf("InvalidProperty", err, "CA JSON has "
+			    "invalid 'crl_lifetime' property: '%s'",
+			    json_object_get_string(obj));
+			goto out;
+		}
 	}
 
 	obj = json_object_object_get(robj, "ocsp");
@@ -2332,7 +2986,18 @@ ca_open(const char *path, struct ca **outca)
 
 	ca->ca_vars = json_object_object_get(robj, "variables");
 	if (ca->ca_vars != NULL)
-		json_object_put(ca->ca_vars);
+		json_object_get(ca->ca_vars);
+	ca->ca_req_vars = json_object_object_get(obj, "require_variables");
+	if (ca->ca_req_vars != NULL)
+		json_object_get(ca->ca_req_vars);
+
+	err = ca_log_verify(ca, NULL, NULL, NULL);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = load_ebox_file(ca, "pin", &ca->ca_pin_ebox);
+	if (err != ERRF_OK)
+		errf_free(err);
 
 	*outca = ca;
 	ca = NULL;
@@ -2368,6 +3033,24 @@ set_scope_from_json(struct cert_var_scope *scope, json_object *obj)
 	return (ERRF_OK);
 }
 
+static errf_t *
+set_reqs_from_json(struct cert_var_scope *scope, json_object *obj)
+{
+	json_object_iter iter;
+	struct cert_var *cv;
+	bzero(&iter, sizeof (iter));
+	json_object_object_foreachC(obj, iter) {
+		if (!json_object_get_boolean(iter.val))
+			continue;
+		cv = scope_lookup(scope, iter.key, 0);
+		if (cv == NULL)
+			continue;
+		cert_var_set_required(cv, REQUIRED_FOR_CERT);
+		cert_var_set_required(cv, REQUIRED_FOR_CERT_REQUEST);
+	}
+	return (ERRF_OK);
+}
+
 struct cert_var_scope *
 ca_make_scope(struct ca *ca, struct cert_var_scope *parent)
 {
@@ -2380,6 +3063,14 @@ ca_make_scope(struct ca *ca, struct cert_var_scope *parent)
 
 	if (ca->ca_vars != NULL) {
 		err = set_scope_from_json(sc, ca->ca_vars);
+		if (err != ERRF_OK) {
+			errf_free(err);
+			return (NULL);
+		}
+	}
+
+	if (ca->ca_req_vars != NULL) {
+		err = set_reqs_from_json(sc, ca->ca_req_vars);
 		if (err != ERRF_OK) {
 			errf_free(err);
 			return (NULL);
@@ -2509,7 +3200,1230 @@ ca_cert_tpl_make_scope(struct ca_cert_tpl *tpl, struct cert_var_scope *parent)
 		}
 	}
 
+	if (tpl->cct_req_vars != NULL) {
+		err = set_reqs_from_json(sc, tpl->cct_req_vars);
+		if (err != ERRF_OK) {
+			errf_free(err);
+			return (NULL);
+		}
+	}
+
 	return (sc);
+}
+
+errf_t *
+ca_log_verify(struct ca *ca, char **final_hash, log_iter_cb_t cb, void *cookie)
+{
+	FILE *logf;
+	char fname[PATH_MAX];
+	json_object *obj = NULL, *hobj;
+	struct stat st;
+	int rc;
+	errf_t *err;
+	size_t len, pos, lineno, llen;
+	char *buf;
+	const char *p;
+	enum json_tokener_error jerr;
+	struct json_tokener *tok = NULL;
+	struct sshbuf *ldigest = NULL, *tbsbuf = NULL, *hbuf = NULL;
+	const char *tmp;
+	uint8_t *rptr;
+	size_t rlen;
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".log", sizeof (fname));
+
+	hbuf = sshbuf_new();
+	if (hbuf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	ldigest = sshbuf_new();
+	if (ldigest == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	tbsbuf = sshbuf_new();
+	if (tbsbuf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	logf = fopen(fname, "r");
+	if (logf == NULL) {
+		err = errf("LogError", errfno("fopen", errno, NULL),
+		    "Failed to open CA log file '%s' for reading",
+		    fname);
+		goto out;
+	}
+
+	bzero(&st, sizeof (st));
+	rc = fstat(fileno(logf), &st);
+	if (rc != 0) {
+		err = errfno("stat", errno, "on '%s'", fname);
+		goto out;
+	}
+
+	if (S_ISDIR(st.st_mode) || S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode)
+#if defined(S_ISSOCK)
+	    || S_ISSOCK(st.st_mode)
+#endif
+	    ) {
+		err = errf("InvalidFileType", NULL, "file '%s' is not "
+		    "a regular file", fname);
+		goto out;
+	}
+
+	if (st.st_size < 1) {
+		err = ERRF_OK;
+		goto out;
+	}
+
+	len = st.st_size;
+	buf = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fileno(logf), 0);
+	if (buf == MAP_FAILED) {
+		err = errf("LogError", errfno("mmap", errno, NULL),
+		    "Failed to open CA log file '%s' for reading",
+		    fname);
+		goto out;
+	}
+
+	pos = 0;
+	lineno = 1;
+	while (buf[pos] == '\n' && pos < len) {
+		++pos;
+		++lineno;
+	}
+	do {
+		p = &buf[pos];
+		for (llen = 0; llen < len - pos; ++llen) {
+			if (p[llen] == '\n')
+				break;
+		}
+		tok = json_tokener_new();
+		if (tok == NULL) {
+			err = errfno("json_tokener_new", errno, NULL);
+			goto out;
+		}
+		obj = json_tokener_parse_ex(tok, p, llen);
+		jerr = json_tokener_get_error(tok);
+		if (jerr != json_tokener_success) {
+			err = errf("LogError",
+			    jtokerrf("json_tokener_parse_ex", jerr),
+			    "Failed to parse JSON object at line %zu",
+			    lineno);
+			goto out;
+		}
+		VERIFY(obj != NULL);
+		if (json_tokener_get_parse_end(tok) < llen) {
+			err = errf("LengthError", NULL, "JSON object at line "
+			    "%zu ended after %zu bytes, expected %zu",
+			    lineno, json_tokener_get_parse_end(tok), llen);
+			goto out;
+		}
+
+		err = verify_json(ca->ca_pubkey, "ca", obj);
+		if (err != ERRF_OK) {
+			err = errf("LogError", err,
+			    "Failed to verify JSON object at line %zu",
+			    lineno);
+			goto out;
+		}
+
+		hobj = json_object_object_get(obj, "prev_hash");
+
+		if (hobj == NULL && sshbuf_len(ldigest) == 0)
+			goto no_prev_hash;
+
+		if (hobj == NULL ||
+		    !json_object_is_type(hobj, json_type_string)) {
+			err = errf("LogError", NULL,
+			    "Failed to verify JSON object at line %zu: no "
+			    "prev_hash property", lineno);
+			goto out;
+		}
+		tmp = json_object_get_string(hobj);
+		sshbuf_reset(hbuf);
+		rc = sshbuf_b64tod(hbuf, tmp);
+		if (rc != 0) {
+			err = errf("LogError", ssherrf("sshbuf_b64tod", rc),
+			    "Failed to verify JSON object at line %zu: "
+			    "prev_hash is not a base64 string", lineno);
+			goto out;
+		}
+
+		rc = sshbuf_cmp(hbuf, 0, sshbuf_ptr(ldigest),
+		    sshbuf_len(ldigest));
+		if (rc != 0) {
+			err = errf("LogError", ssherrf("sshbuf_cmp", rc),
+			    "Failed to verify JSON object at line %zu: "
+			    "prev_hash mismatch", lineno);
+			goto out;
+		}
+
+no_prev_hash:
+		sshbuf_reset(tbsbuf);
+		tmp = json_object_to_json_string_ext(obj,
+		    JSON_C_TO_STRING_PLAIN);
+		if ((rc = sshbuf_put_cstring8(tbsbuf, "piv-ca-log-chain")) ||
+		    (rc = sshbuf_put_cstring8(tbsbuf, ca->ca_slug)) ||
+		    (rc = sshbuf_put_cstring(tbsbuf, tmp))) {
+			err = ssherrf("sshbuf_put_cstring", rc);
+			goto out;
+		}
+
+		sshbuf_reset(ldigest);
+		rlen = ssh_digest_bytes(SSH_DIGEST_SHA512);
+		rc = sshbuf_reserve(ldigest, rlen, &rptr);
+		if (rc != 0) {
+			err = ssherrf("sshbuf_reserve", rc);
+			goto out;
+		}
+		rc = ssh_digest_buffer(SSH_DIGEST_SHA512, tbsbuf, rptr, rlen);
+		if (rc != 0) {
+			err = ssherrf("ssh_digest_buffer", rc);
+			goto out;
+		}
+
+		if (cb != NULL)
+			cb(obj, cookie);
+
+		json_object_put(obj);
+		obj = NULL;
+
+		json_tokener_free(tok);
+		tok = NULL;
+
+		pos += llen;
+		++lineno;
+		while (buf[pos] == '\n' && pos < len) {
+			++pos;
+			++lineno;
+		}
+	} while (pos < len);
+
+	if (final_hash != NULL)
+		*final_hash = sshbuf_dtob64_string(ldigest, 0);
+
+out:
+	if (buf != NULL)
+		munmap(buf, len);
+	if (logf != NULL)
+		fclose(logf);
+	if (tok != NULL)
+		json_tokener_free(tok);
+	json_object_put(obj);
+	sshbuf_free(tbsbuf);
+	sshbuf_free(hbuf);
+	sshbuf_free(ldigest);
+	return (err);
+}
+
+static errf_t *
+ca_sign_json(struct ca *ca, struct ca_session *sess, json_object *obj)
+{
+	struct ca_session_agent *a = NULL;
+	struct ca_session_direct *d = NULL;
+	errf_t *err;
+	boolean_t in_txn = B_FALSE;
+
+	if (sess->cs_type == CA_SESSION_AGENT) {
+		a = &sess->cs_agent;
+		err = agent_sign_json(a->csa_fd, ca->ca_pubkey, "ca", obj);
+		if (err != ERRF_OK) {
+			err = errf("CASignError", err, "Failed to sign JSON "
+			    "using CA key in agent '%s'", ca->ca_slug);
+		}
+		goto out;
+	}
+	VERIFY(sess->cs_type == CA_SESSION_DIRECT);
+	d = &sess->cs_direct;
+
+	err = piv_txn_begin(d->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to open transaction "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+	in_txn = B_TRUE;
+
+	err = piv_select(d->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to select PIV applet "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_auth_key(d->csd_token, d->csd_cakslot, ca->ca_cak);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "PIV CAK check failed "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_verify_pin(d->csd_token, d->csd_pintype, d->csd_pin,
+	    NULL, B_FALSE);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to verify PIN "
+		    "for CA '%s' while signing JSON", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_sign_json(d->csd_token, d->csd_slot, "ca", obj);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to sign JSON "
+		    "with CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+out:
+	if (in_txn)
+		piv_txn_end(d->csd_token);
+	return (err);
+}
+
+static errf_t *
+ca_sign_crl(struct ca *ca, struct ca_session *sess, X509_CRL *crl)
+{
+	struct ca_session_agent *a = NULL;
+	struct ca_session_direct *d = NULL;
+	errf_t *err;
+	boolean_t in_txn = B_FALSE;
+
+	if (sess->cs_type == CA_SESSION_AGENT) {
+		a = &sess->cs_agent;
+		err = agent_sign_crl(a->csa_fd, ca->ca_pubkey, crl);
+		if (err != ERRF_OK) {
+			err = errf("CASignError", err, "Failed to sign CRL "
+			    "using CA key in agent '%s'", ca->ca_slug);
+		}
+		goto out;
+	}
+	VERIFY(sess->cs_type == CA_SESSION_DIRECT);
+	d = &sess->cs_direct;
+
+	if ((err = piv_txn_begin(d->csd_token)) != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to open transaction "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+	in_txn = B_TRUE;
+
+	err = piv_select(d->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to select PIV applet "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_auth_key(d->csd_token, d->csd_cakslot, ca->ca_cak);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "PIV CAK check failed "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_verify_pin(d->csd_token, d->csd_pintype, d->csd_pin,
+	    NULL, B_FALSE);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to verify PIN "
+		    "for CA '%s' while signing cert", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_sign_crl(d->csd_token, d->csd_slot, ca->ca_pubkey, crl);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to sign cert "
+		    "with CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+out:
+	if (in_txn)
+		piv_txn_end(d->csd_token);
+	return (err);
+}
+
+static errf_t *
+ca_sign_cert(struct ca *ca, struct ca_session *sess, X509 *cert)
+{
+	struct ca_session_agent *a = NULL;
+	struct ca_session_direct *d = NULL;
+	errf_t *err;
+	boolean_t in_txn = B_FALSE;
+	CRL_DIST_POINTS *crldps = NULL;
+	DIST_POINT *dp = NULL;
+	struct ca_uri *uri;
+	int rc;
+
+	crldps = CRL_DIST_POINTS_new();
+	VERIFY(crldps != NULL);
+
+	dp = DIST_POINT_new();
+	dp->distpoint = DIST_POINT_NAME_new();
+	dp->distpoint->type = 0;
+	dp->distpoint->name.fullname = GENERAL_NAMES_new();
+	for (uri = ca->ca_crls; uri != NULL; uri = uri->cu_next) {
+		GENERAL_NAME *nm = GENERAL_NAME_new();
+		ASN1_IA5STRING *nmstr = ASN1_IA5STRING_new();
+		VERIFY(nm != NULL);
+		VERIFY(nmstr != NULL);
+		ASN1_STRING_set(nmstr, uri->cu_uri, -1);
+		GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
+		sk_GENERAL_NAME_push(dp->distpoint->name.fullname, nm);
+	}
+	sk_DIST_POINT_push(crldps, dp);
+
+	rc = X509_add1_ext_i2d(cert, NID_crl_distribution_points, crldps, 0,
+	    X509V3_ADD_REPLACE);
+	if (rc != 1) {
+		make_sslerrf(err, "X509_add1_ext_i2d",
+		    "adding CRL dist points");
+		goto out;
+	}
+
+	if (sess->cs_type == CA_SESSION_AGENT) {
+		a = &sess->cs_agent;
+		err = agent_sign_cert(a->csa_fd, ca->ca_pubkey, cert);
+		if (err != ERRF_OK) {
+			err = errf("CASignError", err, "Failed to sign cert "
+			    "using CA key in agent '%s'", ca->ca_slug);
+		}
+		goto out;
+	}
+	VERIFY(sess->cs_type == CA_SESSION_DIRECT);
+	d = &sess->cs_direct;
+
+	if ((err = piv_txn_begin(d->csd_token)) != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to open transaction "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+	in_txn = B_TRUE;
+
+	err = piv_select(d->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to select PIV applet "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_auth_key(d->csd_token, d->csd_cakslot, ca->ca_cak);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "PIV CAK check failed "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_verify_pin(d->csd_token, d->csd_pintype, d->csd_pin,
+	    NULL, B_FALSE);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to verify PIN "
+		    "for CA '%s' while signing cert", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_sign_cert(d->csd_token, d->csd_slot, ca->ca_pubkey, cert);
+	if (err != ERRF_OK) {
+		err = errf("CASignError", err, "Failed to sign cert "
+		    "with CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+out:
+	if (in_txn)
+		piv_txn_end(d->csd_token);
+	CRL_DIST_POINTS_free(crldps);
+	return (err);
+}
+
+static void
+add_timestamp(json_object *obj)
+{
+	struct timespec ts;
+	struct tm *info;
+	char tsbuf[64];
+	int w;
+	json_object *prop;
+
+	VERIFY0(clock_gettime(CLOCK_REALTIME, &ts));
+	info = gmtime(&ts.tv_sec);
+	VERIFY(info != NULL);
+
+	w = snprintf(tsbuf, sizeof (tsbuf),
+	    "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
+	    info->tm_year + 1900, info->tm_mon + 1, info->tm_mday,
+	    info->tm_hour, info->tm_min, info->tm_sec, ts.tv_nsec / 1000000);
+	VERIFY(w < sizeof (tsbuf));
+
+	prop = json_object_new_string(tsbuf);
+	VERIFY(prop != NULL);
+	json_object_object_add(obj, "time", prop);
+
+	prop = json_object_new_int64(ts.tv_sec);
+	VERIFY(prop != NULL);
+	json_object_object_add(obj, "time_secs", prop);
+}
+
+static errf_t *
+ca_log_init(struct ca *ca, struct ca_session *sess, BIGNUM *ca_serial,
+    const char *dnstr)
+{
+	json_object *robj = NULL, *obj = NULL;
+	FILE *logf;
+	char fname[PATH_MAX];
+	errf_t *err;
+	const char *line;
+	size_t done;
+	char *serialhex = NULL;
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".log", sizeof (fname));
+
+	logf = fopen(fname, "w");
+	if (logf == NULL) {
+		err = errf("LogError", errfno("fopen", errno, NULL),
+		    "Failed to open CA log file '%s' for reading",
+		    fname);
+		goto out;
+	}
+
+	serialhex = BN_bn2hex(ca_serial);
+	VERIFY(serialhex != NULL);
+
+	robj = json_object_new_object();
+	if (robj == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	add_timestamp(robj);
+
+	obj = json_object_new_string(dnstr);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "dn", obj);
+	obj = NULL;
+
+	obj = json_object_new_string(serialhex);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "serial", obj);
+	obj = NULL;
+
+	err = ca_sign_json(ca, sess, robj);
+	if (err != ERRF_OK) {
+		err = errf("CALogError", err, "Failed to sign initial CA "
+		    "log entry for '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	line = json_object_to_json_string_ext(robj, JSON_C_TO_STRING_PLAIN);
+	done = fwrite(line, 1, strlen(line), logf);
+	if (done < 0) {
+		err = errfno("fwrite", errno, "writing log json");
+		goto out;
+	} else if (done < strlen(line)) {
+		err = errf("ShortWrite", NULL, "wrote %zu bytes instead of "
+		    "%zu", done, strlen(line));
+		goto out;
+	}
+	if (fputs("\n", logf) < 0) {
+		err = errfno("fputs", errno, "writing log json");
+		goto out;
+	}
+
+	err = ERRF_OK;
+
+out:
+	if (logf != NULL)
+		fclose(logf);
+	json_object_put(robj);
+	json_object_put(obj);
+	free(serialhex);
+	return (err);
+}
+
+static errf_t *
+ca_log_crl_gen(struct ca *ca, struct ca_session *sess, X509_CRL *crl, uint seq)
+{
+	json_object *robj = NULL, *obj = NULL;
+	FILE *logf;
+	char fname[PATH_MAX];
+	const char *line;
+	size_t done;
+	errf_t *err;
+	char *prev_hash = NULL;
+	char *dnstr = NULL;
+	const ASN1_TIME *asn1time;
+	struct tm tmv;
+	time_t t;
+	int rc;
+	STACK_OF(X509_REVOKED) *revoked;
+
+	err = ca_log_verify(ca, &prev_hash, NULL, NULL);
+	if (err != ERRF_OK) {
+		err = errf("CALogError", err, "Failed to verify CA log "
+		    "before writing new entry: '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".log", sizeof (fname));
+
+	logf = fopen(fname, "a");
+	if (logf == NULL) {
+		err = errf("LogError", errfno("fopen", errno, NULL),
+		    "Failed to open CA log file '%s' for appending",
+		    fname);
+		goto out;
+	}
+
+	robj = json_object_new_object();
+	if (robj == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	if (prev_hash != NULL) {
+		obj = json_object_new_string(prev_hash);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "prev_hash", obj);
+		obj = NULL;
+	}
+
+	add_timestamp(robj);
+
+	obj = json_object_new_string("gen_crl");
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "action", obj);
+	obj = NULL;
+
+	err = unparse_dn(X509_CRL_get_issuer(crl), &dnstr);
+	if (err != ERRF_OK)
+		goto out;
+
+	obj = json_object_new_string(dnstr);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "dn", obj);
+	obj = NULL;
+
+	revoked = X509_CRL_get_REVOKED(crl);
+	obj = json_object_new_int(sk_X509_REVOKED_num(revoked));
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "count", obj);
+	obj = NULL;
+
+	bzero(&tmv, sizeof (tmv));
+	asn1time = X509_CRL_get0_lastUpdate(crl);
+	/*
+	 * This is LibreSSL-specific, if we ever change to OpenSSL we probably
+	 * want ASN1_TIME_to_tm() here.
+	 */
+	rc = ASN1_time_parse((const char *)ASN1_STRING_get0_data(asn1time),
+	    ASN1_STRING_length(asn1time), &tmv, 0);
+	if (rc == -1) {
+		make_sslerrf(err, "ASN1_time_parse", "parsing lastUpdate "
+		    "timestamp in CRL");
+		goto out;
+	}
+	t = timegm(&tmv);
+	obj = json_object_new_int64(t);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "from", obj);
+	obj = NULL;
+
+	bzero(&tmv, sizeof (tmv));
+	asn1time = X509_CRL_get0_nextUpdate(crl);
+	rc = ASN1_time_parse((const char *)ASN1_STRING_get0_data(asn1time),
+	    ASN1_STRING_length(asn1time), &tmv, 0);
+	if (rc == -1) {
+		make_sslerrf(err, "ASN1_time_parse", "parsing nextUpdate "
+		    "timestamp in CRL");
+		goto out;
+	}
+	t = timegm(&tmv);
+	obj = json_object_new_int64(t);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "until", obj);
+	obj = NULL;
+
+	obj = json_object_new_int64(seq);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "seq", obj);
+	obj = NULL;
+
+	err = ca_sign_json(ca, sess, robj);
+	if (err != ERRF_OK) {
+		err = errf("CALogError", err, "Failed to sign CA "
+		    "log entry for '%s' about CRL", ca->ca_slug);
+		goto out;
+	}
+
+	line = json_object_to_json_string_ext(robj, JSON_C_TO_STRING_PLAIN);
+	done = fwrite(line, 1, strlen(line), logf);
+	if (done < 0) {
+		err = errfno("fwrite", errno, "writing log json");
+		goto out;
+	} else if (done < strlen(line)) {
+		err = errf("ShortWrite", NULL, "wrote %zu bytes instead of "
+		    "%zu", done, strlen(line));
+		goto out;
+	}
+	if (fputs("\n", logf) < 0) {
+		err = errfno("fputs", errno, "writing log json");
+		goto out;
+	}
+
+	err = ERRF_OK;
+
+out:
+	free(dnstr);
+	free(prev_hash);
+	if (logf != NULL)
+		fclose(logf);
+	json_object_put(obj);
+	json_object_put(robj);
+	return (err);
+}
+
+static errf_t *
+ca_log_revoke_serial(struct ca *ca, struct ca_session *sess, BIGNUM *serial)
+{
+	json_object *robj = NULL, *obj = NULL;
+	FILE *logf;
+	char fname[PATH_MAX];
+	const char *line;
+	size_t done;
+	errf_t *err;
+	char *prev_hash = NULL;
+	char *serialhex = NULL;
+
+	err = ca_log_verify(ca, &prev_hash, NULL, NULL);
+	if (err != ERRF_OK) {
+		err = errf("CALogError", err, "Failed to verify CA log "
+		    "before writing new entry: '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".log", sizeof (fname));
+
+	logf = fopen(fname, "a");
+	if (logf == NULL) {
+		err = errf("LogError", errfno("fopen", errno, NULL),
+		    "Failed to open CA log file '%s' for appending",
+		    fname);
+		goto out;
+	}
+
+	robj = json_object_new_object();
+	if (robj == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	if (prev_hash != NULL) {
+		obj = json_object_new_string(prev_hash);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "prev_hash", obj);
+		obj = NULL;
+	}
+
+	add_timestamp(robj);
+
+	obj = json_object_new_string("revoke_cert");
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "action", obj);
+	obj = NULL;
+
+	serialhex = BN_bn2hex(serial);
+	VERIFY(serialhex != NULL);
+
+	obj = json_object_new_string(serialhex);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "serial", obj);
+	obj = NULL;
+
+	err = ca_sign_json(ca, sess, robj);
+	if (err != ERRF_OK) {
+		err = errf("CALogError", err, "Failed to sign CA "
+		    "log entry for '%s' about cert serial '%s'", ca->ca_slug,
+		    serialhex);
+		goto out;
+	}
+
+	line = json_object_to_json_string_ext(robj, JSON_C_TO_STRING_PLAIN);
+	done = fwrite(line, 1, strlen(line), logf);
+	if (done < 0) {
+		err = errfno("fwrite", errno, "writing log json");
+		goto out;
+	} else if (done < strlen(line)) {
+		err = errf("ShortWrite", NULL, "wrote %zu bytes instead of "
+		    "%zu", done, strlen(line));
+		goto out;
+	}
+	if (fputs("\n", logf) < 0) {
+		err = errfno("fputs", errno, "writing log json");
+		goto out;
+	}
+
+	err = ERRF_OK;
+
+out:
+	free(serialhex);
+	free(prev_hash);
+	if (logf != NULL)
+		fclose(logf);
+	json_object_put(obj);
+	json_object_put(robj);
+	return (err);
+}
+
+static errf_t *
+ca_log_cert_action(struct ca *ca, struct ca_session *sess, const char *action,
+    const char *tpl, struct cert_var_scope *scope, X509 *cert)
+{
+	json_object *robj = NULL, *obj = NULL;
+	FILE *logf;
+	char fname[PATH_MAX];
+	const char *line;
+	size_t done;
+	errf_t *err;
+	char *prev_hash = NULL;
+	char *dnstr = NULL;
+	ASN1_INTEGER *serialasn1;
+	BIGNUM *serial = NULL;
+	char *serialhex = NULL;
+
+	err = ca_log_verify(ca, &prev_hash, NULL, NULL);
+	if (err != ERRF_OK) {
+		err = errf("CALogError", err, "Failed to verify CA log "
+		    "before writing new entry: '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/", sizeof (fname));
+	strlcat(fname, ca->ca_slug, sizeof (fname));
+	strlcat(fname, ".log", sizeof (fname));
+
+	logf = fopen(fname, "a");
+	if (logf == NULL) {
+		err = errf("LogError", errfno("fopen", errno, NULL),
+		    "Failed to open CA log file '%s' for appending",
+		    fname);
+		goto out;
+	}
+
+	robj = json_object_new_object();
+	if (robj == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	if (prev_hash != NULL) {
+		obj = json_object_new_string(prev_hash);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "prev_hash", obj);
+		obj = NULL;
+	}
+
+	add_timestamp(robj);
+
+	obj = json_object_new_string(action);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "action", obj);
+	obj = NULL;
+
+	err = unparse_dn(X509_get_subject_name(cert), &dnstr);
+	if (err != ERRF_OK)
+		goto out;
+
+	obj = json_object_new_string(dnstr);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "dn", obj);
+	obj = NULL;
+
+	if (tpl != NULL) {
+		obj = json_object_new_string(tpl);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "template", obj);
+		obj = NULL;
+	}
+
+	if (scope != NULL) {
+		while (scope_parent(scope) != NULL)
+			scope = scope_parent(scope);
+		err = scope_to_json(scope, &obj);
+		if (err != ERRF_OK)
+			goto out;
+		json_object_object_add(robj, "variables", obj);
+		obj = NULL;
+	}
+
+	serialasn1 = X509_get_serialNumber(cert);
+	serial = ASN1_INTEGER_to_BN(serialasn1, NULL);
+
+	serialhex = BN_bn2hex(serial);
+	VERIFY(serialhex != NULL);
+
+	obj = json_object_new_string(serialhex);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "serial", obj);
+	obj = NULL;
+
+	err = ca_sign_json(ca, sess, robj);
+	if (err != ERRF_OK) {
+		err = errf("CALogError", err, "Failed to sign CA "
+		    "log entry for '%s' about cert '%s'", ca->ca_slug,
+		    dnstr);
+		goto out;
+	}
+
+	line = json_object_to_json_string_ext(robj, JSON_C_TO_STRING_PLAIN);
+	done = fwrite(line, 1, strlen(line), logf);
+	if (done < 0) {
+		err = errfno("fwrite", errno, "writing log json");
+		goto out;
+	} else if (done < strlen(line)) {
+		err = errf("ShortWrite", NULL, "wrote %zu bytes instead of "
+		    "%zu", done, strlen(line));
+		goto out;
+	}
+	if (fputs("\n", logf) < 0) {
+		err = errfno("fputs", errno, "writing log json");
+		goto out;
+	}
+
+	err = ERRF_OK;
+
+out:
+	free(serialhex);
+	free(dnstr);
+	free(prev_hash);
+	if (logf != NULL)
+		fclose(logf);
+	json_object_put(obj);
+	json_object_put(robj);
+	BN_free(serial);
+	return (err);
+}
+
+static errf_t *
+ca_log_new_cert(struct ca *ca, struct ca_session *sess, const char *tpl,
+    struct cert_var_scope *scope, X509 *cert)
+{
+	return (ca_log_cert_action(ca, sess, "issue_cert", tpl, scope, cert));
+}
+
+static errf_t *
+ca_log_revoke_cert(struct ca *ca, struct ca_session *sess, X509 *cert)
+{
+	return (ca_log_cert_action(ca, sess, "revoke_cert", NULL, NULL, cert));
+}
+
+struct crl_gen_state {
+	X509_CRL	*cgs_crl;
+	time_t		 cgs_last;
+	uint		 cgs_last_seq;
+};
+
+void
+ca_generate_crl_log_iter(json_object *entry, void *cookie)
+{
+	struct crl_gen_state *cgs = cookie;
+	json_object *obj;
+	const char *v;
+	time_t t;
+	uint seq;
+	X509_REVOKED *rev = NULL;
+	BIGNUM *serial = NULL;
+	ASN1_INTEGER *asn1_serial = NULL;
+	ASN1_TIME *asn1_time = NULL;
+	int rc;
+
+	obj = json_object_object_get(entry, "action");
+	if (obj == NULL)
+		return;
+	v = json_object_get_string(obj);
+	if (strcmp(v, "revoke_cert") == 0) {
+		obj = json_object_object_get(entry, "serial");
+		VERIFY(obj != NULL);
+
+		v = json_object_get_string(obj);
+		rc = BN_hex2bn(&serial, v);
+		if (rc == 0 || rc < strlen(v))
+			goto revoke_out;
+		asn1_serial = BN_to_ASN1_INTEGER(serial, NULL);
+		if (asn1_serial == NULL)
+			goto revoke_out;
+
+		obj = json_object_object_get(entry, "time_secs");
+		VERIFY(obj != NULL);
+		t = (time_t)json_object_get_int64(obj);
+
+		asn1_time = ASN1_TIME_set(NULL, t);
+
+		rev = X509_REVOKED_new();
+		VERIFY(rev != NULL);
+
+		rc = X509_REVOKED_set_serialNumber(rev, asn1_serial);
+		VERIFY(rc == 1);
+
+		rc = X509_REVOKED_set_revocationDate(rev, asn1_time);
+		VERIFY(rc == 1);
+
+		rc = X509_CRL_add0_revoked(cgs->cgs_crl, rev);
+		VERIFY(rc == 1);
+		rev = NULL;
+
+revoke_out:
+		ASN1_INTEGER_free(asn1_serial);
+		BN_free(serial);
+		ASN1_TIME_free(asn1_time);
+
+	} else if (strcmp(v, "gen_crl") == 0) {
+		obj = json_object_object_get(entry, "until");
+		VERIFY(obj != NULL);
+		t = (time_t)json_object_get_int64(obj);
+		if (t > cgs->cgs_last)
+			cgs->cgs_last = t;
+
+		obj = json_object_object_get(entry, "seq");
+		if (obj != NULL) {
+			seq = (uint)json_object_get_int64(obj);
+			if (seq > cgs->cgs_last_seq)
+				cgs->cgs_last_seq = seq;
+		}
+	}
+}
+
+errf_t *
+ca_generate_crl(struct ca *ca, struct ca_session *sess, X509_CRL *crl)
+{
+	errf_t *err;
+	int rc;
+	ASN1_TIME *last = NULL, *until = NULL;
+	struct timespec ts;
+	struct crl_gen_state cgs;
+	ASN1_INTEGER *seq_asn1 = NULL;
+	BIGNUM *seq_bn = NULL;
+	uint seq;
+	struct sshbuf *buf = NULL;
+	char *dpath = NULL, *opath = NULL;
+	FILE *crlf = NULL;
+	ISSUING_DIST_POINT *idp = NULL;
+	struct ca_uri *uri;
+
+	VERIFY(X509_CRL_set_version(crl, 1) == 1);
+	rc = X509_CRL_set_issuer_name(crl, ca->ca_dn);
+	if (rc != 1) {
+		make_sslerrf(err, "X509_CRL_set_issuer_name", "setting issuer "
+		    "name for CRL");
+		goto out;
+	}
+
+	if (ca->ca_crls_want_idp) {
+		idp = ISSUING_DIST_POINT_new();
+		VERIFY(idp != NULL);
+
+		idp->distpoint = DIST_POINT_NAME_new();
+		idp->distpoint->type = 0;
+		idp->distpoint->name.fullname = GENERAL_NAMES_new();
+		for (uri = ca->ca_crls; uri != NULL; uri = uri->cu_next) {
+			GENERAL_NAME *nm = GENERAL_NAME_new();
+			ASN1_IA5STRING *nmstr = ASN1_IA5STRING_new();
+			VERIFY(nm != NULL);
+			VERIFY(nmstr != NULL);
+			ASN1_STRING_set(nmstr, uri->cu_uri, -1);
+			GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
+			sk_GENERAL_NAME_push(idp->distpoint->name.fullname, nm);
+		}
+
+		rc = X509_CRL_add1_ext_i2d(crl, NID_issuing_distribution_point,
+		    idp, 1, 0);
+		if (rc != 1) {
+			make_sslerrf(err, "X509_CRL_add1_ext_i2d",
+			    "adding CRL dist points");
+			goto out;
+		}
+	}
+
+	bzero(&cgs, sizeof (cgs));
+	cgs.cgs_crl = crl;
+
+	err = ca_log_verify(ca, NULL, ca_generate_crl_log_iter, &cgs);
+	if (err != ERRF_OK)
+		return (err);
+
+	VERIFY0(clock_gettime(CLOCK_REALTIME, &ts));
+	if (cgs.cgs_last == 0)
+		cgs.cgs_last = ts.tv_sec;
+	if (cgs.cgs_last > ts.tv_sec)
+		cgs.cgs_last = ts.tv_sec;
+	last = ASN1_TIME_set(NULL, cgs.cgs_last);
+	until = ASN1_TIME_set(NULL, ts.tv_sec + ca->ca_crl_lifetime);
+	seq = cgs.cgs_last_seq + 1;
+
+	seq_bn = BN_new();
+	VERIFY(seq_bn != NULL);
+	VERIFY(BN_set_word(seq_bn, seq) == 1);
+	seq_asn1 = BN_to_ASN1_INTEGER(seq_bn, NULL);
+	VERIFY(seq_asn1 != NULL);
+
+	VERIFY(X509_CRL_set1_lastUpdate(crl, last) == 1);
+	VERIFY(X509_CRL_set1_nextUpdate(crl, until) == 1);
+
+	rc = X509_CRL_add1_ext_i2d(crl, NID_crl_number, seq_asn1, 0, 0);
+	if (rc != 1) {
+		make_sslerrf(err, "X509_CRL_add1_ext_i2d",
+		    "adding CRL sequence number");
+		goto out;
+	}
+
+	VERIFY(X509_CRL_sort(crl) == 1);
+
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+
+	VERIFY0(sshbuf_putf(buf, "%s/crl", ca->ca_base_path));
+	dpath = sshbuf_dup_string(buf);
+	rc = mkdir(dpath, 0700);
+	if (rc != 0 && errno != EEXIST) {
+		err = errfno("mkdir", rc, "%s", dpath);
+		goto out;
+	}
+
+	sshbuf_reset(buf);
+	VERIFY0(sshbuf_putf(buf, "%s/crl/%s-%06d.crl", ca->ca_base_path,
+	    ca->ca_slug, seq));
+	opath = sshbuf_dup_string(buf);
+
+	crlf = fopen(opath, "w");
+	if (crlf == NULL) {
+		err = errfno("fopen", errno, "%s", opath);
+		goto out;
+	}
+
+	err = ca_sign_crl(ca, sess, crl);
+	if (err != ERRF_OK)
+		goto out;
+
+	PEM_write_X509_CRL(crlf, crl);
+	fprintf(stderr, "Wrote revocation list to %s\n", opath);
+
+	err = ca_log_crl_gen(ca, sess, crl, seq);
+
+out:
+	if (crlf != NULL)
+		fclose(crlf);
+	ASN1_TIME_free(last);
+	ASN1_TIME_free(until);
+	ASN1_INTEGER_free(seq_asn1);
+	BN_free(seq_bn);
+	sshbuf_free(buf);
+	free(dpath);
+	free(opath);
+	ISSUING_DIST_POINT_free(idp);
+	return (err);
+}
+
+boolean_t
+ca_session_authed(struct ca_session *sess)
+{
+	if (sess->cs_type == CA_SESSION_AGENT) {
+		int rc;
+		rc = ssh_lock_agent(sess->cs_agent.csa_fd, 0, "");
+		return (rc == 0);
+	} else {
+		return (sess->cs_direct.csd_pin != NULL);
+	}
+}
+
+enum piv_pin
+ca_session_auth_type(struct ca_session *sess)
+{
+	if (sess->cs_type == CA_SESSION_AGENT) {
+		return (PIV_PIN);
+	} else {
+		return (piv_token_default_auth(sess->cs_direct.csd_token));
+	}
+}
+
+errf_t *
+ca_session_auth(struct ca_session *sess, enum piv_pin type, const char *pin)
+{
+	errf_t *err;
+	struct ca *ca = sess->cs_ca;
+	struct ca_session_agent *a = NULL;
+	struct ca_session_direct *d = NULL;
+	int rc;
+	size_t len;
+	boolean_t in_txn = B_FALSE;
+
+	if (sess->cs_type == CA_SESSION_AGENT) {
+		VERIFY(type == PIV_PIN);
+		a = &sess->cs_agent;
+		rc = ssh_lock_agent(a->csa_fd, 0, pin);
+		if (rc != 0) {
+			err = ssherrf("ssh_unlock_agent", rc);
+			err = errf("CAAuthError", err, "Failed to verify PIN "
+			    "for CA '%s'", ca->ca_slug);
+			return (err);
+		}
+		return (ERRF_OK);
+	}
+
+	VERIFY(sess->cs_type == CA_SESSION_DIRECT);
+	d = &sess->cs_direct;
+
+	err = piv_txn_begin(d->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("CAAuthError", err, "Failed to open transaction "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+	in_txn = B_TRUE;
+
+	err = piv_select(d->csd_token);
+	if (err != ERRF_OK) {
+		err = errf("CAAuthError", err, "Failed to select PIV applet "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_auth_key(d->csd_token, d->csd_cakslot, ca->ca_cak);
+	if (err != ERRF_OK) {
+		err = errf("CAAuthError", err, "PIV CAK check failed "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	err = piv_verify_pin(d->csd_token, type, pin, NULL, B_FALSE);
+	if (err != ERRF_OK) {
+		err = errf("CAAuthError", err, "Failed to verify PIN "
+		    "for CA '%s'", ca->ca_slug);
+		goto out;
+	}
+
+	d->csd_pintype = type;
+	len = strlen(pin) + 1;
+	d->csd_pin = calloc_conceal(1, len);
+	strlcpy(d->csd_pin, pin, len);
+
+out:
+	if (in_txn)
+		piv_txn_end(d->csd_token);
+	return (err);
 }
 
 errf_t *
@@ -2623,9 +4537,10 @@ good:
 	sess->cs_next = ca->ca_sessions;
 	if (ca->ca_sessions != NULL)
 		ca->ca_sessions->cs_prev = sess;
-	ca->ca_sessions = sess->cs_next;
+	ca->ca_sessions = sess;
 	*outsess = sess;
 	sess = NULL;
+	err = ERRF_OK;
 
 out:
 	if (in_txn)
@@ -2637,6 +4552,9 @@ out:
 void
 ca_close_session(struct ca_session *sess)
 {
+	if (sess == NULL)
+		return;
+
 	if (sess->cs_ca->ca_sessions == sess)
 		sess->cs_ca->ca_sessions = sess->cs_next;
 	if (sess->cs_next != NULL)
@@ -2654,10 +4572,595 @@ ca_close_session(struct ca_session *sess)
 		struct ca_session_direct *csd = &sess->cs_direct;
 		piv_release(csd->csd_token);
 		SCardReleaseContext(csd->csd_context);
+		if (csd->csd_pin != NULL)
+			explicit_bzero(csd->csd_pin, strlen(csd->csd_pin));
+		free(csd->csd_pin);
 
 	} else {
 		VERIFY(0);
 	}
 
 	free(sess);
+}
+
+errf_t *
+ca_config_write(struct ca *ca, struct ca_session *sess)
+{
+	errf_t *err;
+	json_object *robj = NULL, *obj = NULL;
+	char *dnstr = NULL;
+	char *crltime = NULL;
+	struct sshbuf *buf = NULL;
+	int rc;
+	char fname[PATH_MAX];
+	const char *jsonstr;
+	FILE *caf = NULL;
+	struct ca_cert_tpl *tpl;
+	size_t done;
+
+	robj = json_object_new_object();
+	if (robj == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	err = unparse_dn(ca->ca_dn, &dnstr);
+	if (err != ERRF_OK)
+		goto out;
+	obj = json_object_new_string(dnstr);
+	if (obj == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	json_object_object_add(robj, "dn", obj);
+	obj = NULL;
+
+	obj = json_object_new_string(ca->ca_guidhex);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "guid", obj);
+
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+	rc = sshkey_format_text(ca->ca_cak, buf);
+	if (rc != 0) {
+		err = ssherrf("sshkey_format_text", rc);
+		goto out;
+	}
+	VERIFY0(sshbuf_put_u8(buf, '\0'));
+	obj = json_object_new_string((char *)sshbuf_ptr(buf));
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "cak", obj);
+
+	obj = json_object_new_array();
+	VERIFY(obj != NULL);
+	err = write_uri_array(obj, ca->ca_crls);
+	if (err != ERRF_OK)
+		goto out;
+	json_object_object_add(robj, "crl", obj);
+
+	crltime = unparse_lifetime(ca->ca_crl_lifetime);
+	VERIFY(crltime != NULL);
+	obj = json_object_new_string(crltime);
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "crl_lifetime", obj);
+
+	obj = json_object_new_array();
+	VERIFY(obj != NULL);
+	err = write_uri_array(obj, ca->ca_ocsps);
+	if (err != ERRF_OK)
+		goto out;
+	json_object_object_add(robj, "ocsp", obj);
+
+	err = ca_gen_ebox_tpls(ca, &obj);
+	if (err != ERRF_OK)
+		goto out;
+	json_object_object_add(robj, "ebox_templates", obj);
+
+	err = ca_gen_ebox_assigns(ca, &obj);
+	if (err != ERRF_OK)
+		goto out;
+	json_object_object_add(robj, "eboxes", obj);
+
+	obj = json_object_new_object();
+	VERIFY(obj != NULL);
+	for (tpl = ca->ca_cert_tpls; tpl != NULL; tpl = tpl->cct_next) {
+		err = unparse_cert_template(ca, tpl, obj);
+		if (err != ERRF_OK)
+			goto out;
+	}
+	json_object_object_add(robj, "cert_templates", obj);
+
+	obj = json_object_new_object();
+	VERIFY(obj != NULL);
+	json_object_object_add(robj, "token_templates", obj);
+
+	if (ca->ca_vars != NULL) {
+		json_object_get(ca->ca_vars);
+		json_object_object_add(robj, "variables", ca->ca_vars);
+	}
+	if (ca->ca_req_vars != NULL) {
+		json_object_get(ca->ca_req_vars);
+		json_object_object_add(robj, "require_variables", ca->ca_vars);
+	}
+
+	err = ca_sign_json(ca, sess, robj);
+	if (err != NULL) {
+		err = errf("CASignError", err, "Failed to sign CA config");
+		goto out;
+	}
+
+	jsonstr = json_object_to_json_string_ext(robj, JSON_C_TO_STRING_PRETTY);
+
+	strlcpy(fname, ca->ca_base_path, sizeof (fname));
+	strlcat(fname, "/pivy-ca.json", sizeof (fname));
+
+	caf = fopen(fname, "w");
+	if (caf == NULL) {
+		err = errf("MetadataError", errfno("fopen", errno, NULL),
+		    "Failed to open CA metadata file '%s' for writing",
+		    fname);
+		goto out;
+	}
+
+	done = fwrite(jsonstr, 1, strlen(jsonstr), caf);
+	if (done < 0) {
+		err = errfno("fwrite", errno, "writing CA json");
+		goto out;
+	} else if (done < strlen(jsonstr)) {
+		err = errf("ShortWrite", NULL, "wrote %zu bytes instead of "
+		    "%zu", done, strlen(jsonstr));
+		goto out;
+	}
+
+out:
+	if (caf != NULL)
+		fclose(caf);
+	json_object_put(robj);
+	free(dnstr);
+	sshbuf_free(buf);
+	free(crltime);
+	return (err);
+}
+
+errf_t *
+ca_cert_sign(struct ca_session *sess, struct ca_cert_tpl *tpl,
+    struct cert_var_scope *certscope, EVP_PKEY *pubkey, X509 *out)
+{
+	return (errf("NotImplemented", NULL, "Not implemented yet."));
+}
+
+errf_t *
+ca_cert_sign_req(struct ca_session *sess, struct ca_cert_tpl *tpl,
+    struct cert_var_scope *certscope, X509_REQ *req, X509 *cert)
+{
+	struct ca *ca = sess->cs_ca;
+	errf_t *err;
+	EVP_PKEY *pkey;
+	BIGNUM *serial = NULL;
+	ASN1_INTEGER *serial_asn1 = NULL;
+	char *slug = NULL, *dpath = NULL, *rpath = NULL, *cpath = NULL;
+	struct sshbuf *buf;
+	int rc;
+	FILE *reqf = NULL, *certf = NULL;
+
+	buf = sshbuf_new();
+	VERIFY(buf != NULL);
+
+	if (!(tpl->cct_flags & CCTF_ALLOW_REQS)) {
+		err = errf("InvalidTemplateError", NULL, "CA cert template "
+		    "'%s' does not allow signing cert reqs", tpl->cct_name);
+		goto out;
+	}
+
+	pkey = X509_REQ_get_pubkey(req);
+
+	err = scope_populate_req(certscope, req);
+	if (err != ERRF_OK)
+		goto out;
+
+	serial = BN_new();
+	serial_asn1 = ASN1_INTEGER_new();
+	VERIFY(serial != NULL);
+	VERIFY(BN_pseudo_rand(serial, 160, 0, 0) == 1);
+	VERIFY(BN_to_ASN1_INTEGER(serial, serial_asn1) != NULL);
+
+	VERIFY(X509_set_version(cert, 2) == 1);
+	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
+
+	VERIFY(X509_set_pubkey(cert, pkey) == 1);
+
+	err = cert_tpl_populate(tpl->cct_tpl, certscope, cert);
+	if (err != ERRF_OK) {
+		err = errf("CertTemplateError", err, "Failed to populate "
+		    "cert template '%s'", tpl->cct_name);
+		goto out;
+	}
+
+	VERIFY(X509_set_issuer_name(cert, ca->ca_dn));
+
+	if (tpl->cct_flags & CCTF_COPY_OTHER_EXTS) {
+		STACK_OF(X509_EXTENSION) *exts;
+		X509_EXTENSION *ext;
+		const ASN1_OBJECT *obj;
+		uint i, max;
+		int pos;
+
+		exts = X509_REQ_get_extensions(req);
+		if (exts != NULL && sk_X509_EXTENSION_num(exts) > 0) {
+			max = sk_X509_EXTENSION_num(exts);
+			for (i = 0; i < max; ++i) {
+				ext = sk_X509_EXTENSION_value(exts, i);
+				obj = X509_EXTENSION_get_object(ext);
+
+				pos = X509_get_ext_by_OBJ(cert, obj, -1);
+				if (pos == -1)
+					X509_add_ext(cert, ext, -1);
+			}
+		}
+	}
+
+	slug = calc_cert_slug_X509(cert);
+	VERIFY(slug != NULL);
+
+	VERIFY0(sshbuf_putf(buf, "%s/%s", ca->ca_base_path, tpl->cct_name));
+	dpath = sshbuf_dup_string(buf);
+	sshbuf_reset(buf);
+	rc = mkdir(dpath, 0700);
+	if (rc != 0 && errno != EEXIST) {
+		err = errfno("mkdir", rc, "%s", dpath);
+		goto out;
+	}
+
+	VERIFY0(sshbuf_putf(buf, "%s/%s/%s.req", ca->ca_base_path,
+	    tpl->cct_name, slug));
+	rpath = sshbuf_dup_string(buf);
+	sshbuf_reset(buf);
+
+	VERIFY0(sshbuf_putf(buf, "%s/%s/%s.crt", ca->ca_base_path,
+	    tpl->cct_name, slug));
+	cpath = sshbuf_dup_string(buf);
+	sshbuf_reset(buf);
+
+	reqf = fopen(rpath, "w");
+	if (reqf == NULL) {
+		err = errfno("fopen", errno, "%s", rpath);
+		goto out;
+	}
+
+	certf = fopen(cpath, "w");
+	if (certf == NULL) {
+		err = errfno("fopen", errno, "%s", cpath);
+		goto out;
+	}
+
+	PEM_write_X509_REQ(reqf, req);
+	fprintf(stderr, "Wrote request to %s\n", rpath);
+
+	err = ca_sign_cert(ca, sess, cert);
+	if (err != ERRF_OK)
+		goto out;
+
+	PEM_write_X509(certf, cert);
+	fprintf(stderr, "Wrote certificate to %s\n", cpath);
+
+	err = ca_log_new_cert(ca, sess, tpl->cct_name, certscope, cert);
+	if (err != ERRF_OK)
+		goto out;
+
+	err = ERRF_OK;
+
+out:
+	if (reqf != NULL)
+		fclose(reqf);
+	if (certf != NULL)
+		fclose(certf);
+	BN_free(serial);
+	sshbuf_free(buf);
+	free(dpath);
+	free(rpath);
+	free(cpath);
+	free(slug);
+	ASN1_INTEGER_free(serial_asn1);
+	return (err);
+}
+
+errf_t *
+ca_revoke_cert(struct ca *ca, struct ca_session *sess, X509 *cert)
+{
+	return (ca_log_revoke_cert(ca, sess, cert));
+}
+
+errf_t *
+ca_revoke_cert_serial(struct ca *ca, struct ca_session *sess, BIGNUM *serial)
+{
+	return (ca_log_revoke_serial(ca, sess, serial));
+}
+
+errf_t *
+scope_populate_gn(struct cert_var_scope *scope, GENERAL_NAME *gn)
+{
+	int ptype, ttype;
+	void *v;
+	ASN1_IA5STRING *ia5 = NULL;
+	ASN1_UTF8STRING *utf8 = NULL;
+	ASN1_PRINTABLESTRING *prn = NULL;
+	ASN1_STRING *str;
+	ASN1_TYPE *pval;
+	char vbuf[256];
+	unsigned char *buf = NULL;
+	const unsigned char *wp;
+	const unsigned char *p;
+	size_t len;
+	ASN1_OBJECT *obj;
+	ASN1_OBJECT *upn_obj = NULL;
+	int rc;
+	errf_t *err;
+
+	upn_obj = OBJ_txt2obj("1.3.6.1.4.1.311.20.2.3", 1);
+	VERIFY(upn_obj != NULL);
+
+	v = GENERAL_NAME_get0_value(gn, &ptype);
+
+	switch (ptype) {
+	case GEN_EMAIL:
+		ia5 = v;
+		p = ASN1_STRING_get0_data(ia5);
+		len = ASN1_STRING_length(ia5);
+		VERIFY3U(len, <, sizeof (vbuf));
+		bcopy(p, vbuf, len);
+		vbuf[len] = '\0';
+		ia5 = NULL;
+
+		err = scope_set(scope, "req_email", vbuf);
+		goto out;
+
+	case GEN_DNS:
+		ia5 = v;
+		p = ASN1_STRING_get0_data(ia5);
+		len = ASN1_STRING_length(ia5);
+		VERIFY3U(len, <, sizeof (vbuf));
+		bcopy(p, vbuf, len);
+		vbuf[len] = '\0';
+		ia5 = NULL;
+
+		err = scope_set(scope, "req_dns", vbuf);
+		goto out;
+	}
+
+	if (ptype != GEN_OTHERNAME) {
+		err = ERRF_OK;
+		goto out;
+	}
+
+	GENERAL_NAME_get0_otherName(gn, &obj, &pval);
+
+	if (OBJ_cmp(obj, upn_obj) == 0) {
+		ttype = ASN1_TYPE_get(pval);
+
+		rc = i2d_ASN1_TYPE(pval, &buf);
+		if (rc < 0) {
+			make_sslerrf(err, "i2d_ASN1_TYPE", "while encoding");
+			goto out;
+		}
+		len = rc;
+		wp = buf;
+
+		switch (ttype) {
+		case V_ASN1_PRINTABLESTRING:
+			prn = d2i_ASN1_PRINTABLESTRING(NULL, &wp, len);
+			str = (ASN1_STRING *)prn;
+			break;
+		case V_ASN1_IA5STRING:
+			ia5 = d2i_ASN1_IA5STRING(NULL, &wp, len);
+			str = (ASN1_STRING *)ia5;
+			break;
+		case V_ASN1_UTF8STRING:
+			utf8 = d2i_ASN1_UTF8STRING(NULL, &wp, len);
+			str = (ASN1_STRING *)utf8;
+			break;
+		default:
+			err = ERRF_OK;
+			goto out;
+		}
+
+		p = ASN1_STRING_get0_data(str);
+		len = ASN1_STRING_length(str);
+		VERIFY3U(len, <, sizeof (vbuf));
+		bcopy(p, vbuf, len);
+		vbuf[len] = '\0';
+
+		err = scope_set(scope, "req_upn", vbuf);
+		goto out;
+	} else {
+		err = ERRF_OK;
+	}
+
+out:
+	OPENSSL_free(buf);
+	ASN1_OBJECT_free(upn_obj);
+	ASN1_PRINTABLESTRING_free(prn);
+	ASN1_IA5STRING_free(ia5);
+	ASN1_UTF8STRING_free(utf8);
+	return (err);
+}
+
+errf_t *
+scope_populate_req(struct cert_var_scope *scope, X509_REQ *req)
+{
+	X509_NAME *subj;
+	char *dnstr = NULL;
+	errf_t *err;
+	int rc;
+	const unsigned char *p;
+	size_t len;
+	char nmbuf[128], kbuf[128], vbuf[256];
+	uint i, max;
+	STACK_OF(X509_EXTENSION) *exts;
+	X509_EXTENSION *ext;
+	const ASN1_OBJECT *obj;
+	X509_NAME_ENTRY *ent;
+	ASN1_STRING *val;
+	int nid;
+	uint nms, j;
+	const char *name;
+	const char *names[3];
+	ASN1_OBJECT *sid_obj = NULL;
+
+	sid_obj = OBJ_txt2obj("1.3.6.1.4.1.311.25.2", 1);
+	VERIFY(sid_obj != NULL);
+
+	subj = X509_REQ_get_subject_name(req);
+
+	err = unparse_dn(subj, &dnstr);
+	if (err != ERRF_OK)
+		goto out;
+	err = scope_set(scope, "req_dn", dnstr);
+	if (err != ERRF_OK)
+		goto out;
+
+	max = X509_NAME_entry_count(subj);
+	for (i = 0; i < max; ++i) {
+		ent = X509_NAME_get_entry(subj, i);
+		obj = X509_NAME_ENTRY_get_object(ent);
+		val = X509_NAME_ENTRY_get_data(ent);
+
+		nms = 0;
+
+		nid = OBJ_obj2nid(obj);
+		if (nid != NID_undef) {
+			name = OBJ_nid2sn(nid);
+			if (name != NULL)
+				names[nms++] = name;
+			name = OBJ_nid2ln(nid);
+			if (name != NULL)
+				names[nms++] = name;
+		}
+		if (nms == 0) {
+			rc = OBJ_obj2txt(nmbuf, sizeof (nmbuf), obj, 0);
+			if (rc == -1) {
+				make_sslerrf(err, "OBJ_obj2txt", "Failed to "
+				    "convert DN entry %u", i);
+				return (err);
+			}
+			names[nms++] = nmbuf;
+		}
+
+		p = ASN1_STRING_get0_data(val);
+		len = ASN1_STRING_length(val);
+		VERIFY3U(len, <, sizeof (vbuf));
+		bcopy(p, vbuf, len);
+		vbuf[len] = '\0';
+
+		for (j = 0; j < nms; ++j) {
+			strlcpy(kbuf, "req_", sizeof (kbuf));
+			strlcat(kbuf, names[j], sizeof (kbuf));
+
+			err = scope_set(scope, kbuf, vbuf);
+			if (err != ERRF_OK)
+				goto out;
+		}
+	}
+
+	exts = X509_REQ_get_extensions(req);
+	if (exts != NULL && sk_X509_EXTENSION_num(exts) > 0) {
+		max = sk_X509_EXTENSION_num(exts);
+		for (i = 0; i < max; ++i) {
+			ext = sk_X509_EXTENSION_value(exts, i);
+			obj = X509_EXTENSION_get_object(ext);
+			nid = OBJ_obj2nid(obj);
+			if (nid == NID_subject_alt_name) {
+				STACK_OF(GENERAL_NAME) *gns;
+				uint gmax;
+
+				gns = X509V3_EXT_d2i(ext);
+				gmax = sk_GENERAL_NAME_num(gns);
+
+				for (j = 0; j < gmax; ++j) {
+					GENERAL_NAME *gn;
+					gn = sk_GENERAL_NAME_value(gns, j);
+					err = scope_populate_gn(scope, gn);
+					if (err != ERRF_OK)
+						goto out;
+				}
+			} else if (OBJ_cmp(obj, sid_obj) == 0) {
+				val = X509_EXTENSION_get_data(ext);
+				p = ASN1_STRING_get0_data(val);
+				len = ASN1_STRING_length(val);
+				VERIFY3U(len, <, sizeof (vbuf));
+				bcopy(p, vbuf, len);
+				vbuf[len] = '\0';
+
+				err = scope_set(scope, "req_sid", vbuf);
+				if (err != ERRF_OK)
+					goto out;
+			}
+		}
+	}
+
+out:
+	free(dnstr);
+	ASN1_OBJECT_free(sid_obj);
+	return (err);
+}
+
+uint
+ca_crl_uri_count(const struct ca *ca)
+{
+	uint i = 0;
+	const struct ca_uri *uri;
+	for (uri = ca->ca_crls; uri != NULL; uri = uri->cu_next)
+		++i;
+	return (i);
+}
+const char *
+ca_crl_uri(const struct ca *ca, uint index)
+{
+	uint i = 0;
+	const struct ca_uri *uri;
+	for (uri = ca->ca_crls; uri != NULL; uri = uri->cu_next) {
+		if (i++ == index)
+			return (uri->cu_uri);
+	}
+	return (NULL);
+}
+errf_t *
+ca_crl_uri_remove(struct ca *ca, const char *uri)
+{
+	return (errf("NotImplemented", NULL, "Not implemented"));
+}
+errf_t *
+ca_crl_uri_add(struct ca *ca, const char *uri)
+{
+	return (errf("NotImplemented", NULL, "Not implemented"));
+}
+
+uint
+ca_ocsp_uri_count(const struct ca *ca)
+{
+	uint i = 0;
+	const struct ca_uri *uri;
+	for (uri = ca->ca_ocsps; uri != NULL; uri = uri->cu_next)
+		++i;
+	return (i);
+}
+const char *
+ca_ocsp_uri(const struct ca *ca, uint index)
+{
+	uint i = 0;
+	const struct ca_uri *uri;
+	for (uri = ca->ca_ocsps; uri != NULL; uri = uri->cu_next) {
+		if (i++ == index)
+			return (uri->cu_uri);
+	}
+	return (NULL);
+}
+errf_t *
+ca_ocsp_uri_remove(struct ca *ca, const char *uri)
+{
+	return (errf("NotImplemented", NULL, "Not implemented"));
+}
+errf_t *
+ca_ocsp_uri_add(struct ca *ca, const char *uri)
+{
+	return (errf("NotImplemented", NULL, "Not implemented"));
 }

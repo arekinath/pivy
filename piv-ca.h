@@ -44,6 +44,7 @@ enum requirement_type {
 };
 
 const struct cert_tpl	*cert_tpl_find(const char *name);
+const struct cert_tpl	*cert_tpl_first(void);
 const struct cert_tpl	*cert_tpl_next(const struct cert_tpl *);
 const char		*cert_tpl_name(const struct cert_tpl *);
 const char		*cert_tpl_help(const struct cert_tpl *);
@@ -55,6 +56,7 @@ const char		*cert_var_name(const struct cert_var *);
 const char		*cert_var_help(const struct cert_var *);
 void			 cert_var_set_help(struct cert_var *, const char *);
 char			*cert_var_raw_value(const struct cert_var *);
+char			*cert_var_value(const struct cert_var *);
 errf_t			*cert_var_set(struct cert_var *, const char *);
 errf_t			*cert_var_eval(struct cert_var *var, char **out);
 boolean_t		 cert_var_defined(const struct cert_var *);
@@ -62,6 +64,10 @@ int			 cert_var_required(const struct cert_var *,
     enum requirement_type);
 void			 cert_var_set_required(struct cert_var *,
     enum requirement_type);
+
+void			*cert_var_alloc_private(struct cert_var *, size_t);
+void			*cert_var_private(struct cert_var *);
+void			 cert_var_free_private(struct cert_var *);
 
 struct cert_var		*cert_tpl_vars(const struct cert_tpl *);
 
@@ -93,6 +99,12 @@ errf_t	*piv_sign_cert(struct piv_token *tkn, struct piv_slot *slot,
 errf_t	*piv_sign_cert_req(struct piv_token *tkn, struct piv_slot *slot,
     struct sshkey *pubkey, X509_REQ *req);
 errf_t	*agent_sign_cert(int fd, struct sshkey *pubkey, X509 *cert);
+
+errf_t	*agent_sign_crl(int fd, struct sshkey *pubkey, X509_CRL *crl);
+errf_t	*piv_sign_crl(struct piv_token *tkn, struct piv_slot *slot,
+    struct sshkey *pubkey, X509_CRL *crl);
+
+errf_t	*scope_populate_req(struct cert_var_scope *scope, X509_REQ *req);
 
 /*
  * CA state and stuff
@@ -138,6 +150,7 @@ enum ca_cert_tpl_flags {
 
 enum ca_ebox_type {
 	CA_EBOX_PIN,
+	CA_EBOX_OLD_PIN,
 	CA_EBOX_PUK,
 	CA_EBOX_KEY_BACKUP,
 	CA_EBOX_ADMIN_KEY
@@ -147,7 +160,7 @@ struct ca_new_args	*cana_new(void);
 void	 cana_initial_pin(struct ca_new_args *, const char *);
 void	 cana_initial_puk(struct ca_new_args *, const char *);
 void	 cana_initial_admin_key(struct ca_new_args *, enum piv_alg,
-    uint8_t *, size_t);
+    const uint8_t *, size_t);
 void	 cana_key_alg(struct ca_new_args *, enum piv_alg alg);
 void	 cana_backup_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
 void	 cana_pin_tpl(struct ca_new_args *, const char *, struct ebox_tpl *);
@@ -186,12 +199,35 @@ struct ebox_tpl	*ca_get_ebox_tpl_name(struct ca *ca, const char *name);
 errf_t		*ca_set_ebox_tpl_name(struct ca *ca, const char *name,
     struct ebox_tpl *tpl);
 
+const char	*ca_slug(const struct ca *ca);
+const char	*ca_guidhex(const struct ca *ca);
+const struct sshkey	*ca_pubkey(const struct ca *ca);
+const struct sshkey	*ca_cak(const struct ca *ca);
+char		*ca_dn(const struct ca *ca);
+
+errf_t		*ca_generate_crl(struct ca *ca, struct ca_session *sess,
+    X509_CRL *crl);
+
+typedef struct json_object json_object;
+typedef void (*log_iter_cb_t)(json_object *entry, void *cookie);
+
+errf_t 		*ca_log_verify(struct ca *ca, char **final_hash,
+    log_iter_cb_t cb, void *cookie);
+
 void		 ca_close(struct ca *ca);
 
 errf_t		*ca_open_session(struct ca *ca, struct ca_session **outsess);
+boolean_t	 ca_session_authed(struct ca_session *sess);
 enum piv_pin	 ca_session_auth_type(struct ca_session *sess);
-errf_t		*ca_session_auth(struct ca_session *sess, const char *pin);
+errf_t		*ca_session_auth(struct ca_session *sess, enum piv_pin type,
+    const char *pin);
+errf_t		*ca_rotate_pin(struct ca_session *sess);
 void		 ca_close_session(struct ca_session *sess);
+
+errf_t		*ca_revoke_cert(struct ca *ca, struct ca_session *sess,
+    X509 *cert);
+errf_t		*ca_revoke_cert_serial(struct ca *ca, struct ca_session *sess,
+    BIGNUM *serial);
 
 struct cert_var_scope	*ca_make_scope(struct ca *ca,
     struct cert_var_scope *parent);

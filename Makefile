@@ -627,10 +627,12 @@ ifeq ($(SYSTEM), Darwin)
 	cp libressl/crypto/Makefile.in{,.bak} && \
 	    grep -v HOST_CPU_IS_INTEL libressl/crypto/Makefile.in.bak \
 	    > libressl/crypto/Makefile.in && \
+	    patch -p0 <libressl.patch && \
 	    touch $(CURDIR)/$@
 else
 .libressl.patch: .libressl.extract
-	touch $(CURDIR)/$@
+	patch -p0 <libressl.patch && \
+	    touch $(CURDIR)/$@
 endif
 
 LIBRESSL_CONFIG_ARGS=	\

@@ -158,6 +158,8 @@ enum ebox_type ebox_type(const struct ebox *ebox);
 uint ebox_ephem_count(const struct ebox *ebox);
 size_t ebox_config_nonce_len(const struct ebox_config *config);
 
+boolean_t ebox_is_unlocked(const struct ebox *box);
+
 const char *ebox_cipher(const struct ebox *box);
 const uint8_t *ebox_key(const struct ebox *box, size_t *len);
 const uint8_t *ebox_recovery_token(const struct ebox *box, size_t *len);
@@ -237,10 +239,13 @@ errf_t *ebox_recover(struct ebox *ebox, struct ebox_config *config);
  */
 void *ebox_private(const struct ebox *ebox);
 void *ebox_alloc_private(struct ebox *ebox, size_t sz);
+void ebox_free_private(struct ebox *ebox);
 void *ebox_config_private(const struct ebox_config *config);
 void *ebox_config_alloc_private(struct ebox_config *config, size_t sz);
+void ebox_config_free_private(struct ebox_config *config);
 void *ebox_part_private(const struct ebox_part *part);
 void *ebox_part_alloc_private(struct ebox_part *part, size_t sz);
+void ebox_part_free_private(struct ebox_part *part);
 
 /*
  * Generate a challenge for a given recovery config + part.

@@ -96,12 +96,17 @@ const char *pin_type_to_name(enum piv_pin type);
 void assert_pin(struct piv_token *pk, struct piv_slot *slot,
     const char *partname, boolean_t prompt);
 
+errf_t *read_tpl_file_err(const char *tpl, struct ebox_tpl **ptpl);
 struct ebox_tpl *read_tpl_file(const char *tpl);
+
+boolean_t can_local_unlock(struct piv_ecdh_box *box);
 
 errf_t *local_unlock_agent(struct piv_ecdh_box *box);
 errf_t *local_unlock(struct piv_ecdh_box *box, struct sshkey *cak,
     const char *name);
 errf_t *interactive_recovery(struct ebox_config *config, const char *what);
+
+errf_t *interactive_unlock_ebox(struct ebox *ebox, const char *fn);
 
 void interactive_select_local_token(struct ebox_tpl_part **ppart);
 
@@ -130,6 +135,7 @@ struct answer {
 void add_answer(struct question *q, struct answer *a);
 void add_spacer(struct question *q);
 void remove_answer(struct question *q, struct answer *a);
+void remove_command(struct question *q, struct answer *a);
 void answer_printf(struct answer *ans, const char *fmt, ...);
 struct answer *make_answer(char key, const char *fmt, ...);
 void add_command(struct question *q, struct answer *a);

@@ -114,6 +114,7 @@ struct cert_var {
         char                    *cv_help;
         uint                     cv_flags;
         struct varval           *cv_value;
+        void			*cv_priv;
 };
 
 struct varval *varval_parse(const char *);

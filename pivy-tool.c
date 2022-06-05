@@ -973,6 +973,8 @@ admin_again:
 	bcopy(piv_chuid_get_guid(chuid), guid, GUID_LEN);
 	guid_len = GUID_LEN;
 
+	fprintf(stdout, "%s\n", piv_chuid_get_guidhex(chuid));
+
 	piv_chuid_free(chuid);
 	piv_pinfo_free(pinfo);
 
@@ -1661,6 +1663,7 @@ cmd_write_cert(uint slotid)
 			return (err);
 		}
 		free(cbuf);
+		cbuf = NULL;
 		rc = i2d_X509(x, &cbuf);
 		if (rc < 0) {
 			make_sslerrf(err, "i2d_X509", "converting X509 cert "

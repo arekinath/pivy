@@ -1012,6 +1012,14 @@ ebox_alloc_private(struct ebox *ebox, size_t sz)
 	return (ebox->e_priv);
 }
 
+void
+ebox_free_private(struct ebox *ebox)
+{
+	VERIFY(ebox->e_priv != NULL);
+	free(ebox->e_priv);
+	ebox->e_priv = NULL;
+}
+
 errf_t *
 sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 {
@@ -2465,6 +2473,12 @@ ebox_key(const struct ebox *box, size_t *len)
 		return (NULL);
 	*len = box->e_keylen;
 	return (box->e_key);
+}
+
+boolean_t
+ebox_is_unlocked(const struct ebox *box)
+{
+	return (box->e_key != NULL && box->e_keylen > 0);
 }
 
 const uint8_t *

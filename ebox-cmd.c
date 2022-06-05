@@ -75,6 +75,11 @@ uint ebox_min_retries = 1;
 boolean_t ebox_batch = B_FALSE;
 struct piv_token *ebox_enum_tokens = NULL;
 
+struct ans_config {
+	struct ebox_config	*ac_config;
+	struct answer		*ac_ans;
+};
+
 #if defined(__sun)
 static GetLine *sungl = NULL;
 static FILE *devterm = NULL;
@@ -404,6 +409,89 @@ release_context(void)
 	ebox_ctx_init = B_FALSE;
 }
 
+boolean_t
+can_local_unlock(struct piv_ecdh_box *box)
+{
+	errf_t *err;
+	int rc;
+	uint i;
+	struct piv_slot *slot;
+	struct piv_token *tokens = NULL, *token;
+	struct ssh_identitylist *idl = NULL;
+	struct sshkey *pubkey;
+	boolean_t found = B_FALSE;
+
+	if (ebox_authfd != -1 ||
+	    ssh_get_authentication_socket(&ebox_authfd) != -1) {
+		pubkey = piv_box_pubkey(box);
+
+		rc = ssh_fetch_identitylist(ebox_authfd, &idl);
+		if (rc)
+			goto out;
+
+		for (i = 0; i < idl->nkeys; ++i) {
+			if (sshkey_equal_public(idl->keys[i], pubkey)) {
+				found = B_TRUE;
+				break;
+			}
+		}
+		if (found)
+			goto out;
+	}
+
+	if (!piv_box_has_guidslot(box))
+		goto out;
+
+	if (!ebox_ctx_init) {
+		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
+		    &ebox_ctx);
+		if (rc != SCARD_S_SUCCESS)
+			goto out;
+		ebox_ctx_init = B_TRUE;
+	}
+
+	/*
+	 * We might try to call local_unlock on a whole lot of configs in a
+	 * row (looking for one that works). If we resort to enumerating all
+	 * the tokens on the system at any point, cache them in
+	 * ebox_enum_tokens so that things are a bit faster.
+	 */
+	if (ebox_enum_tokens != NULL) {
+		tokens = ebox_enum_tokens;
+
+	} else {
+		err = piv_find(ebox_ctx, piv_box_guid(box), GUID_LEN, &tokens);
+		if (err == ERRF_OK) {
+			found = B_TRUE;
+		} else if (errf_caused_by(err, "NotFoundError")) {
+			errf_free(err);
+			err = piv_enumerate(ebox_ctx, &tokens);
+			if (err) {
+				errf_free(err);
+			} else {
+				ebox_enum_tokens = tokens;
+			}
+		} else {
+			errf_free(err);
+		}
+	}
+	if (found)
+		goto out;
+
+	err = piv_box_find_token(tokens, box, &token, &slot);
+	if (err) {
+		errf_free(err);
+		goto out;
+	}
+	found = B_TRUE;
+
+out:
+	if (tokens != ebox_enum_tokens)
+		piv_release(tokens);
+	ssh_free_identitylist(idl);
+	return (found);
+}
+
 errf_t *
 local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 {
@@ -435,6 +523,7 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 			errfx(EXIT_ERROR, pcscerrf("SCardEstablishContext", rc),
 			    "failed to initialise libpcsc");
 		}
+		ebox_ctx_init = B_TRUE;
 	}
 
 	/*
@@ -571,6 +660,31 @@ remove_answer(struct question *q, struct answer *a)
 		VERIFY(q->q_lastans == a);
 		q->q_lastans = a->a_prev;
 	}
+	a->a_next = NULL;
+	a->a_prev = NULL;
+}
+
+void
+remove_command(struct question *q, struct answer *a)
+{
+	if (a->a_prev != NULL) {
+		a->a_prev->a_next = a->a_next;
+	} else {
+		if (q->q_coms != a && a->a_next == NULL)
+			return;
+		VERIFY(q->q_coms == a);
+		q->q_coms = a->a_next;
+	}
+	if (a->a_next != NULL) {
+		a->a_next->a_prev = a->a_prev;
+	} else {
+		if (q->q_lastcom != a && a->a_prev == NULL)
+			return;
+		VERIFY(q->q_lastcom == a);
+		q->q_lastcom = a->a_prev;
+	}
+	a->a_next = NULL;
+	a->a_prev = NULL;
 }
 
 void
@@ -892,6 +1006,7 @@ interactive_recovery(struct ebox_config *config, const char *what)
 	struct sshbuf *buf, *b64buf;
 	struct piv_ecdh_box *box;
 	const struct ebox_challenge *chal;
+	struct ans_config *ac;
 	char k = '0';
 	uint n, ncur;
 	uint i;
@@ -901,6 +1016,7 @@ interactive_recovery(struct ebox_config *config, const char *what)
 	const uint8_t *words;
 	size_t wordlen;
 	int rc;
+	boolean_t adone_in = B_FALSE;
 
 	tconfig = ebox_config_tpl(config);
 	n = ebox_tpl_config_n(tconfig);
@@ -913,11 +1029,13 @@ interactive_recovery(struct ebox_config *config, const char *what)
 	}
 
 	q = calloc(1, sizeof (struct question));
-	a = (struct answer *)ebox_config_private(config);
+	ac = (struct ans_config *)ebox_config_private(config);
+	a = ac->ac_ans;
 	question_printf(q, "-- Recovery config %c --\n", a->a_key);
 	question_printf(q, "Select %u parts to use for recovery", n);
 
 	part = NULL;
+	ncur = 0;
 	while ((part = ebox_config_next_part(config, part)) != NULL) {
 		tpart = ebox_part_tpl(part);
 		state = ebox_part_alloc_private(part,
@@ -929,11 +1047,19 @@ interactive_recovery(struct ebox_config *config, const char *what)
 		a->a_priv = state;
 		VERIFY(state->ps_ans != NULL);
 		state->ps_intent = INTENT_NONE;
+		if (can_local_unlock(ebox_part_box(part))) {
+			state->ps_intent = INTENT_LOCAL;
+			++ncur;
+		}
 		make_answer_text_for_pstate(state);
 		add_answer(q, a);
 	}
 
 	adone = make_answer('r', "begin recovery");
+	if (ncur >= n) {
+		add_command(q, adone);
+		adone_in = B_TRUE;
+	}
 
 again:
 	question_prompt(q, &a);
@@ -951,9 +1077,15 @@ again:
 			++ncur;
 	}
 	if (ncur >= n) {
-		add_answer(q, adone);
+		if (!adone_in) {
+			add_command(q, adone);
+			adone_in = B_TRUE;
+		}
 	} else {
-		remove_answer(q, adone);
+		if (adone_in) {
+			remove_command(q, adone);
+			adone_in = B_FALSE;
+		}
 	}
 	goto again;
 
@@ -1078,6 +1210,15 @@ partagain:
 		++ncur;
 	}
 	sshbuf_free(buf);
+
+	part = NULL;
+	while ((part = ebox_config_next_part(config, part)) != NULL) {
+		state = (struct part_state *)ebox_part_private(part);
+		state->ps_ans->a_priv = NULL;
+		ebox_part_free_private(part);
+	}
+	question_free(q);
+
 	return (NULL);
 }
 
@@ -1353,63 +1494,100 @@ open_tpl_file(const char *tpl, const char *mode)
 	return (NULL);
 }
 
-struct ebox_tpl *
-read_tpl_file(const char *tpl)
+errf_t *
+read_tpl_file_err(const char *tpl, struct ebox_tpl **ptpl)
 {
-	errf_t *error;
-	FILE *tplf;
+	errf_t *err;
+	FILE *tplf = NULL;
 	struct stat st;
-	char *buf;
-	struct sshbuf *sbuf;
+	char *buf = NULL;
+	struct sshbuf *sbuf = NULL;
 	size_t len;
 	int rc;
-	struct ebox_tpl *stpl;
+	struct ebox_tpl *stpl = NULL;
 
 	tplf = open_tpl_file(tpl, "r");
 	rc = errno;
 	if (tplf == NULL) {
-		err(EXIT_ERROR, "failed to open template file '%s' for reading",
-		    tpl);
+		err = errf("FileNotFound", errfno("fopen", errno, "%s", tpl),
+		    "failed to open template file '%s' for reading", tpl);
+		goto out;
 	}
 	bzero(&st, sizeof (st));
-	if (fstat(fileno(tplf), &st))
-		err(EXIT_ERROR, "failed to get size of '%s'", tpl);
-	if (!S_ISREG(st.st_mode))
-		err(EXIT_ERROR, "'%s' is not a regular file", tpl);
-	if (st.st_size > TPL_MAX_SIZE)
-		err(EXIT_ERROR, "'%s' is too large for an ebox template", tpl);
+	if (fstat(fileno(tplf), &st)) {
+		err = errfno("fstat", errno, "%s", tpl);
+		goto out;
+	}
+	if (!S_ISREG(st.st_mode)) {
+		err = errf("BadFileType", NULL, "'%s' is not a regular file",
+		    tpl);
+		goto out;
+	}
+	if (st.st_size > TPL_MAX_SIZE) {
+		err = errf("FileTooLarge", NULL, "'%s' is too large for an "
+		    "ebox template file", tpl);
+		goto out;
+	}
 	buf = malloc(st.st_size + 1);
 	if (buf == NULL) {
-		err(EXIT_ERROR, "out of memory while allocating template "
-		    "read buffer");
+		err = ERRF_NOMEM;
+		goto out;
 	}
 	len = fread(buf, 1, st.st_size, tplf);
-	if (len < st.st_size && feof(tplf)) {
-		errx(EXIT_ERROR, "short read while processing template '%s'",
-		    tpl);
+	if (len < 0 && ferror(tplf)) {
+		err = errfno("fread", errno, "template file '%s'", tpl);
+		goto out;
+	}
+	if (len < st.st_size) {
+		err = errf("ShortRead", NULL, "short read while processing "
+		    "template '%s'", tpl);
+		goto out;
 	}
 	buf[len] = '\0';
-	if (ferror(tplf))
-		err(EXIT_ERROR, "error reading from template file '%s'", tpl);
-	if (fclose(tplf))
-		err(EXIT_ERROR, "error closing file '%s'", tpl);
+	if (fclose(tplf)) {
+		err = errfno("fclose", errno, "closing tpl file '%s'", tpl);
+		goto out;
+	}
+	tplf = NULL;
 	sbuf = sshbuf_new();
 	if (sbuf == NULL) {
-		err(EXIT_ERROR, "out of memory while allocating template "
-		    "processing buffer");
+		err = ERRF_NOMEM;
+		goto out;
 	}
 	if ((rc = sshbuf_b64tod(sbuf, buf))) {
-		error = ssherrf("sshbuf_b64tod", rc);
-		errfx(EXIT_ERROR, error, "failed to parse contents of '%s' as "
-		    "base64-encoded data", tpl);
+		err = errf("TemplateFormatError", ssherrf("sshbuf_b64tod", rc),
+		    "failed to parse the contents of '%s' as base64-encoded "
+		    "data", tpl);
+		goto out;
 	}
-	if ((error = sshbuf_get_ebox_tpl(sbuf, &stpl))) {
-		errfx(EXIT_ERROR, error, "failed to parse contents of '%s' as "
-		    "a base64-encoded ebox template", tpl);
+	if ((err = sshbuf_get_ebox_tpl(sbuf, &stpl))) {
+		err = errf("TemplateFormatError", err, "failed to parse contents of "
+		    "'%s' as an ebox template", tpl);
+		goto out;
 	}
+
+	*ptpl = stpl;
+	stpl = NULL;
+	err = ERRF_OK;
+
+out:
 	sshbuf_free(sbuf);
 	free(buf);
+	if (tplf != NULL)
+		fclose(tplf);
+	ebox_tpl_free(stpl);
+	return (err);
+}
 
+struct ebox_tpl *
+read_tpl_file(const char *tpl)
+{
+	errf_t *err;
+	struct ebox_tpl *stpl = NULL;
+
+	err = read_tpl_file_err(tpl, &stpl);
+	if (err != ERRF_OK)
+		errfx(EXIT_ERROR, err, "reading tpl '%s'", tpl);
 	return (stpl);
 }
 
@@ -1435,6 +1613,7 @@ interactive_select_local_token(struct ebox_tpl_part **ppart)
 			errfx(EXIT_ERROR, pcscerrf("SCardEstablishContext", rc),
 			    "failed to initialise libpcsc");
 		}
+		ebox_ctx_init = B_TRUE;
 	}
 
 reenum:
@@ -1606,4 +1785,148 @@ make_answer_text_for_config(struct ebox_tpl_config *config, struct answer *a)
 		break;
 	}
 	free(guidhex);
+}
+
+errf_t *
+interactive_unlock_ebox(struct ebox *ebox, const char *fn)
+{
+	struct ebox_config *config;
+	struct ebox_part *part;
+	struct ebox_tpl_part *tpart;
+	struct ebox_tpl_config *tconfig;
+	errf_t *error;
+	struct ans_config *ac;
+	struct question *q = NULL;
+	struct answer *a;
+	uint nconfigs = 0;
+	char k = '0';
+
+	if (fn == NULL)
+		fn = "pivy-box data";
+
+	if (ebox_is_unlocked(ebox))
+		return (ERRF_OK);
+
+	/* Try to use the pivy-agent to unlock first if we have one. */
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
+			part = ebox_config_next_part(config, NULL);
+			tpart = ebox_part_tpl(part);
+			error = local_unlock_agent(ebox_part_box(part));
+			if (error) {
+				errf_free(error);
+				continue;
+			}
+			error = ebox_unlock(ebox, config);
+			if (error)
+				return (error);
+			goto done;
+		}
+	}
+
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
+			part = ebox_config_next_part(config, NULL);
+			tpart = ebox_part_tpl(part);
+			error = local_unlock(ebox_part_box(part),
+			    ebox_tpl_part_cak(tpart),
+			    ebox_tpl_part_name(tpart));
+			if (error && !errf_caused_by(error, "NotFoundError"))
+				return (error);
+			if (error) {
+				errf_free(error);
+				continue;
+			}
+			error = ebox_unlock(ebox, config);
+			if (error)
+				return (error);
+			goto done;
+		}
+	}
+
+	if (ebox_batch) {
+		error = errf("InteractiveError", NULL,
+		    "interactive recovery is required but the -b batch option "
+		    "was provided");
+		return (error);
+	}
+
+	q = calloc(1, sizeof (struct question));
+	question_printf(q, "-- Recovery mode --\n");
+	question_printf(q, "No primary configuration could proceed using a "
+	    "token currently available\non the system. You may either select "
+	    "a primary config to retry, or select\na recovery config to "
+	    "begin the recovery process.\n\n");
+	question_printf(q, "Select a configuration to use:");
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		tconfig = ebox_config_tpl(config);
+		ac = ebox_config_alloc_private(config,
+		    sizeof (struct ans_config));
+		VERIFY(ac != NULL);
+		a = calloc(1, sizeof (struct answer));
+		VERIFY(a != NULL);
+		ac->ac_ans = a;
+		ac->ac_config = config;
+		a->a_key = ++k;
+		a->a_priv = ac;
+		make_answer_text_for_config(tconfig, a);
+		add_answer(q, a);
+		++nconfigs;
+	}
+again:
+	if (nconfigs == 1) {
+		/* Only one config */
+		config = ebox_next_config(ebox, NULL);
+	} else {
+		question_prompt(q, &a);
+		ac = (struct ans_config *)a->a_priv;
+		VERIFY3P(ac->ac_ans, ==, a);
+		config = ac->ac_config;
+
+	}
+	tconfig = ebox_config_tpl(config);
+	if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
+		part = ebox_config_next_part(config, NULL);
+		tpart = ebox_part_tpl(part);
+		release_context();
+		error = local_unlock(ebox_part_box(part),
+		    ebox_tpl_part_cak(tpart),
+		    ebox_tpl_part_name(tpart));
+		if (error) {
+			warnfx(error, "failed to activate config %c", a->a_key);
+			errf_free(error);
+			goto again;
+		}
+		error = ebox_unlock(ebox, config);
+		if (error)
+			return (error);
+		goto done;
+	}
+	error = interactive_recovery(config, fn);
+	if (error) {
+		warnfx(error, "failed to activate config %c", a->a_key);
+		errf_free(error);
+		goto again;
+	}
+	error = ebox_recover(ebox, config);
+	if (error)
+		return (error);
+
+done:
+	config = NULL;
+	while ((config = ebox_next_config(ebox, config)) != NULL) {
+		ac = ebox_config_private(config);
+		if (ac == NULL)
+			continue;
+		VERIFY3P(ac->ac_config, ==, config);
+		ac->ac_ans->a_priv = NULL;
+		ebox_config_free_private(config);
+	}
+	question_free(q);
+	return (ERRF_OK);
 }
