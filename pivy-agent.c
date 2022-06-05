@@ -202,6 +202,12 @@ typedef enum authz {
 	AUTHZ_ALLOWED
 } authz_t;
 
+typedef enum sessbind {
+	SESSBIND_NONE = 0,
+	SESSBIND_AUTH,
+	SESSBIND_FWD
+} sessbind_t;
+
 typedef struct socket_entry {
 	int se_fd;
 	sock_type_t se_type;
@@ -215,6 +221,7 @@ typedef struct socket_entry {
 	struct sshbuf *se_request;
 	struct pid_entry *se_pid_ent;
 	uint se_pid_idx;
+	sessbind_t se_sbind;
 } socket_entry_t;
 
 u_int sockets_alloc = 0;
@@ -757,13 +764,34 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		const size_t len = strlen(e->se_exepath);
 		const uint64_t now = monotime();
 		const int64_t delta = now - e->se_pid_ent->pe_last_auth;
-		if (len >= 4)
-			ssh = &e->se_exepath[len - 4];
-		if (e->se_pid_idx == 0 || ssh == NULL ||
-		    strcmp(ssh, "/ssh") != 0) {
+		/*
+		 * If we've seen a session-bind for auth, this isn't a
+		 * forwarded connection.
+		 */
+		if (e->se_sbind == SESSBIND_AUTH) {
 			e->se_authz = AUTHZ_ALLOWED;
 			return;
 		}
+		/*
+		 * If we haven't seen a session-bind at all, sniff whether this
+		 * is an "ssh" process connected to us. If this is the very
+		 * first connection that "ssh" process has made, assume it's
+		 * the auth socket.
+		 */
+		if (e->se_sbind == SESSBIND_NONE) {
+			if (len >= 4)
+				ssh = &e->se_exepath[len - 4];
+			if (e->se_pid_idx == 0 || ssh == NULL ||
+			    strcmp(ssh, "/ssh") != 0) {
+				e->se_authz = AUTHZ_ALLOWED;
+				return;
+			}
+		}
+		/*
+		 * Otherwise, check if the user has authorised this PID
+		 * recently -- if they have, this connection is ok (and we
+		 * should renew the PID's authorisation).
+		 */
 		if (pid_auth_cache_time > 0 &&
 		    delta < pid_auth_cache_time) {
 			e->se_pid_ent->pe_last_auth = now;
@@ -771,6 +799,8 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 			return;
 		}
 	}
+
+	/* Otherwise we're going to try to obtain user consent. */
 
 	if (askpass == NULL)
 		askpass = getenv("SSH_ASKPASS");
@@ -1000,6 +1030,7 @@ close_socket(socket_entry_t *e)
 	e->se_type = AUTH_UNUSED;
 	e->se_authz = AUTHZ_NOT_YET;
 	e->se_pid_ent = NULL;
+	e->se_sbind = SESSBIND_NONE;
 	sshbuf_free(e->se_input);
 	sshbuf_free(e->se_output);
 	sshbuf_free(e->se_request);
@@ -1383,6 +1414,7 @@ process_remove_all_identities(socket_entry_t *e)
 
 struct exthandler {
 	const char *eh_name;
+	boolean_t eh_string;
 	errf_t *(*eh_handler)(socket_entry_t *, struct sshbuf *);
 };
 struct exthandler exthandlers[];
@@ -1654,6 +1686,54 @@ process_ext_x509_certs(socket_entry_t *e, struct sshbuf *buf)
 }
 
 static errf_t *
+process_ext_sessbind(socket_entry_t *e, struct sshbuf *buf)
+{
+	int r;
+	errf_t *err = ERRF_OK;
+	struct sshbuf *msg;
+	struct sshkey *key = NULL;
+	uint8_t is_forwarding = 1;
+	sessbind_t new_sbind;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+
+	if ((r = sshkey_froms(buf, &key)) ||
+	    (r = sshbuf_skip_string(buf)) ||	/* session id */
+	    (r = sshbuf_skip_string(buf)) ||	/* signature */
+	    (r = sshbuf_get_u8(buf, &is_forwarding))) {
+		err = ssherrf("sshbuf_get", r);
+		goto out;
+	}
+
+	new_sbind = (is_forwarding == 0) ? SESSBIND_AUTH : SESSBIND_FWD;
+
+	if (e->se_sbind == SESSBIND_NONE) {
+		e->se_sbind = new_sbind;
+		bunyan_log(BNY_INFO, "session-bind marking connection",
+		    "sbind_state", BNY_STRING, (is_forwarding == 0) ? "auth" :
+		    "forwarding", NULL);
+	} else if (e->se_sbind == SESSBIND_AUTH && new_sbind != e->se_sbind) {
+		e->se_sbind = new_sbind;
+		e->se_authz = AUTHZ_DENIED;
+		bunyan_log(BNY_WARN, "connection has a session-bind for auth, "
+		    " but has now sent a forwarding bind", NULL);
+	}
+
+	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (r = sshbuf_put_u32(msg, 2)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+out:
+	sshbuf_free(msg);
+	sshkey_free(key);
+	return (err);
+}
+
+static errf_t *
 process_ext_attest(socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
@@ -1772,12 +1852,13 @@ process_ext_query(socket_entry_t *e, struct sshbuf *buf)
 }
 
 struct exthandler exthandlers[] = {
-	{ "query", process_ext_query },
-	{ "ecdh@joyent.com", process_ext_ecdh },
-	{ "ecdh-rebox@joyent.com", process_ext_rebox },
-	{ "x509-certs@joyent.com", process_ext_x509_certs },
-	{ "ykpiv-attest@joyent.com", process_ext_attest },
-	{ NULL, NULL }
+	{ "query", B_FALSE, process_ext_query },
+	{ "ecdh@joyent.com", B_TRUE, process_ext_ecdh },
+	{ "ecdh-rebox@joyent.com", B_TRUE, process_ext_rebox },
+	{ "x509-certs@joyent.com", B_TRUE, process_ext_x509_certs },
+	{ "ykpiv-attest@joyent.com", B_TRUE, process_ext_attest },
+	{ "session-bind@openssh.com", B_FALSE, process_ext_sessbind },
+	{ NULL, B_FALSE, NULL }
 };
 
 static errf_t *
@@ -1792,13 +1873,7 @@ process_extension(socket_entry_t *e)
 
 	if ((r = sshbuf_get_cstring(e->se_request, &extname, &enlen)))
 		return (parserrf("sshbuf_get_cstring", r));
-
-	if ((r = sshbuf_froms(e->se_request, &inner))) {
-		err = parserrf("sshbuf_froms", r);
-		goto out;
-	}
 	VERIFY(extname != NULL);
-	VERIFY(inner != NULL);
 
 	for (h = exthandlers; h->eh_name != NULL; ++h) {
 		if (strcmp(h->eh_name, extname) == 0) {
@@ -1814,6 +1889,17 @@ process_extension(socket_entry_t *e)
 
 	bunyan_add_vars(msg_log_frame,
 	    "extension", BNY_STRING, h->eh_name, NULL);
+
+	if (h->eh_string) {
+		if ((r = sshbuf_froms(e->se_request, &inner))) {
+			err = parserrf("sshbuf_froms", r);
+			goto out;
+		}
+	} else {
+		inner = e->se_request;
+	}
+	VERIFY(inner != NULL);
+
 	err = hdlr->eh_handler(e, inner);
 
 	if (err) {
@@ -1829,7 +1915,8 @@ process_extension(socket_entry_t *e)
 	}
 
 out:
-	sshbuf_free(inner);
+	if (h->eh_string)
+		sshbuf_free(inner);
 	free(extname);
 	return (err);
 }
