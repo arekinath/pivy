@@ -46,8 +46,7 @@
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
-
-int PEM_write_X509(FILE *fp, X509 *x);
+#include <openssl/pem.h>
 
 #include "utils.h"
 #include "tlv.h"
@@ -1625,7 +1624,7 @@ cmd_cert(uint slotid)
 		return (err);
 	}
 
-	VERIFY(i2d_X509_fp(stdout, piv_slot_cert(cert)) == 1);
+	PEM_write_X509(stdout, piv_slot_cert(cert));
 
 	return (ERRF_OK);
 }
@@ -1638,6 +1637,8 @@ cmd_write_cert(uint slotid)
 	const unsigned char *p;
 	size_t clen;
 	X509 *x;
+	BIO *bio;
+	int rc;
 
 	assert_slotid(slotid);
 
@@ -1647,11 +1648,29 @@ cmd_write_cert(uint slotid)
 	p = cbuf;
 	x = d2i_X509(NULL, &p, clen);
 	if (x == NULL) {
-		make_sslerrf(err, "d2i_X509", "parsing X509 certificate");
-		err = errf("write_cert", err,
-		    "Invalid certificate input provided (expected DER on "
-		    "stdin)");
-		return (err);
+		bio = BIO_new_mem_buf(cbuf, clen);
+		VERIFY(bio != NULL);
+		x = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+		BIO_free(bio);
+		if (x == NULL) {
+			make_sslerrf(err, "d2i_X509", "parsing X509 "
+			    "certificate");
+			err = errf("write_cert", err,
+			    "Invalid certificate input provided (expected DER "
+			    "or PEM on stdin)");
+			return (err);
+		}
+		free(cbuf);
+		rc = i2d_X509(x, &cbuf);
+		if (rc < 0) {
+			make_sslerrf(err, "i2d_X509", "converting X509 cert "
+			    "to DER");
+			err = errf("write_cert", err,
+			    "Failed to convert cert to DER for upload to "
+			    "card");
+			return (err);
+		}
+		clen = rc;
 	}
 	X509_free(x);
 
@@ -1872,7 +1891,7 @@ signagain:
 		return (err);
 	}
 
-	VERIFY(i2d_X509_REQ_fp(stdout, req) == 1);
+	PEM_write_X509_REQ(stdout, req);
 
 	return (NULL);
 }
@@ -2603,7 +2622,7 @@ usage(void)
 	    "  list                   Lists PIV tokens present\n"
 	    "  pinfo                  Shows contents of Printed Info file\n"
 	    "  pubkey <slot>          Outputs a public key in SSH format\n"
-	    "  cert <slot>            Outputs DER certificate from slot\n"
+	    "  cert <slot>            Outputs PEM certificate from slot\n"
 	    "\n"
 	    "  init                   Writes GUID and card capabilities\n"
 	    "                         (used to init a new Yubico PIV)\n"
