@@ -2623,6 +2623,7 @@ usage(void)
 	    "  pinfo                  Shows contents of Printed Info file\n"
 	    "  pubkey <slot>          Outputs a public key in SSH format\n"
 	    "  cert <slot>            Outputs PEM certificate from slot\n"
+	    "  version                Print pivy's version\n"
 	    "\n"
 	    "  init                   Writes GUID and card capabilities\n"
 	    "                         (used to init a new Yubico PIV)\n"
