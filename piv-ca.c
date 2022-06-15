@@ -85,6 +85,7 @@ struct ca {
 	char			*ca_slug;
 	uint8_t			 ca_guid[16];
 	char			*ca_guidhex;
+	enum piv_slotid		 ca_slot;
 	struct sshkey		*ca_cak;
 	X509_NAME		*ca_dn;
 	boolean_t		 ca_crls_want_idp;
@@ -2769,7 +2770,7 @@ ca_open(const char *path, struct ca **outca)
 	}
 	err = parse_dn(json_object_get_string(obj), ca->ca_dn);
 	if (err != ERRF_OK) {
-		err = errf("InvalidProperty", NULL, "CA JSON has invalid 'dn' "
+		err = errf("InvalidProperty", err, "CA JSON has invalid 'dn' "
 		    "property: '%s'", json_object_get_string(obj));
 		goto metaerr;
 	}
@@ -2920,6 +2921,19 @@ ca_open(const char *path, struct ca **outca)
 		goto out;
 	}
 
+	ca->ca_slot = PIV_SLOT_SIGNATURE;
+	obj = json_object_object_get(robj, "slot");
+	if (obj != NULL) {
+		err = piv_slotid_from_string(json_object_get_string(obj),
+		    &ca->ca_slot);
+		if (err != ERRF_OK) {
+			err = errf("InvalidProperty", err, "CA JSON has "
+			    "invalid 'slot' property: '%s'",
+			    json_object_get_string(obj));
+			goto out;
+		}
+	}
+
 	obj = json_object_object_get(robj, "ebox_templates");
 	if (obj == NULL) {
 		err = errf("MissingProperty", NULL, "CA JSON does not have "
@@ -2996,8 +3010,10 @@ ca_open(const char *path, struct ca **outca)
 		goto out;
 
 	err = load_ebox_file(ca, "pin", &ca->ca_pin_ebox);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
 		errf_free(err);
+		err = ERRF_OK;
+	}
 
 	*outca = ca;
 	ca = NULL;
@@ -4517,11 +4533,11 @@ direct:
 	if (err != ERRF_OK)
 		goto out;
 
-	err = piv_read_cert(sd->csd_token, PIV_SLOT_SIGNATURE);
+	err = piv_read_cert(sd->csd_token, ca->ca_slot);
 	if (err != ERRF_OK)
 		goto out;
 
-	sd->csd_slot = piv_get_slot(sd->csd_token, PIV_SLOT_SIGNATURE);
+	sd->csd_slot = piv_get_slot(sd->csd_token, ca->ca_slot);
 
 	k = piv_slot_pubkey(sd->csd_slot);
 	if (!sshkey_equal_public(ca->ca_pubkey, k)) {
@@ -4590,6 +4606,7 @@ ca_config_write(struct ca *ca, struct ca_session *sess)
 	json_object *robj = NULL, *obj = NULL;
 	char *dnstr = NULL;
 	char *crltime = NULL;
+	char *slotid = NULL;
 	struct sshbuf *buf = NULL;
 	int rc;
 	char fname[PATH_MAX];
@@ -4643,6 +4660,14 @@ ca_config_write(struct ca *ca, struct ca_session *sess)
 	obj = json_object_new_string(crltime);
 	VERIFY(obj != NULL);
 	json_object_object_add(robj, "crl_lifetime", obj);
+
+	if (ca->ca_slot != PIV_SLOT_SIGNATURE) {
+		slotid = piv_slotid_to_string(ca->ca_slot);
+		VERIFY(slotid != NULL);
+		obj = json_object_new_string(slotid);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "slot", obj);
+	}
 
 	obj = json_object_new_array();
 	VERIFY(obj != NULL);
@@ -4719,6 +4744,7 @@ out:
 	free(dnstr);
 	sshbuf_free(buf);
 	free(crltime);
+	free(slotid);
 	return (err);
 }
 

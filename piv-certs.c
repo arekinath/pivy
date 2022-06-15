@@ -687,7 +687,7 @@ add_dn_component(const char *attr, const char *val, X509_NAME *name)
 		    "invalid attribute in DN: '%s'", attr));
 	}
 
-	rc = X509_NAME_add_entry_by_NID(name, nid, MBSTRING_ASC,
+	rc = X509_NAME_add_entry_by_NID(name, nid, V_ASN1_PRINTABLESTRING,
 	    (unsigned char *)val, -1, -1, 0);
 	if (rc != 1) {
 		make_sslerrf(err, "X509_NAME_add_entry_by_NID", "adding DN "
