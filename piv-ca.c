@@ -102,6 +102,7 @@ struct ca {
 
 	struct ca_uri		*ca_crls;
 	struct ca_uri		*ca_ocsps;
+	struct ca_uri		*ca_aias;
 
 	struct ca_ebox_tpl	*ca_ebox_tpls;
 
@@ -761,6 +762,11 @@ ca_close(struct ca *ca)
 		free(uri);
 	}
 	for (uri = ca->ca_ocsps; uri != NULL; uri = nuri) {
+		nuri = uri->cu_next;
+		free(uri->cu_uri);
+		free(uri);
+	}
+	for (uri = ca->ca_aias; uri != NULL; uri = nuri) {
 		nuri = uri->cu_next;
 		free(uri->cu_uri);
 		free(uri);
@@ -2894,6 +2900,19 @@ ca_open(const char *path, struct ca **outca)
 		goto out;
 	}
 
+	obj = json_object_object_get(robj, "aia");
+	if (obj == NULL) {
+		err = errf("MissingProperty", NULL, "CA JSON does not have "
+		    "'aia' property");
+		goto out;
+	}
+	err = read_uri_array(obj, &ca->ca_aias);
+	if (err != ERRF_OK) {
+		err = errf("InvalidProperty", err, "CA JSON has invalid "
+		    "'aia' property: '%s'", json_object_get_string(obj));
+		goto out;
+	}
+
 	ca->ca_crl_lifetime = 7*24*3600;
 	obj = json_object_object_get(robj, "crl_lifetime");
 	if (obj != NULL) {
@@ -3565,34 +3584,64 @@ out:
 }
 
 static errf_t *
-ca_sign_cert(struct ca *ca, struct ca_session *sess, X509 *cert)
+ca_add_crl_ocsp(struct ca *ca, X509 *cert)
 {
-	struct ca_session_agent *a = NULL;
-	struct ca_session_direct *d = NULL;
-	errf_t *err;
-	boolean_t in_txn = B_FALSE;
 	CRL_DIST_POINTS *crldps = NULL;
 	DIST_POINT *dp = NULL;
+	AUTHORITY_INFO_ACCESS *aia = NULL;
+	ACCESS_DESCRIPTION *ad = NULL;
 	struct ca_uri *uri;
+	errf_t *err;
+	GENERAL_NAME *nm = NULL;
+	ASN1_IA5STRING *nmstr = NULL;
 	int rc;
 
 	crldps = CRL_DIST_POINTS_new();
-	VERIFY(crldps != NULL);
+	if (crldps == NULL) {
+		make_sslerrf(err, "CRL_DIST_POINTS_new",
+		    "adding CRL dist points");
+		goto out;
+	}
 
 	dp = DIST_POINT_new();
+	if (dp == NULL) {
+		make_sslerrf(err, "DIST_POINT_new",
+		    "adding CRL dist points");
+		goto out;
+	}
 	dp->distpoint = DIST_POINT_NAME_new();
+	if (dp->distpoint == NULL) {
+		make_sslerrf(err, "DIST_POINT_NAME_new",
+		    "adding CRL dist points");
+		goto out;
+	}
 	dp->distpoint->type = 0;
 	dp->distpoint->name.fullname = GENERAL_NAMES_new();
 	for (uri = ca->ca_crls; uri != NULL; uri = uri->cu_next) {
-		GENERAL_NAME *nm = GENERAL_NAME_new();
-		ASN1_IA5STRING *nmstr = ASN1_IA5STRING_new();
-		VERIFY(nm != NULL);
-		VERIFY(nmstr != NULL);
+		nm = GENERAL_NAME_new();
+		nmstr = ASN1_IA5STRING_new();
+		if (nm == NULL || nmstr == NULL) {
+			make_sslerrf(err, "GENERAL_NAME_new",
+			    "adding CRL dist points");
+			goto out;
+		}
 		ASN1_STRING_set(nmstr, uri->cu_uri, -1);
 		GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
-		sk_GENERAL_NAME_push(dp->distpoint->name.fullname, nm);
+		nmstr = NULL;	/* GENERAL_NAME_set0_value takes ownership */
+		rc = sk_GENERAL_NAME_push(dp->distpoint->name.fullname, nm);
+		if (rc == 0) {
+			make_sslerrf(err, "sk_GENERAL_NAME_push",
+			    "adding CRL dist points");
+			goto out;
+		}
+		nm = NULL;
 	}
-	sk_DIST_POINT_push(crldps, dp);
+	rc = sk_DIST_POINT_push(crldps, dp);
+	if (rc == 0) {
+		make_sslerrf(err, "sk_DIST_POINT_push",
+		    "adding CRL dist points");
+		goto out;
+	}
 
 	rc = X509_add1_ext_i2d(cert, NID_crl_distribution_points, crldps, 0,
 	    X509V3_ADD_REPLACE);
@@ -3601,6 +3650,115 @@ ca_sign_cert(struct ca *ca, struct ca_session *sess, X509 *cert)
 		    "adding CRL dist points");
 		goto out;
 	}
+
+	aia = AUTHORITY_INFO_ACCESS_new();
+	if (aia != NULL) {
+		make_sslerrf(err, "AUTHORITY_INFO_ACCESS_new",
+		    "adding OCSP AIA");
+		goto out;
+	}
+
+	for (uri = ca->ca_ocsps; uri != NULL; uri = uri->cu_next) {
+		nm = GENERAL_NAME_new();
+		nmstr = ASN1_IA5STRING_new();
+		if (nm == NULL || nmstr == NULL) {
+			make_sslerrf(err, "GENERAL_NAME_new",
+			    "adding OCSP AIA");
+			goto out;
+		}
+		ASN1_STRING_set(nmstr, uri->cu_uri, -1);
+		GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
+		nmstr = NULL;	/* GENERAL_NAME_set0_value takes ownership */
+
+		ad = ACCESS_DESCRIPTION_new();
+		if (ad == NULL) {
+			make_sslerrf(err, "ACCESS_DESCRIPTION_new",
+			    "adding OCSP AIA");
+			goto out;
+		}
+		ad->method = OBJ_nid2obj(NID_ad_OCSP);
+		if (ad->method == NULL) {
+			make_sslerrf(err, "OBJ_nid2obj",
+			    "adding OCSP AIA (converting OCSP NID)");
+			goto out;
+		}
+		ad->location = nm;
+		nm = NULL;
+		rc = sk_ACCESS_DESCRIPTION_push(aia, ad);
+		if (rc == 0) {
+			make_sslerrf(err, "sk_ACCESS_DESCRIPTION_push",
+			    "adding OCSP AIA");
+			goto out;
+		}
+		ad = NULL;
+	}
+
+	for (uri = ca->ca_aias; uri != NULL; uri = uri->cu_next) {
+		nm = GENERAL_NAME_new();
+		nmstr = ASN1_IA5STRING_new();
+		if (nm == NULL || nmstr == NULL) {
+			make_sslerrf(err, "GENERAL_NAME_new",
+			    "adding AIA");
+			goto out;
+		}
+		ASN1_STRING_set(nmstr, uri->cu_uri, -1);
+		GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
+		nmstr = NULL;	/* GENERAL_NAME_set0_value takes ownership */
+
+		ad = ACCESS_DESCRIPTION_new();
+		if (ad == NULL) {
+			make_sslerrf(err, "ACCESS_DESCRIPTION_new",
+			    "adding AIA");
+			goto out;
+		}
+		ad->method = OBJ_nid2obj(NID_ad_ca_issuers);
+		if (ad->method == NULL) {
+			make_sslerrf(err, "OBJ_nid2obj",
+			    "adding AIA (converting CAIssuers NID)");
+			goto out;
+		}
+		ad->location = nm;
+		nm = NULL;
+		rc = sk_ACCESS_DESCRIPTION_push(aia, ad);
+		if (rc == 0) {
+			make_sslerrf(err, "sk_ACCESS_DESCRIPTION_push",
+			    "adding AIA");
+			goto out;
+		}
+		ad = NULL;
+	}
+
+	rc = X509_add1_ext_i2d(cert, NID_info_access, aia, 0,
+	    X509V3_ADD_REPLACE);
+	if (rc != 1) {
+		make_sslerrf(err, "X509_add1_ext_i2d",
+		    "adding OCSP dist points");
+		goto out;
+	}
+
+	err = ERRF_OK;
+
+out:
+	CRL_DIST_POINTS_free(crldps);
+	AUTHORITY_INFO_ACCESS_free(aia);
+	ACCESS_DESCRIPTION_free(ad);
+	GENERAL_NAME_free(nm);
+	ASN1_IA5STRING_free(nmstr);
+
+	return (err);
+}
+
+static errf_t *
+ca_sign_cert(struct ca *ca, struct ca_session *sess, X509 *cert)
+{
+	struct ca_session_agent *a = NULL;
+	struct ca_session_direct *d = NULL;
+	errf_t *err;
+	boolean_t in_txn = B_FALSE;
+
+	err = ca_add_crl_ocsp(ca, cert);
+	if (err != ERRF_OK)
+		goto out;
 
 	if (sess->cs_type == CA_SESSION_AGENT) {
 		a = &sess->cs_agent;
@@ -3653,7 +3811,6 @@ ca_sign_cert(struct ca *ca, struct ca_session *sess, X509 *cert)
 out:
 	if (in_txn)
 		piv_txn_end(d->csd_token);
-	CRL_DIST_POINTS_free(crldps);
 	return (err);
 }
 
@@ -4655,6 +4812,13 @@ ca_config_write(struct ca *ca, struct ca_session *sess)
 		goto out;
 	json_object_object_add(robj, "crl", obj);
 
+	obj = json_object_new_array();
+	VERIFY(obj != NULL);
+	err = write_uri_array(obj, ca->ca_aias);
+	if (err != ERRF_OK)
+		goto out;
+	json_object_object_add(robj, "aia", obj);
+
 	crltime = unparse_lifetime(ca->ca_crl_lifetime);
 	VERIFY(crltime != NULL);
 	obj = json_object_new_string(crltime);
@@ -5187,6 +5351,37 @@ ca_ocsp_uri_remove(struct ca *ca, const char *uri)
 }
 errf_t *
 ca_ocsp_uri_add(struct ca *ca, const char *uri)
+{
+	return (errf("NotImplemented", NULL, "Not implemented"));
+}
+
+uint
+ca_aia_uri_count(const struct ca *ca)
+{
+	uint i = 0;
+	const struct ca_uri *uri;
+	for (uri = ca->ca_aias; uri != NULL; uri = uri->cu_next)
+		++i;
+	return (i);
+}
+const char *
+ca_aia_uri(const struct ca *ca, uint index)
+{
+	uint i = 0;
+	const struct ca_uri *uri;
+	for (uri = ca->ca_aias; uri != NULL; uri = uri->cu_next) {
+		if (i++ == index)
+			return (uri->cu_uri);
+	}
+	return (NULL);
+}
+errf_t *
+ca_aia_uri_remove(struct ca *ca, const char *uri)
+{
+	return (errf("NotImplemented", NULL, "Not implemented"));
+}
+errf_t *
+ca_aia_uri_add(struct ca *ca, const char *uri)
 {
 	return (errf("NotImplemented", NULL, "Not implemented"));
 }

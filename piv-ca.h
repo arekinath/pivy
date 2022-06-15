@@ -188,6 +188,11 @@ const char	*ca_ocsp_uri(const struct ca *ca, uint index);
 errf_t		*ca_ocsp_uri_remove(struct ca *ca, const char *uri);
 errf_t		*ca_ocsp_uri_add(struct ca *ca, const char *uri);
 
+uint		 ca_aia_uri_count(const struct ca *ca);
+const char	*ca_aia_uri(const struct ca *ca, uint index);
+errf_t		*ca_aia_uri_remove(struct ca *ca, const char *uri);
+errf_t		*ca_aia_uri_add(struct ca *ca, const char *uri);
+
 struct ebox	*ca_get_ebox(struct ca *ca, enum ca_ebox_type type);
 const char	*ca_get_ebox_tpl(struct ca *ca, enum ca_ebox_type type);
 errf_t		*ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type,
