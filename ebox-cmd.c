@@ -339,7 +339,10 @@ local_unlock_agent(struct piv_ecdh_box *box)
 		goto out;
 	}
 
-	fprintf(stderr, "Using key '%s' in ssh-agent...\n", idl->comments[i]);
+	if (!ebox_batch) {
+		fprintf(stderr, "Using key '%s' in ssh-agent...\n",
+		    idl->comments[i]);
+	}
 	rc = ssh_request_reply(ebox_authfd, req, reply);
 	if (rc) {
 		err = ssherrf("ssh_request_reply", rc);
