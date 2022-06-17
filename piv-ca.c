@@ -3652,7 +3652,7 @@ ca_add_crl_ocsp(struct ca *ca, X509 *cert)
 	}
 
 	aia = AUTHORITY_INFO_ACCESS_new();
-	if (aia != NULL) {
+	if (aia == NULL) {
 		make_sslerrf(err, "AUTHORITY_INFO_ACCESS_new",
 		    "adding OCSP AIA");
 		goto out;
