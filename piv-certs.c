@@ -1290,10 +1290,15 @@ gen_sid_ext(struct cert_var_scope *cs, X509_EXTENSION **out)
 	uint i;
 	ASN1_OCTET_STRING *asn1_str = NULL;
 	ASN1_OBJECT *obj = NULL;
+	ASN1_TYPE *typ = NULL;
 	uint8_t v;
 	uint64_t v64;
 	uint32_t subauth;
 	uint64_t idauth;
+	STACK_OF(GENERAL_NAME) *gns = NULL;
+	GENERAL_NAME *gn = NULL;
+	uint8_t *derbuf = NULL;
+	size_t len;
 
 	err = scope_eval(cs, "ad_sid", &str);
 	if (err != ERRF_OK) {
@@ -1375,15 +1380,48 @@ gen_sid_ext(struct cert_var_scope *cs, X509_EXTENSION **out)
 		str = sshbuf_dup_string(sbuf);
 	}
 
+	gns = sk_GENERAL_NAME_new_null();
+	VERIFY(gns != NULL);
+
+	asn1_str = ASN1_OCTET_STRING_new();
+	VERIFY(asn1_str != NULL);
+	VERIFY(ASN1_STRING_set(asn1_str, str, -1) == 1);
+
+	obj = OBJ_txt2obj("1.3.6.1.4.1.311.25.2.1", 1);
+	if (obj == NULL) {
+		make_sslerrf(err, "OBJ_txt2obj", "obtaining NID for SID ext");
+		goto out;
+	}
+
+	typ = ASN1_TYPE_new();
+	VERIFY(typ != NULL);
+	ASN1_TYPE_set(typ, V_ASN1_OCTET_STRING, asn1_str);
+	asn1_str = NULL;
+
+	gn = GENERAL_NAME_new();
+	VERIFY(gn != NULL);
+	GENERAL_NAME_set0_othername(gn, obj, typ);
+	typ = NULL;
+	obj = NULL;
+	VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
+	gn = NULL;
+
 	obj = OBJ_txt2obj("1.3.6.1.4.1.311.25.2", 1);
 	if (obj == NULL) {
 		make_sslerrf(err, "OBJ_txt2obj", "obtaining NID for SID ext");
 		goto out;
 	}
 
+	rc = i2d_GENERAL_NAMES(gns, &derbuf);
+	if (rc < 1) {
+		make_sslerrf(err, "i2d_GENERAL_NAMES", "building SID ext");
+		goto out;
+	}
+	len = rc;
+
 	asn1_str = ASN1_OCTET_STRING_new();
 	VERIFY(asn1_str != NULL);
-	VERIFY(ASN1_STRING_set(asn1_str, str, -1) == 1);
+	VERIFY(ASN1_STRING_set(asn1_str, derbuf, len) == 1);
 
 	ext = X509_EXTENSION_create_by_OBJ(NULL, obj, 0, asn1_str);
 	VERIFY(ext != NULL);
@@ -1399,6 +1437,10 @@ out:
 	ASN1_OCTET_STRING_free(asn1_str);
 	ASN1_OBJECT_free(obj);
 	X509_EXTENSION_free(ext);
+	sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
+	GENERAL_NAME_free(gn);
+	ASN1_TYPE_free(typ);
+	free(derbuf);
 	return (err);
 }
 
