@@ -688,7 +688,7 @@ add_dn_component(const char *attr, const char *val, X509_NAME *name)
 	}
 
 	rc = X509_NAME_add_entry_by_NID(name, nid, V_ASN1_PRINTABLESTRING,
-	    (unsigned char *)val, -1, -1, 0);
+	    (unsigned char *)val, -1, 0, 0);
 	if (rc != 1) {
 		make_sslerrf(err, "X509_NAME_add_entry_by_NID", "adding DN "
 		    "attribute '%s'", attr);
@@ -725,7 +725,7 @@ unparse_dn(X509_NAME *name, char **out)
 		return (errfno("sshbuf_new", errno, NULL));
 
 	max = X509_NAME_entry_count(name);
-	for (i = 0; i < max; ++i) {
+	for (i = max - 1; i < max; --i) {
 		X509_NAME_ENTRY *ent = X509_NAME_get_entry(name, i);
 		ASN1_OBJECT *obj = X509_NAME_ENTRY_get_object(ent);
 		ASN1_STRING *val = X509_NAME_ENTRY_get_data(ent);
@@ -773,7 +773,7 @@ unparse_dn(X509_NAME *name, char **out)
 			VERIFY0(sshbuf_put_u8(buf, c));
 		}
 
-		if (i + 1 < max) {
+		if (i != 0) {
 			VERIFY0(sshbuf_put_u8(buf, ','));
 			VERIFY0(sshbuf_put_u8(buf, ' '));
 		}
