@@ -132,6 +132,9 @@ struct cert_tpl cert_templates[] = {
 			PARAM_AD_UPN,
 			PARAM_KRB5_PN,
 			PARAM_AD_SID,
+			{ "is_ad_user", 0, "Set to 'yes' or 'true' to force "
+			    "including the AD Smartcard Logon EKU without "
+			    "ad_upn" },
 			{ NULL }
 		},
 		.ct_populate = populate_user_auth,
@@ -1484,8 +1487,9 @@ static errf_t *
 populate_user_auth(struct cert_var_scope *cs, X509 *cert)
 {
 	errf_t *err;
-	char *upn, *krbpn;
+	char *upn, *krbpn, *aduser;
 	const char *eku = "clientAuth";
+	boolean_t is_ad_user = B_FALSE;
 
 	err = scope_eval(cs, "ad_upn", &upn);
 	if (err != ERRF_OK) {
@@ -1497,14 +1501,26 @@ populate_user_auth(struct cert_var_scope *cs, X509 *cert)
 		errf_free(err);
 		krbpn = NULL;
 	}
-	if (upn != NULL && krbpn != NULL) {
+	err = scope_eval(cs, "is_ad_user", &aduser);
+	if (err != ERRF_OK) {
+		errf_free(err);
+		aduser = NULL;
+	}
+	if (upn != NULL)
+		is_ad_user = B_TRUE;
+	if (aduser != NULL && (strcasecmp(aduser, "yes") == 0 ||
+	    strcasecmp(aduser, "true") == 0)) {
+		is_ad_user = B_TRUE;
+	}
+	if (is_ad_user && krbpn != NULL) {
 		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2,1.3.6.1.5.2.3.4";
-	} else if (upn != NULL) {
+	} else if (is_ad_user) {
 		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
 	} else if (krbpn != NULL) {
 		eku = "clientAuth,1.3.6.1.5.2.3.4";
 	}
 	free(upn);
+	free(aduser);
 	free(krbpn);
 
 	err = populate_common(cs, cert, "critical,CA:FALSE",
@@ -2103,9 +2119,10 @@ static errf_t *
 rpopulate_user_auth(struct cert_var_scope *cs, X509_REQ *req)
 {
 	errf_t *err;
-	char *upn = NULL, *krbpn = NULL;
+	char *upn = NULL, *krbpn = NULL, *aduser = NULL;
 	const char *eku = "clientAuth";
 	STACK_OF(X509_EXTENSION) *exts;
+	boolean_t is_ad_user = B_FALSE;
 
 	exts = sk_X509_EXTENSION_new_null();
 	VERIFY(exts != NULL);
@@ -2120,15 +2137,27 @@ rpopulate_user_auth(struct cert_var_scope *cs, X509_REQ *req)
 		errf_free(err);
 		krbpn = NULL;
 	}
-	if (upn != NULL && krbpn != NULL) {
+	err = scope_eval(cs, "is_ad_user", &aduser);
+	if (err != ERRF_OK) {
+		errf_free(err);
+		aduser = NULL;
+	}
+	if (upn != NULL)
+		is_ad_user = B_TRUE;
+	if (aduser != NULL && (strcasecmp(aduser, "yes") == 0 ||
+	    strcasecmp(aduser, "true") == 0)) {
+		is_ad_user = B_TRUE;
+	}
+	if (is_ad_user && krbpn != NULL) {
 		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2,1.3.6.1.5.2.3.4";
-	} else if (upn != NULL) {
+	} else if (is_ad_user) {
 		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
 	} else if (krbpn != NULL) {
 		eku = "clientAuth,1.3.6.1.5.2.3.4";
 	}
 	free(upn);
 	free(krbpn);
+	free(aduser);
 
 	err = rpopulate_common(cs, req, exts, "critical,CA:FALSE",
 	    "critical,digitalSignature,nonRepudiation",
