@@ -690,8 +690,28 @@ add_dn_component(const char *attr, const char *val, X509_NAME *name)
 		    "invalid attribute in DN: '%s'", attr));
 	}
 
-	rc = X509_NAME_add_entry_by_NID(name, nid, V_ASN1_PRINTABLESTRING,
+	rc = X509_NAME_add_entry_by_NID(name, nid, MBSTRING_ASC,
 	    (unsigned char *)val, -1, 0, 0);
+	if (rc != 1) {
+		/*
+		 * If we failed to add it using MBSTRING_ASC, it might be
+		 * because it's a legacy name component that breaks some rules
+		 * (like country attributes longer than 3 chars). We'll try to
+		 * add these without validation by giving the type argument
+		 * as a specific type.
+		 */
+		int type;
+		switch (nid) {
+		case NID_domainComponent:
+		case NID_pkcs9_emailAddress:
+			type = V_ASN1_IA5STRING;
+			break;
+		default:
+			type = V_ASN1_PRINTABLESTRING;
+		}
+		rc = X509_NAME_add_entry_by_NID(name, nid, type,
+		    (unsigned char *)val, -1, 0, 0);
+	}
 	if (rc != 1) {
 		make_sslerrf(err, "X509_NAME_add_entry_by_NID", "adding DN "
 		    "attribute '%s'", attr);
