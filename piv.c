@@ -168,6 +168,8 @@ struct piv_slot {
 	enum piv_alg ps_alg;
 	X509 *ps_x509;
 	const char *ps_subj;
+	const char *ps_issuer;
+	const char *ps_cert_ser_hex;
 	struct sshkey *ps_pubkey;
 	enum piv_slot_auth ps_auth;
 
@@ -1438,6 +1440,8 @@ piv_release(struct piv_token *pk)
 
 		for (ps = pk->pt_slots; ps != NULL; ps = psnext) {
 			OPENSSL_free((void *)ps->ps_subj);
+			OPENSSL_free((void *)ps->ps_issuer);
+			OPENSSL_free((void *)ps->ps_cert_ser_hex);
 			X509_free(ps->ps_x509);
 			sshkey_free(ps->ps_pubkey);
 			psnext = ps->ps_next;
@@ -1519,6 +1523,18 @@ const char *
 piv_slot_subject(const struct piv_slot *slot)
 {
 	return (slot->ps_subj);
+}
+
+const char *
+piv_slot_issuer(const struct piv_slot *slot)
+{
+	return (slot->ps_issuer);
+}
+
+const char *
+piv_slot_serial_hex(const struct piv_slot *slot)
+{
+	return (slot->ps_cert_ser_hex);
 }
 
 struct sshkey *
@@ -3225,6 +3241,8 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 	struct piv_slot *pc;
 	EVP_PKEY *pkey;
 	uint8_t certinfo = 0;
+	ASN1_INTEGER *serialasn1;
+	BIGNUM *serial = NULL;
 
 	VERIFY(pk->pt_intxn == B_TRUE);
 
@@ -3393,6 +3411,8 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			pk->pt_last_slot = pc;
 		} else {
 			OPENSSL_free((void *)pc->ps_subj);
+			OPENSSL_free((void *)pc->ps_issuer);
+			OPENSSL_free((void *)pc->ps_cert_ser_hex);
 			X509_free(pc->ps_x509);
 			sshkey_free(pc->ps_pubkey);
 		}
@@ -3408,6 +3428,14 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 		pc->ps_x509 = cert;
 		pc->ps_subj = X509_NAME_oneline(
 		    X509_get_subject_name(cert), NULL, 0);
+		pc->ps_issuer = X509_NAME_oneline(
+		    X509_get_issuer_name(cert), NULL, 0);
+
+		serialasn1 = X509_get_serialNumber(cert);
+		serial = ASN1_INTEGER_to_BN(serialasn1, NULL);
+		pc->ps_cert_ser_hex = BN_bn2hex(serial);
+		BN_free(serial);
+
 		pkey = X509_get_pubkey(cert);
 		VERIFY(pkey != NULL);
 		rv = sshkey_from_evp_pkey(pkey, KEY_UNSPEC,

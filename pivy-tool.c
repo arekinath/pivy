@@ -69,6 +69,7 @@
 
 boolean_t debug = B_FALSE;
 static boolean_t parseable = B_FALSE;
+static boolean_t json = B_FALSE;
 static boolean_t enum_all_retired = B_FALSE;
 static boolean_t save_pinfo_admin = B_TRUE;
 static uint8_t *guid = NULL;
@@ -404,6 +405,29 @@ enum_all_retired_slots(struct piv_token *pk)
 	return (ERRF_OK);
 }
 
+static char *
+escape_qstr(const char *inp)
+{
+	struct sshbuf *buf = sshbuf_new();
+	const char *p;
+	char *ret;
+
+	for (p = inp; *p != '\0'; ++p) {
+		if (*p == '"' || *p == '\\' || *p == '\'')
+			sshbuf_put_u8(buf, '\\');
+		if (*p == '\n') {
+			sshbuf_putf(buf, "\\n");
+			continue;
+		}
+		sshbuf_put_u8(buf, *p);
+	}
+
+	ret = sshbuf_dup_string(buf);
+	sshbuf_free(buf);
+
+	return (ret);
+}
+
 static errf_t *
 cmd_list(void)
 {
@@ -412,9 +436,11 @@ cmd_list(void)
 	uint i;
 	char *buf = NULL;
 	const uint8_t *temp;
+	const char *str;
 	size_t len;
 	enum piv_pin defauth;
 	errf_t *err;
+	boolean_t first;
 	const struct piv_chuid *chuid;
 	const struct piv_fascn *fascn;
 
@@ -445,6 +471,125 @@ cmd_list(void)
 			fascn = piv_chuid_get_fascn(chuid);
 		else
 			fascn = NULL;
+
+		if (json) {
+			printf("{");
+			buf = piv_token_shortid(pk);
+			printf("\"short_id\":\"%s\"", buf);
+			free(buf);
+			printf(",\"guid\":\"%s\"", piv_token_guid_hex(pk));
+			printf(",\"reader\":\"%s\"", piv_token_rdrname(pk));
+			printf(",\"chuid\":");
+			if (chuid == NULL) {
+				printf("null");
+			} else {
+				printf("{");
+				printf("\"signed\":%s",
+				    piv_token_has_signed_chuid(pk) ? "true" :
+				    "false");
+				if (chuid != NULL &&
+				    (temp = piv_chuid_get_chuuid(chuid)) != NULL) {
+					buf = buf_to_hex(temp, 16, B_FALSE);
+					printf(",\"cardholder\":\"%s\"", buf);
+					free(buf);
+				}
+				printf(",\"fasc-n\":\"%s\"",
+				    piv_fascn_to_string(fascn));
+				printf(",\"expiry\":\"");
+				temp = piv_chuid_get_expiry(chuid, &len);
+				for (i = 0; i < len; ++i)
+					putchar(temp[i]);
+				printf("\"");
+				printf(",\"expired\":%s",
+				    piv_chuid_is_expired(chuid) ? "true" :
+				    "false");
+				printf("}");
+			}
+			printf(",\"ykpiv\":%s",
+			    piv_token_is_ykpiv(pk) ? "true" : "false");
+			if (piv_token_is_ykpiv(pk)) {
+				if (ykpiv_token_has_serial(pk)) {
+					printf(",\"serial\":%u",
+					    ykpiv_token_serial(pk));
+				}
+				temp = ykpiv_token_version(pk);
+				printf(",\"ykpiv_version\":\"%u.%u.%u\"",
+				    temp[0], temp[1], temp[2]);
+			}
+			if ((str = piv_token_app_uri(pk)) != NULL) {
+				printf(",\"applet_uri\":\"%s\"", str);
+			}
+			if ((str = piv_token_app_label(pk)) != NULL) {
+				printf(",\"applet\":\"%s\"", str);
+			}
+			defauth = piv_token_default_auth(pk);
+
+			printf(",\"auth\":{");
+			printf("\"pin\":{\"supported\":%s,\"default\":%s}",
+			    piv_token_has_auth(pk, PIV_PIN) ? "true" : "false",
+			    (defauth == PIV_PIN) ? "true" : "false");
+			printf(",\"global_pin\":{\"supported\":%s,\"default\":%s}",
+			    piv_token_has_auth(pk, PIV_GLOBAL_PIN) ? "true" : "false",
+			    (defauth == PIV_GLOBAL_PIN) ? "true" : "false");
+			printf(",\"biometrics\":{\"supported\":%s,\"default\":%s}",
+			    piv_token_has_auth(pk, PIV_OCC) ? "true" : "false",
+			    (defauth == PIV_OCC) ? "true" : "false");
+			printf("}");
+
+			printf(",\"vci_supported\":%s",
+			    piv_token_has_vci(pk) ? "true" : "false");
+
+			printf(",\"algorithms\":[");
+			for (i = 0; i < piv_token_nalgs(pk); ++i) {
+				printf("%s\"%s\"",
+				    (i == 0) ? "" : ",",
+				    piv_alg_to_string(piv_token_alg(pk, i)));
+			}
+			printf("]");
+
+			printf(",\"slots\":{");
+			slot = NULL;
+			first = B_TRUE;
+			while ((slot = piv_slot_next(pk, slot)) != NULL) {
+				const struct sshkey *pubkey = piv_slot_pubkey(slot);
+				enum piv_slotid id = piv_slot_id(slot);
+				char *slotname, *dn;
+
+				printf("%s\"%02x\":{", first ? "" : ",", id);
+
+				slotname = piv_slotid_to_string(id);
+				printf("\"name\":\"%s\"", slotname);
+				free(slotname);
+
+				printf(",\"algorithm\":\"%s\"",
+				    piv_alg_to_string(piv_slot_alg(slot)));
+
+				printf(",\"key_type\":\"%s\"", sshkey_type(pubkey));
+				printf(",\"key_size\":%u", sshkey_size(pubkey));
+
+				dn = escape_qstr(piv_slot_subject(slot));
+				printf(",\"subject\":\"%s\"", dn);
+				free(dn);
+
+				dn = escape_qstr(piv_slot_issuer(slot));
+				printf(",\"issuer\":\"%s\"", dn);
+				free(dn);
+
+				printf(",\"cert_serial\":\"%s\"", piv_slot_serial_hex(slot));
+
+				printf(",\"pubkey\":\"");
+				sshkey_write(pubkey, stdout);
+				printf("\"");
+
+				printf("}");
+
+				first = B_FALSE;
+			}
+			printf("}");
+
+			printf("}\n");
+			continue;
+		}
 
 		if (parseable) {
 			uint8_t nover[] = { 0, 0, 0 };
@@ -2686,6 +2831,7 @@ usage(void)
 	    "\n"
 	    "Options for 'list':\n"
 	    "  -p                     Generate parseable output\n"
+	    "  -j                     Generate JSON output\n"
 	    "\n"
 	    "Options for 'generate'/'req-cert':\n"
 	    "  -a <algo>              Choose algorithm of new key\n"
@@ -2718,7 +2864,7 @@ usage(void)
 	exit(EXIT_BAD_ARGS);
 }
 
-const char *optstring = "dpg:P:a:fK:k:n:t:i:u:RXA:N:r:D:T:";
+const char *optstring = "djpg:P:a:fK:k:n:t:i:u:RXA:N:r:D:T:";
 
 int
 main(int argc, char *argv[])
@@ -2873,6 +3019,9 @@ main(int argc, char *argv[])
 			errx(EXIT_BAD_ARGS, "too many -P options given");
 		case 'p':
 			parseable = B_TRUE;
+			break;
+		case 'j':
+			json = B_TRUE;
 			break;
 		case 'k':
 			opubkey = sshkey_new(KEY_UNSPEC);

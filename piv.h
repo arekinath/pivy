@@ -426,6 +426,8 @@ enum piv_alg piv_slot_alg(const struct piv_slot *slot);
 X509 *piv_slot_cert(const struct piv_slot *slot);
 /* Helper: retrieves the subject DN from the certificate for a slot. */
 const char *piv_slot_subject(const struct piv_slot *slot);
+const char *piv_slot_issuer(const struct piv_slot *slot);
+const char *piv_slot_serial_hex(const struct piv_slot *slot);
 
 /*
  * Returns the public key for a slot.
