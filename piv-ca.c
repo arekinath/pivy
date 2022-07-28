@@ -5385,3 +5385,11 @@ ca_aia_uri_add(struct ca *ca, const char *uri)
 {
 	return (errf("NotImplemented", NULL, "Not implemented"));
 }
+
+#if !defined(JSONC_14)
+size_t
+json_tokener_get_parse_end(struct json_tokener *tok)
+{
+	return ((size_t)tok->char_offset);
+}
+#endif

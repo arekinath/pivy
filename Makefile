@@ -76,6 +76,10 @@ ifeq ($(SYSTEM), Linux)
 		HAVE_JSONC	:= $(USE_JSONC)
 		JSONC_CFLAGS	= $(shell pkg-config --cflags json-c)
 		JSONC_LIBS	= $(shell pkg-config --libs json-c)
+		JSONC_14	= $(shell pkg-config --exists --atleast-version=0.14 json-c --silence-errors && echo yes)
+		ifeq (yes,$(JSONC_14))
+			JSONC_CFLAGS	+= -DJSONC_14
+		endif
 	else
 		HAVE_JSONC	:= no
 	endif
@@ -110,6 +114,10 @@ ifeq ($(SYSTEM), OpenBSD)
 		HAVE_JSONC	:= $(USE_JSONC)
 		JSONC_CFLAGS	= $(shell pkg-config --cflags json-c)
 		JSONC_LIBS	= $(shell pkg-config --libs json-c)
+		JSONC_14	= $(shell pkg-config --exists --atleast-version=0.14 json-c --silence-errors && echo yes)
+		ifeq (yes,$(JSONC_14))
+			JSONC_CFLAGS	+= -DJSONC_14
+		endif
 	else
 		HAVE_JSONC	:= no
 	endif
@@ -158,6 +166,10 @@ ifeq ($(SYSTEM), SunOS)
 		HAVE_JSONC	:= $(USE_JSONC)
 		JSONC_CFLAGS	= $(shell pkg-config --cflags json-c)
 		JSONC_LIBS	= $(shell pkg-config --libs json-c)
+		JSONC_14	= $(shell pkg-config --exists --atleast-version=0.14 json-c --silence-errors && echo yes)
+		ifeq (yes,$(JSONC_14))
+			JSONC_CFLAGS	+= -DJSONC_14
+		endif
 	else
 		HAVE_JSONC	:= no
 	endif

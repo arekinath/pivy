@@ -336,4 +336,8 @@ errf_t	*ca_token_provision(struct ca_session *sess, struct ca_token_tpl *tpl,
 errf_t	*parse_dn(const char *dnstr, X509_NAME *name);
 errf_t	*unparse_dn(X509_NAME *name, char **out);
 
+#if !defined(JSONC_14)
+size_t json_tokener_get_parse_end(struct json_tokener *tok);
+#endif
+
 #endif
