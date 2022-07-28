@@ -2402,6 +2402,8 @@ after_poll(struct pollfd *pfd, size_t npfd)
 	}
 }
 
+void *recallocarray(void *ptr, size_t oldnmemb, size_t nmemb, size_t size);
+
 static int
 prepare_poll(struct pollfd **pfdp, size_t *npfdp, int *timeoutp)
 {
