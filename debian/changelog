@@ -1,3 +1,10 @@
+pivy (0.10.0-1) UNRELEASED; urgency=medium
+
+  * pivy-agent: support for sessbind extension
+  * pivy-tool: accept and use PEM rather than DER for certs
+  * pivy-ca: new tool, manages an X.509 CA on a PIV device
+  * pivy-tool: add -j JSON output mode for "list" command
+
 pivy (0.9.0-1) UNRELEASED; urgency=medium
 
   * piv: support for full pinfo/chuid file decoding, incl. FASC-Ns
