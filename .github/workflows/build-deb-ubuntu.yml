@@ -22,4 +22,14 @@ jobs:
         with:
           name: ubuntu-2004
           path: '*.deb'
+  build-2204:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v2
+      - run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libpcsclite1 libbsd-dev libbsd0 libedit-dev libreadline-dev libcryptsetup-dev libjson-c-dev libpam-dev devscripts fakeroot debhelper
+      - run: make && make deb && mv ../*.deb ./
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ubuntu-2204
+          path: '*.deb'
 
