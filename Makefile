@@ -40,6 +40,7 @@ ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_LDFLAGS	= -L$(LIBRESSL_LIB)
 	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto -pthread
 	ZLIB_CFLAGS	= $(shell pkg-config --cflags zlib)
 	ZLIB_LIBS	= $(shell pkg-config --libs zlib)
@@ -53,6 +54,7 @@ ifeq ($(SYSTEM), Linux)
 	OPTIM_CFLAGS	= -flto
 	OPTIM_LDFLAGS	= -O0 -flto
 	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
+	SYSTEM_LDFLAGS	= $(SYSTEM_LIBS)
 	LIBZFS_VER	= $(shell pkg-config --modversion libzfs --silence-errors || true)
 	ifneq (,$(LIBZFS_VER))
 		HAVE_ZFS	:= $(USE_ZFS)
@@ -604,7 +606,7 @@ distclean: clean
 OPENSSH_CONFIG_ARGS=	\
 	--disable-security-key \
 	--disable-pkcs11 \
-	--without-openssl-header-check
+	--with-ssl-dir=../libressl
 
 .openssh.configure: .openssh.patch $(LIBCRYPTO)
 	cd openssh && \
