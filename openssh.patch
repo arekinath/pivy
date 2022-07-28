@@ -1,5 +1,4 @@
 diff --git a/authfd.c b/authfd.c
-index 76e48aab..0bad1375 100644
 --- openssh/authfd.c
 +++ openssh/authfd.c
 @@ -134,7 +134,7 @@ ssh_get_authentication_socket(int *fdp)
@@ -12,7 +11,6 @@ index 76e48aab..0bad1375 100644
  {
  	int r;
 diff --git a/authfd.h b/authfd.h
-index 7a1c0ddf..7272faab 100644
 --- openssh/authfd.h
 +++ openssh/authfd.h
 @@ -59,6 +59,8 @@ int	ssh_update_card(int sock, int add, const char *reader_id,
@@ -34,7 +32,6 @@ index 7a1c0ddf..7272faab 100644
  #define	SSH_AGENT_CONSTRAIN_CONFIRM		2
  #define	SSH_AGENT_CONSTRAIN_MAXSIGN		3
 diff --git a/cipher.c b/cipher.c
-index 5b3a86d6..9849bb76 100644
 --- openssh/cipher.c
 +++ openssh/cipher.c
 @@ -95,9 +95,9 @@ static const struct sshcipher ciphers[] = {
@@ -58,8 +55,19 @@ index 5b3a86d6..9849bb76 100644
  				8, 64, 0, 16, CFLAG_CHACHAPOLY, NULL },
  	{ "none",		8, 0, 0, 0, CFLAG_NONE, NULL },
  
+diff --git a/defines.h b/defines.h
+--- openssh/defines.h
++++ openssh/defines.h
+@@ -906,7 +906,7 @@ struct winsize {
+  */
+ #if defined(HAVE_ARC4RANDOM) && defined(HAVE_ARC4RANDOM_UNIFORM) && \
+     !defined(HAVE_ARC4RANDOM_STIR)
+-# define arc4random_stir()
++void arc4random_stir(void);
+ #endif
+ 
+ #ifndef HAVE_VA_COPY
 diff --git a/digest.h b/digest.h
-index 274574d0..4b569962 100644
 --- openssh/digest.h
 +++ openssh/digest.h
 @@ -22,12 +22,14 @@
@@ -84,7 +92,6 @@ index 274574d0..4b569962 100644
  struct sshbuf;
  struct ssh_digest_ctx;
 diff --git a/misc.c b/misc.c
-index 417498de..c0f4df4e 100644
 --- openssh/misc.c
 +++ openssh/misc.c
 @@ -2716,7 +2716,9 @@ subprocess(const char *tag, const char *command,
@@ -97,8 +104,24 @@ index 417498de..c0f4df4e 100644
  
  		if (geteuid() == 0 &&
  		    initgroups(pw->pw_name, pw->pw_gid) == -1) {
+diff --git a/openbsd-compat/arc4random.c b/openbsd-compat/arc4random.c
+--- openssh/openbsd-compat/arc4random.c
++++ openssh/openbsd-compat/arc4random.c
+@@ -264,6 +264,13 @@ arc4random_buf(void *buf, size_t n)
+ 	_ARC4_UNLOCK();
+ }
+ # endif /* !HAVE_ARC4RANDOM_BUF */
++#else /* !HAVE_ARC4RANDOM */
++# ifndef HAVE_ARC4RANDOM_STIR
++void
++arc4random_stir(void)
++{
++}
++# endif /* !HAVE_ARC4RANDOM_STIR */
+ #endif /* !HAVE_ARC4RANDOM */
+ 
+ /* arc4random_buf() that uses platform arc4random() */
 diff --git a/openbsd-compat/bcrypt_pbkdf.c b/openbsd-compat/bcrypt_pbkdf.c
-index 5a22ba3b..f006b14c 100644
 --- openssh/openbsd-compat/bcrypt_pbkdf.c
 +++ openssh/openbsd-compat/bcrypt_pbkdf.c
 @@ -137,7 +137,7 @@ bcrypt_pbkdf(const char *pass, size_t passlen, const uint8_t *salt, size_t saltl
@@ -110,8 +133,28 @@ index 5a22ba3b..f006b14c 100644
  
  	/* generate key, sizeof(out) at a time */
  	for (count = 1; keylen > 0; count++) {
+diff --git a/openbsd-compat/openbsd-compat.h b/openbsd-compat/openbsd-compat.h
+--- openssh/openbsd-compat/openbsd-compat.h
++++ openssh/openbsd-compat/openbsd-compat.h
+@@ -206,13 +206,11 @@ int writev(int, struct iovec *, int);
+ int getpeereid(int , uid_t *, gid_t *);
+ #endif
+ 
+-#ifdef HAVE_ARC4RANDOM
+-# ifndef HAVE_ARC4RANDOM_STIR
+-#  define arc4random_stir()
+-# endif
+-#else
+-unsigned int arc4random(void);
++#ifndef HAVE_ARC4RANDOM_STIR
+ void arc4random_stir(void);
++#endif /* !HAVE_ARC4RANDOM_STIR */
++#ifndef HAVE_ARC4RANDOM
++unsigned int arc4random(void);
+ #endif /* !HAVE_ARC4RANDOM */
+ 
+ #ifndef HAVE_ARC4RANDOM_BUF
 diff --git a/sshbuf-getput-basic.c b/sshbuf-getput-basic.c
-index 9803fb5e..9ea9209f 100644
 --- openssh/sshbuf-getput-basic.c
 +++ openssh/sshbuf-getput-basic.c
 @@ -302,6 +302,41 @@ sshbuf_get_cstring(struct sshbuf *buf, char **valp, size_t *lenp)
@@ -351,7 +394,6 @@ index 9803fb5e..9ea9209f 100644
 +	return 0;
 +}
 diff --git a/sshbuf-getput-crypto.c b/sshbuf-getput-crypto.c
-index 2e61d3bc..055d8911 100644
 --- openssh/sshbuf-getput-crypto.c
 +++ openssh/sshbuf-getput-crypto.c
 @@ -63,8 +63,10 @@ get_ec(const u_char *d, size_t len, EC_POINT *v, const EC_GROUP *g)
@@ -448,7 +490,6 @@ index 2e61d3bc..055d8911 100644
  #endif /* OPENSSL_HAS_ECC */
  #endif /* WITH_OPENSSL */
 diff --git a/sshbuf.h b/sshbuf.h
-index 07d54f0a..be9841d9 100644
 --- openssh/sshbuf.h
 +++ openssh/sshbuf.h
 @@ -208,6 +208,14 @@ int	sshbuf_put_string(struct sshbuf *buf, const void *v, size_t len);
@@ -496,7 +537,6 @@ index 07d54f0a..be9841d9 100644
  #endif /* WITH_OPENSSL */
  
 diff --git a/ssherr.h b/ssherr.h
-index 085e7527..e97c4577 100644
 --- openssh/ssherr.h
 +++ openssh/ssherr.h
 @@ -86,4 +86,30 @@
@@ -531,7 +571,6 @@ index 085e7527..e97c4577 100644
 +
  #endif /* _SSHERR_H */
 diff --git a/sshkey.c b/sshkey.c
-index f1e92003..78efefaa 100644
 --- openssh/sshkey.c
 +++ openssh/sshkey.c
 @@ -2790,6 +2790,7 @@ sshkey_sign(struct sshkey *key,
@@ -966,7 +1005,6 @@ index f1e92003..78efefaa 100644
 +	return rc;
 +}
 diff --git a/sshkey.h b/sshkey.h
-index 094815e0..2d9d0353 100644
 --- openssh/sshkey.h
 +++ openssh/sshkey.h
 @@ -26,11 +26,14 @@
@@ -1008,3 +1046,6 @@ index 094815e0..2d9d0353 100644
  #ifdef SSHKEY_INTERNAL
  int ssh_rsa_sign(const struct sshkey *key,
      u_char **sigp, size_t *lenp, const u_char *data, size_t datalen,
+-- 
+2.36.1
+

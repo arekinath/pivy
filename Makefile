@@ -605,8 +605,7 @@ distclean: clean
 
 OPENSSH_CONFIG_ARGS=	\
 	--disable-security-key \
-	--disable-pkcs11 \
-	--with-ssl-dir=../libressl
+	--disable-pkcs11
 
 .openssh.configure: .openssh.patch $(LIBCRYPTO)
 	cd openssh && \
