@@ -2655,6 +2655,7 @@ cmd_setup(SCARDCONTEXT ctx)
 {
 	boolean_t usetouch = B_FALSE;
 	errf_t *err;
+	const char *realpin;
 
 	if (!piv_token_is_ykpiv(selk)) {
 		err = funcerrf(NULL, "setup command is only for YubiKeys");
@@ -2727,6 +2728,9 @@ again9d:
 	fprintf(stderr, "Changing PIN and PUK...\n");
 	if ((err = cmd_change_pin(PIV_PIN)))
 		return (err);
+	/* Stash the new PIN, we'll need it later to write to PINFO */
+	realpin = newpin;
+
 	pin = "12345678";
 	if ((err = cmd_change_pin(PIV_PUK)))
 		return (err);
@@ -2740,6 +2744,8 @@ again9d:
 	if (usetouch)
 		touchpolicy = YKPIV_TOUCH_ALWAYS;
 
+	/* cmd_set_admin will use the PIN to write to PINFO */
+	pin = realpin;
 	if ((err = cmd_set_admin(admin_key, admin_key_len)))
 		return (err);
 
