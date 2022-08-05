@@ -9,7 +9,7 @@
 #:
 
 set -o errexit
-set -o pipefile
+set -o pipefail
 set -o xtrace
 
 privhdrs="https://stluc.manta.uqcloud.net/xlex/public/zfs-privhdrs-r151038.tar.gz"
