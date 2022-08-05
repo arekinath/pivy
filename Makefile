@@ -19,6 +19,7 @@ HAVE_PAM	:= no
 USE_PAM		?= no
 HAVE_JSONC	:= no
 USE_JSONC	?= no
+HAVE_CTF	:= no
 
 TAR		= tar
 CURL		= curl
@@ -95,8 +96,8 @@ ifeq ($(SYSTEM), Linux)
 	tpl_system_dir	?= "/etc/pivy/tpl/$$TPL"
 endif
 ifeq ($(SYSTEM), OpenBSD)
-	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
-	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
+	PCSC_CFLAGS	?= $(shell pkg-config --cflags libpcsclite)
+	PCSC_LIBS	?= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	=
 	CRYPTO_LIBS	= -lcrypto
 	ZLIB_CFLAGS	=
@@ -141,24 +142,34 @@ ifeq ($(SYSTEM), Darwin)
 	tpl_system_dir	?= "/Library/Preferences/pivy/tpl/$$TPL"
 endif
 ifeq ($(SYSTEM), SunOS)
-	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
-	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
+	PCSC_CFLAGS	?= $(shell pkg-config --cflags libpcsclite)
+	PCSC_LIBS	?= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
-	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto -pthread
-	CRYPTO_LDFLAGS	= -L$(LIBRESSL_LIB)
+	CRYPTO_LIBS	= -Wl,-Bstatic -L$(LIBRESSL_LIB) -lcrypto -Wl,-Bdynamic -pthread
+	CRYPTO_LDFLAGS	= -Wl,-Bstatic -L$(LIBRESSL_LIB) -lcrypto -Wl,-Bdynamic
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	RDLINE_CFLAGS	=
 	RDLINE_LIBS	= -ltecla
-	SYSTEM_CFLAGS	= -gdwarf-2 -isystem $(PROTO_AREA)/usr/include -m64 -msave-args
+	SYSTEM_CFLAGS	= -gdwarf-2
+	ifdef PROTO_AREA
+		SYSTEM_CFLAGS	+= -isystem $(PROTO_AREA)/usr/include
+	endif
+	SYSTEM_CFLAGS	+= -m64 -msave-args
 	SYSTEM_CFLAGS	+= -Du_int8_t=uint8_t -Du_int16_t=uint16_t \
 		-Du_int32_t=uint32_t -Du_int64_t=uint64_t
 	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib/64 -lssp -lsocket -lnsl
 	SYSTEM_LDFLAGS	= -m64 -L$(PROTO_AREA)/usr/lib/64
+
 	HAVE_ZFS	:= $(USE_ZFS)
-	LIBZFS_CFLAGS	= -I$(ILLUMOS_SRC)/uts/common/fs/zfs	# for spa_impl.h
-	LIBZFS_CFLAGS	+= -I$(ILLUMOS_SRC)/common/zfs		# for zfeature_common.h
+	ifdef ILLUMOS_SRC
+		LIBZFS_CFLAGS	= -I$(ILLUMOS_SRC)/uts/common/fs/zfs	# for spa_impl.h
+		LIBZFS_CFLAGS	+= -I$(ILLUMOS_SRC)/common/zfs		# for zfeature_common.h
+	else
+		LIBZFS_CFLAGS	= -I$(ZFS_PRIVATE_HEADERS)
+	endif
 	LIBZFS_LIBS	= -lzfs -lzfs_core -lnvpair
+
 	TAR		= gtar
 	HAVE_PAM	:= no
 	JSONC_VER	= $(shell pkg-config --modversion json-c --silence-errors || true)
@@ -173,6 +184,13 @@ ifeq ($(SYSTEM), SunOS)
 	else
 		HAVE_JSONC	:= no
 	endif
+
+	CTFCONVERT	?= ctfconvert
+	CTFCONV_HELP	= $(shell $(CTFCONVERT) -h 2>&1 | fgrep -- -o | fgrep "add CTF")
+	ifneq (,$(CTFCONV_HELP))
+		HAVE_CTF	:= yes
+	endif
+
 endif
 LIBCRYPTO	?= $(LIBRESSL_LIB)/libcrypto.a
 LIBSSH		?= $(OPENSSH)/libssh.a
@@ -611,8 +629,14 @@ distclean: clean
 	    mv openssh-$(OPENSSH_VER) openssh && \
 	    touch $(CURDIR)/$@
 
+OPENSSH_PATCHES	= openssh.patch
+ifeq ($(SYSTEM),SunOS)
+	OPENSSH_PATCHES	+= openssh-sunos.patch
+endif
 .openssh.patch: .openssh.extract
-	patch -p0 <openssh.patch && \
+	for PATCH in $(OPENSSH_PATCHES); do \
+	    patch -p0 <$$PATCH; \
+	    done && \
 	    touch $(CURDIR)/$@
 
 OPENSSH_CONFIG_ARGS=	\

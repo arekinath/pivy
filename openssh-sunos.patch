@@ -1,0 +1,24 @@
+diff -ru openssh.dist/configure openssh/configure
+--- openssh.dist/configure	2022-02-23 21:33:36.000000000 +1000
++++ openssh/configure	2022-08-05 11:40:56.742604595 +1000
+@@ -13531,7 +13531,7 @@
+ 
+ 
+ if test "x$openssl" = "xyes" ; then
+-	LIBS="-lcrypto $LIBS"
++	LIBS="-Wl,-Bstatic -lcrypto -Wl,-Bdynamic $LIBS"
+ 	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
+diff -ru openssh.dist/configure.ac openssh/configure.ac
+--- openssh.dist/configure.ac	2022-02-23 21:31:11.000000000 +1000
++++ openssh/configure.ac	2022-08-05 11:40:40.401985508 +1000
+@@ -2687,7 +2687,7 @@
+ )
+ 
+ if test "x$openssl" = "xyes" ; then
+-	LIBS="-lcrypto $LIBS"
++	LIBS="-Wl,-Bstatic -lcrypto -Wl,-Bdynamic $LIBS"
+ 	AC_TRY_LINK_FUNC([RAND_add], ,
+ 	    [AC_MSG_ERROR([*** working libcrypto not found, check config.log])])
+ 	AC_CHECK_HEADER([openssl/opensslv.h], ,

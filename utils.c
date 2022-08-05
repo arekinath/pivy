@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <strings.h>
 
 #include "utils.h"
 #include "debug.h"

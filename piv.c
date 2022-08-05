@@ -1120,7 +1120,9 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		break;
 	case SCARD_E_NO_SERVICE:
 	case SCARD_E_INVALID_HANDLE:
-	case SCARD_E_SERVICE_STOPPED:
+#if defined(SCARD_E_SERVICE_STOPPED)
+	case SCARD_E_SERVICE_STOPPED:	/* This is a pcsclite-ism */
+#endif
 		return (errf("PCSCContextError",
 		    pcscerrf("SCardListReaders", rv),
 		    "PCSC context is not functional"));
@@ -1248,7 +1250,9 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 		break;
 	case SCARD_E_NO_SERVICE:
 	case SCARD_E_INVALID_HANDLE:
-	case SCARD_E_SERVICE_STOPPED:
+#if defined(SCARD_E_SERVICE_STOPPED)
+	case SCARD_E_SERVICE_STOPPED:	/* This is a pcsclite-ism */
+#endif
 		return (errf("PCSCContextError",
 		    pcscerrf("SCardListReaders", rv),
 		    "PCSC context is not functional"));
