@@ -60,10 +60,11 @@ awk -F':[ ]+' '
 pfexec cp /work/json-c.pc /opt/pivy/lib/pkgconfig/json-c.pc
 
 # copy just the .so into the final pivy dist
-pfexec install -df /work/dist/opt/pivy/lib -u root -g bin \
+pfexec install -d -u root -g bin /work/dist/opt/pivy/lib
+pfexec install -f /work/dist/opt/pivy/lib -u root -g bin \
   /opt/pivy/lib/libjson-c.so.5.2.0
-pfexec ln -s libjson-c.so.5.2.0 /opt/pivy/lib/libjson-c.so.5
-pfexec ln -s libjson-c.so.5 /opt/pivy/lib/libjson-c.so
+pfexec ln -s libjson-c.so.5.2.0 /work/dist/opt/pivy/lib/libjson-c.so.5
+pfexec ln -s libjson-c.so.5 /work/dist/opt/pivy/lib/libjson-c.so
 
 #
 banner build
