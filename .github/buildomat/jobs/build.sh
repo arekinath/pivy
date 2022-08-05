@@ -86,6 +86,7 @@ banner install
 #
 pfexec gmake -j2 install \
   USE_ZFS=yes \
+  USE_JSONC=yes \
   prefix=/opt/pivy \
   bingroup=bin \
   DESTDIR=/work/dist
