@@ -65,6 +65,7 @@ pfexec /usr/sbin/install -f /work/dist/opt/pivy/lib -u root -g bin \
   /opt/pivy/lib/libjson-c.so.5.2.0
 pfexec ln -s libjson-c.so.5.2.0 /work/dist/opt/pivy/lib/libjson-c.so.5
 pfexec ln -s libjson-c.so.5 /work/dist/opt/pivy/lib/libjson-c.so
+popd
 
 #
 banner build
