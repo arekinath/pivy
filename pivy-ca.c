@@ -36,6 +36,7 @@
 #include <sys/fork.h>
 #endif
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 #include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"
