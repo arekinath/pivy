@@ -190,13 +190,19 @@ struct piv_token {
 	DWORD pt_proto;
 	SCARD_IO_REQUEST pt_sendpci;
 
-	/* Are we in a transaction right now? */
+	/*
+	 * Are we in a transaction right now?
+	 */
 	boolean_t pt_intxn;
 	/*
-	 * Do we need to reset at the end of this txn? (e.g. because we sent
-	 * a PIN VERIFY command and it succeeded)
+	 * Do we need to reset at the end of this txn?
 	 */
 	boolean_t pt_reset;
+	/*
+	 * Do we have an auth'd PIN that we should try to reset at the end of
+	 * this txn?
+	 */
+	enum piv_pin pt_used_pin;
 
 	/*
 	 * Our GUID. This can either be the GUID from our CHUID file, or if
@@ -1874,8 +1880,21 @@ piv_txn_end(struct piv_token *key)
 {
 	VERIFY(key->pt_intxn == B_TRUE);
 	LONG rv;
-	rv = SCardEndTransaction(key->pt_cardhdl,
-	    key->pt_reset ? SCARD_RESET_CARD : SCARD_LEAVE_CARD);
+	DWORD disp = SCARD_LEAVE_CARD;
+	errf_t *err;
+
+	if (!key->pt_reset && key->pt_used_pin != PIV_NO_PIN) {
+		/* Attempt to clear the PIN's security status if we can. */
+		err = piv_clear_pin(key, key->pt_used_pin);
+		if (err != ERRF_OK)
+			errf_free(err);
+	}
+	if (key->pt_reset)
+		disp = SCARD_RESET_CARD;
+	if (key->pt_used_pin != PIV_NO_PIN)
+		disp = SCARD_RESET_CARD;
+
+	rv = SCardEndTransaction(key->pt_cardhdl, disp);
 	if (rv != SCARD_S_SUCCESS) {
 		bunyan_log(BNY_ERROR, "SCardEndTransaction failed",
 		    "reader", BNY_STRING, key->pt_rdrname,
@@ -1884,6 +1903,52 @@ piv_txn_end(struct piv_token *key)
 	}
 	key->pt_intxn = B_FALSE;
 	key->pt_reset = B_FALSE;
+	key->pt_used_pin = PIV_NO_PIN;
+}
+
+errf_t *
+piv_clear_pin(struct piv_token *pk, enum piv_pin type)
+{
+	errf_t *err = ERRF_OK;
+	struct apdu *apdu;
+
+	VERIFY(pk->pt_intxn == B_TRUE);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_VERIFY, 0xFF, type);
+
+	err = piv_apdu_transceive_chain(pk, apdu);
+	if (err) {
+		err = ioerrf(err, pk->pt_rdrname);
+		bunyan_log(BNY_WARN, "piv_clear_pin.transceive failed",
+		    "error", BNY_ERF, err, NULL);
+		piv_apdu_free(apdu);
+		return (err);
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		err = ERRF_OK;
+		if (pk->pt_used_pin == type)
+			pk->pt_used_pin = PIV_NO_PIN;
+
+	} else if (apdu->a_sw == SW_FILE_INVALID) {
+		err = errf("PermissionError", swerrf("INS_VERIFY(%x)",
+		    apdu->a_sw, type), "PIN is blocked (has run out of "
+		    "retry attempts) and cannot be used");
+
+	} else if (apdu->a_sw == SW_INVALID_KEY_REF) {
+		err = errf("NotSupportedError", swerrf("INS_VERIFY(%x)",
+		    apdu->a_sw, type), "PIN type %x not supported", type);
+
+	} else {
+		err = swerrf("INS_VERIFY(%x)", apdu->a_sw, type);
+		bunyan_log(BNY_DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
+	}
+
+	piv_apdu_free(apdu);
+
+	return (err);
 }
 
 errf_t *
@@ -3680,7 +3745,10 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 
 	if (apdu->a_sw == SW_NO_ERROR) {
 		err = ERRF_OK;
-		pk->pt_reset = B_TRUE;
+		if (pk->pt_used_pin == PIV_NO_PIN || pk->pt_used_pin == type)
+			pk->pt_used_pin = type;
+		else
+			pk->pt_reset = B_TRUE;
 
 	} else if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
 		err = errf("PermissionError", swerrf("INS_CHANGE_PIN(%x)",
@@ -3752,7 +3820,10 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 
 	if (apdu->a_sw == SW_NO_ERROR) {
 		err = ERRF_OK;
-		pk->pt_reset = B_TRUE;
+		if (pk->pt_used_pin == PIV_NO_PIN || pk->pt_used_pin == type)
+			pk->pt_used_pin == type;
+		else
+			pk->pt_reset = B_TRUE;
 
 	} else if ((apdu->a_sw & 0xFFF0) == SW_INCORRECT_PIN) {
 		err = errf("PermissionError", swerrf("INS_RESET_PIN(%x)",
@@ -4103,7 +4174,10 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 
 	if (apdu->a_sw == SW_NO_ERROR) {
 		err = ERRF_OK;
-		pk->pt_reset = B_TRUE;
+		if (pk->pt_used_pin == PIV_NO_PIN || pk->pt_used_pin == type)
+			pk->pt_used_pin = type;
+		else
+			pk->pt_reset = B_TRUE;
 
 	} else if (apdu->a_sw == SW_FILE_INVALID) {
 		if (retries != NULL)

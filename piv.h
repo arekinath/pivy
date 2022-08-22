@@ -199,6 +199,7 @@ enum piv_alg {
 
 /* Types of PIV cardholder authentication methods. */
 enum piv_pin {
+	PIV_NO_PIN = 0x00,
 	/* PIV application PIN, local to the PIV applet. */
 	PIV_PIN = 0x80,
 	/* A global PIN used by all applets on the card. */
@@ -746,6 +747,7 @@ void piv_file_data_free(uint8_t *data, size_t len);
  *  - NotSupportedError: if pin was given as NULL to do a retry counter check
  *                       and the card does not support this form of the
  *                       command
+ *  - NotSupportedError: card does not support the given PIN type
  *  - PermissionError: the PIN code was incorrect. If non-NULL, the "retries"
  *                     argument will be written with the number of attempts
  *                     remaining before the card locks itself (and potentially
@@ -754,6 +756,19 @@ void piv_file_data_free(uint8_t *data, size_t len);
 MUST_CHECK
 errf_t *piv_verify_pin(struct piv_token *tk, enum piv_pin type, const char *pin,
     uint *retries, boolean_t canskip);
+
+/*
+ * Clears the security status of a given PIN (undoing the stateful effects of
+ * piv_verify_pin()).
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - APDUError: the card rejected the command (e.g. because applet not
+ *               selected)
+ *  - NotSupportedError: card does not support the given PIN type
+ */
+MUST_CHECK
+errf_t *piv_clear_pin(struct piv_token *tk, enum piv_pin type);
 
 /*
  * Changes the PIV PIN on a token.
