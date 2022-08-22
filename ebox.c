@@ -443,6 +443,7 @@ ebox_tpl_config_remove_part(struct ebox_tpl_config *config,
 	} else {
 		part->etp_next->etp_prev = part->etp_prev;
 	}
+	--config->etc_m;
 }
 
 struct ebox_tpl_part *
