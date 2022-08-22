@@ -364,6 +364,8 @@ sw_to_name(enum iso_sw sw)
 		return ("INS_NOT_SUPPORTED");
 	case SW_FILE_INVALID:
 		return ("FILE_INVALID");
+	case SW_INVALID_KEY_REF:
+		return ("INVALID_KEY_REF");
 	default:
 		/* FALL THROUGH */
 		(void)0;
@@ -3684,6 +3686,10 @@ piv_change_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 		err = errf("PermissionError", swerrf("INS_CHANGE_PIN(%x)",
 		    apdu->a_sw, type), "Incorrect PIN supplied");
 
+	} else if (apdu->a_sw == SW_INVALID_KEY_REF) {
+		err = errf("NotSupportedError", swerrf("INS_CHANGE_PIN(%x)",
+		    apdu->a_sw, type), "PIN type %x not supported", type);
+
 	} else {
 		err = swerrf("INS_CHANGE_PIN(%x)", apdu->a_sw, type);
 		bunyan_log(BNY_DEBUG, "unexpected card error",
@@ -3756,6 +3762,10 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 		err = errf("PermissionError", swerrf("INS_RESET_PIN(%x)",
 		    apdu->a_sw, type), "PUK is blocked due to too many "
 		    "incorrect attempts");
+
+	} else if (apdu->a_sw == SW_INVALID_KEY_REF) {
+		err = errf("NotSupportedError", swerrf("INS_RESET_PIN(%x)",
+		    apdu->a_sw, type), "PIN type %x not supported", type);
 
 	} else {
 		err = swerrf("INS_RESET_PIN(%x)", apdu->a_sw, type);
@@ -4107,6 +4117,10 @@ piv_verify_pin(struct piv_token *pk, enum piv_pin type, const char *pin,
 			*retries = (apdu->a_sw & 0x000F);
 		err = errf("PermissionError", swerrf("INS_VERIFY(%x)",
 		    apdu->a_sw, type), "Incorrect PIN supplied");
+
+	} else if (apdu->a_sw == SW_INVALID_KEY_REF) {
+		err = errf("NotSupportedError", swerrf("INS_VERIFY(%x)",
+		    apdu->a_sw, type), "PIN type %x not supported", type);
 
 	} else {
 		err = swerrf("INS_VERIFY(%x)", apdu->a_sw, type);
