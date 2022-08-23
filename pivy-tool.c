@@ -1451,24 +1451,27 @@ signagain:
 	flags = PIV_COMP_NONE;
 	err = piv_write_cert(selk, slotid, cdata, cdlen, flags);
 
-	if (err == ERRF_OK && slotid >= 0x82 && slotid <= 0x95 &&
-	    piv_token_keyhistory_oncard(selk) <= slotid - 0x82) {
+	if (err == ERRF_OK &&
+	    slotid >= PIV_SLOT_RETIRED_1 && slotid <= PIV_SLOT_RETIRED_20) {
+		uint index;
 		uint oncard, offcard;
 		const char *url;
+
+		index = (slotid - PIV_SLOT_RETIRED_1) + 1;
 
 		oncard = piv_token_keyhistory_oncard(selk);
 		offcard = piv_token_keyhistory_offcard(selk);
 		url = piv_token_offcard_url(selk);
 
-		++oncard;
+		if (index > oncard) {
+			err = piv_write_keyhistory(selk, index, offcard, url);
 
-		err = piv_write_keyhistory(selk, oncard, offcard, url);
-
-		if (err) {
-			warnfx(err, "failed to update key "
-			    "history object with new cert, trying to "
-			    "continue anyway...");
-			err = ERRF_OK;
+			if (err) {
+				warnfx(err, "failed to update key "
+				    "history object with new cert, trying to "
+				    "continue anyway...");
+				err = ERRF_OK;
+			}
 		}
 	}
 
