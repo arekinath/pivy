@@ -99,6 +99,8 @@ void assert_pin(struct piv_token *pk, struct piv_slot *slot,
 errf_t *read_tpl_file_err(const char *tpl, struct ebox_tpl **ptpl);
 struct ebox_tpl *read_tpl_file(const char *tpl);
 
+errf_t *interactive_select_tpl(struct ebox_tpl **ptpl);
+
 boolean_t can_local_unlock(struct piv_ecdh_box *box);
 
 errf_t *local_unlock_agent(struct piv_ecdh_box *box);

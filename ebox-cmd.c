@@ -20,6 +20,7 @@
 #include <strings.h>
 #include <limits.h>
 #include <err.h>
+#include <dirent.h>
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -1929,4 +1930,125 @@ done:
 	}
 	question_free(q);
 	return (ERRF_OK);
+}
+
+struct tpl_selector {
+	char		 ts_path[PATH_MAX];
+	struct ebox_tpl	*ts_tpl;
+	struct answer	*ts_ans;
+};
+
+errf_t *
+interactive_select_tpl(struct ebox_tpl **ptpl)
+{
+	struct question *q;
+	struct answer *a;
+	struct answer atmp;
+	char k = '0';
+	char *dpath, *fpath;
+	DIR *d;
+	struct dirent *ent;
+	const struct ebox_tpl_path_ent *tpe;
+	errf_t *err = ERRF_OK;
+	struct ebox_tpl *tpl;
+	struct ebox_tpl_config *c;
+	struct tpl_selector *sel;
+	char *line, *p;
+
+	q = calloc(1, sizeof (struct question));
+	question_printf(q, "-- Select a template --\n");
+	question_printf(q, "Select an ebox template to use:");
+
+	tpe = ebox_tpl_path;
+	while (tpe != NULL) {
+		dpath = compose_path(tpe->tpe_segs, "");
+
+		d = opendir(dpath);
+		if (d == NULL) {
+			errf_free(err);
+			err = errfno("opendir", errno, "%s", dpath);
+			goto next;
+		}
+
+		while ((ent = readdir(d)) != NULL) {
+			if (ent->d_name[0] == '.')
+				continue;
+
+			fpath = compose_path(tpe->tpe_segs, ent->d_name);
+			tpl = read_tpl_file(fpath);
+
+			a = make_answer(k++, "%s: ", ent->d_name);
+
+			sel = calloc(1, sizeof (struct tpl_selector));
+			sel->ts_ans = a;
+			sel->ts_tpl = tpl;
+			strlcpy(sel->ts_path, fpath, sizeof (sel->ts_path));
+
+			a->a_priv = sel;
+
+			c = NULL;
+			while ((c = ebox_tpl_next_config(tpl, c)) != NULL) {
+				bzero(&atmp, sizeof (atmp));
+				make_answer_text_for_config(c, &atmp);
+				answer_printf(a, "%s; ", atmp.a_text);
+			}
+
+			add_answer(q, a);
+
+			free(fpath);
+		}
+
+		closedir(d);
+
+		free(dpath);
+
+next:
+		tpe = tpe->tpe_next;
+	}
+
+	a = make_answer('/', "specify path");
+	add_command(q, a);
+
+	a = make_answer('x', "cancel");
+	add_command(q, a);
+
+again:
+	question_prompt(q, &a);
+	if (a->a_key == 'x') {
+		err = errf("Interrupted", NULL, "Selection of ebox template "
+		    "was cancelled by user");
+		goto out;
+	}
+	if (a->a_key == '/') {
+		line = readline("Path? ");
+		if (line == NULL) {
+			err = errf("Interrupted", NULL, "Selection of ebox "
+			    "template was cancelled by user");
+			goto out;
+		}
+		err = read_tpl_file_err(line, &tpl);
+		if (err != ERRF_OK) {
+			warnfx(err, "failed to read template '%s'", line);
+			errf_free(err);
+			free(line);
+			goto again;
+		}
+		goto out;
+	}
+	sel = a->a_priv;
+	tpl = sel->ts_tpl;
+	err = ERRF_OK;
+
+out:
+	for (a = q->q_ans; a != NULL; a = a->a_next) {
+		sel = a->a_priv;
+		if (sel->ts_tpl != NULL && sel->ts_tpl != tpl)
+			ebox_tpl_free(sel->ts_tpl);
+		sel->ts_tpl = NULL;
+	}
+
+	*ptpl = tpl;
+	question_free(q);
+
+	return (err);
 }

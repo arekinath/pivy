@@ -753,7 +753,9 @@ interactive_edit_tpl(struct ebox_tpl *tpl)
 	struct question *q, *q2;
 	struct answer *a;
 	struct ebox_tpl_config *config;
-	char k = '0';
+	char k = '0', k2 = '0';
+	struct ebox_tpl *otpl;
+	errf_t *err;
 
 	q = calloc(1, sizeof (struct question));
 	question_printf(q, "-- Editing template --\n");
@@ -769,6 +771,8 @@ interactive_edit_tpl(struct ebox_tpl *tpl)
 	}
 
 	a = make_answer('+', "add new configuration");
+	add_command(q, a);
+	a = make_answer('&', "import configuration from another template");
 	add_command(q, a);
 	a = make_answer('-', "remove a configuration");
 	add_command(q, a);
@@ -811,6 +815,51 @@ again:
 		add_answer(q, a);
 
 		question_free(q2);
+		goto again;
+	case '&':
+		err = interactive_select_tpl(&otpl);
+		if (err != ERRF_OK) {
+			errf_free(err);
+			goto again;
+		}
+		k2 = '0';
+		q2 = calloc(1, sizeof (struct question));
+		question_printf(q2, "-- Import configuration --\n");
+		question_printf(q2, "Select a configuration to import:");
+		config = NULL;
+		while ((config = ebox_tpl_next_config(otpl, config)) != NULL) {
+			a = calloc(1, sizeof (struct answer));
+			a->a_key = ++k2;
+			a->a_priv = config;
+			make_answer_text_for_config(config, a);
+			add_answer(q2, a);
+		}
+		a = make_answer('x', "cancel");
+		add_command(q2, a);
+		question_prompt(q2, &a);
+		if (a->a_key == 'x') {
+			for (a = q2->q_ans; a != NULL; a = a->a_next)
+				a->a_priv = NULL;
+			question_free(q2);
+			ebox_tpl_free(otpl);
+			goto again;
+		}
+		config = a->a_priv;
+		for (a = q2->q_ans; a != NULL; a = a->a_next)
+			a->a_priv = NULL;
+		question_free(q2);
+		ebox_tpl_remove_config(otpl, config);
+		ebox_tpl_add_config(tpl, config);
+		ebox_tpl_free(otpl);
+
+		a = ebox_tpl_config_alloc_private(config,
+		    sizeof (struct answer));
+		a->a_key = ++k;
+		a->a_priv = config;
+
+		make_answer_text_for_config(config, a);
+		add_answer(q, a);
+
 		goto again;
 	case '-':
 		q2 = calloc(1, sizeof (struct question));
