@@ -32,6 +32,9 @@ bingroup	?= wheel
 
 VERSION		= 0.10.0
 
+INSTALL		?= install
+INSTALLBIN	?= $(INSTALL) -o $(binowner) -g $(bingroup) -m 0755
+
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
 	-D_FORTIFY_SOURCE=2 -Wall -g -O2 -gdwarf-2
@@ -186,6 +189,7 @@ ifeq ($(SYSTEM), SunOS)
 	endif
 
 	CTFCONVERT	?= ctfconvert
+	CTFOPTS		?= -k
 	CTFCONV_HELP	= $(shell $(CTFCONVERT) -h 2>&1 | fgrep -- -o | fgrep "add CTF")
 	ifneq (,$(CTFCONV_HELP))
 		HAVE_CTF	:= yes
@@ -392,9 +396,13 @@ pivy-ca: $(PIVYCA_OBJS) $(LIBSSH) $(LIBCRYPTO)
 all: pivy-ca
 
 install_pivyca: pivy-ca install_common
-	install -o $(binowner) -g $(bingroup) -m 0755 pivy-ca $(DESTDIR)$(bindir)
+	$(INSTALLBIN) pivy-ca $(DESTDIR)$(bindir)
 install: install_pivyca
 .PHONY: install_pivyca
+
+.ctfconvert.ca: pivy-ca
+	$(CTFCONVERT) $(CTFOPTS) pivy-ca && touch $@
+.ctfconvert: .ctfconvert.ca
 
 endif
 
@@ -476,9 +484,13 @@ pivy-zfs: $(PIVZFS_OBJS) $(LIBSSH) $(LIBCRYPTO)
 all: pivy-zfs
 
 install_pivyzfs: pivy-zfs install_common
-	install -o $(binowner) -g $(bingroup) -m 0755 pivy-zfs $(DESTDIR)$(bindir)
+	$(INSTALLBIN) pivy-zfs $(DESTDIR)$(bindir)
 install: install_pivyzfs
 .PHONY: install_pivyzfs
+
+.ctfconvert.zfs: pivy-zfs
+	$(CTFCONVERT) $(CTFOPTS) pivy-zfs && touch $@
+.ctfconvert: .ctfconvert.zfs
 
 endif
 
@@ -526,7 +538,7 @@ pivy-luks: $(PIVYLUKS_OBJS) $(LIBSSH) $(LIBCRYPTO)
 all: pivy-luks
 
 install_pivyluks: pivy-luks install_common
-	install -o $(binowner) -g $(bingroup) -m 0755 pivy-luks $(DESTDIR)$(bindir)
+	$(INSTALLBIN) pivy-luks $(DESTDIR)$(bindir)
 install: install_pivyluks
 .PHONY: install_pivyluks
 
@@ -571,8 +583,8 @@ pam_pivy.so: $(PAMPIVY_OBJS) $(LIBSSH) $(LIBCRYPTO)
 all: pam_pivy.so
 
 install_pampivy: pam_pivy.so install_common
-	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(PAM_PLUGINDIR)
-	install -o $(binowner) -g $(bingroup) -m 0755 pam_pivy.so $(DESTDIR)$(PAM_PLUGINDIR)
+	$(INSTALLBIN) -d $(DESTDIR)$(PAM_PLUGINDIR)
+	$(INSTALLBIN) pam_pivy.so $(DESTDIR)$(PAM_PLUGINDIR)
 install: install_pampivy
 .PHONY: install_pampivy
 
@@ -704,17 +716,17 @@ endif
 
 
 install_common: pivy-tool pivy-agent pivy-box
-	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(bindir)
-	install -o $(binowner) -g $(bingroup) -m 0755 pivy-agent $(DESTDIR)$(bindir)
-	install -o $(binowner) -g $(bingroup) -m 0755 pivy-tool $(DESTDIR)$(bindir)
-	install -o $(binowner) -g $(bingroup) -m 0755 pivy-box $(DESTDIR)$(bindir)
+	$(INSTALLBIN) -d $(DESTDIR)$(bindir)
+	$(INSTALLBIN) pivy-agent $(DESTDIR)$(bindir)
+	$(INSTALLBIN) pivy-tool $(DESTDIR)$(bindir)
+	$(INSTALLBIN) pivy-box $(DESTDIR)$(bindir)
 
 ifeq ($(SYSTEM), Darwin)
 install: install_common
-	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)/etc/paths.d
+	$(INSTALLBIN) -d $(DESTDIR)/etc/paths.d
 	echo "$(bindir)" > $(DESTDIR)/etc/paths.d/pivy
-	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(prefix)/share
-	install -o $(binowner) -g $(bingroup) -m 0644 macosx/net.cooperi.pivy-agent.plist \
+	$(INSTALLBIN) -d $(DESTDIR)$(prefix)/share
+	$(INSTALL) -o $(binowner) -g $(bingroup) -m 0644 macosx/net.cooperi.pivy-agent.plist \
 	    $(DESTDIR)$(prefix)/share
 
 .PHONY: package
@@ -789,6 +801,20 @@ ifeq ($(SYSTEM), OpenBSD)
 install: install_common
 endif
 
+ifeq ($(HAVE_CTF), yes)
+install: .ctfconvert
+
+.ctfconvert: .ctfconvert.base
+	touch $@
+
+.ctfconvert.base: pivy-tool pivy-agent pivy-box
+	$(CTFCONVERT) $(CTFOPTS) pivy-tool && \
+	$(CTFCONVERT) $(CTFOPTS) pivy-agent && \
+	$(CTFCONVERT) $(CTFOPTS) pivy-box && \
+	touch $@
+
+endif
+
 ifeq ($(SYSTEM), SunOS)
 _SMF_BITS=	fs-pivy \
 		svc-pivy-agent \
@@ -801,11 +827,11 @@ illumos/%: illumos/%.in
 all: $(SMF_BITS)
 
 install: install_common $(SMF_BITS)
-	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(SMF_METHODS)
-	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(SMF_MANIFESTS)
-	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(SMF_MANIFESTS)/system
-	install -o $(binowner) -g $(bingroup) -m 0444 illumos/pivy-agent.xml $(DESTDIR)$(SMF_MANIFESTS)/system
-	install -o $(binowner) -g $(bingroup) -m 0444 illumos/pivy-fs.xml $(DESTDIR)$(SMF_MANIFESTS)/system
-	install -o $(binowner) -g $(bingroup) -m 0444 illumos/fs-pivy $(DESTDIR)$(SMF_METHODS)
-	install -o $(binowner) -g $(bingroup) -m 0444 illumos/svc-pivy-agent $(DESTDIR)$(SMF_METHODS)
+	$(INSTALLBIN) -d $(DESTDIR)$(SMF_METHODS)
+	$(INSTALLBIN) -d $(DESTDIR)$(SMF_MANIFESTS)
+	$(INSTALLBIN) -d $(DESTDIR)$(SMF_MANIFESTS)/system
+	$(INSTALLBIN) -m 0444 illumos/pivy-agent.xml $(DESTDIR)$(SMF_MANIFESTS)/system
+	$(INSTALLBIN) -m 0444 illumos/pivy-fs.xml $(DESTDIR)$(SMF_MANIFESTS)/system
+	$(INSTALLBIN) illumos/fs-pivy $(DESTDIR)$(SMF_METHODS)
+	$(INSTALLBIN) illumos/svc-pivy-agent $(DESTDIR)$(SMF_METHODS)
 endif

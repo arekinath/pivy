@@ -19,6 +19,7 @@
 /.ccls-cache
 /.openssh.*
 /.libressl.*
+/.ctfconvert*
 illumos/*.xml
 illumos/fs-pivy
 illumos/svc-pivy-agent
