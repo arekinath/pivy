@@ -322,6 +322,8 @@ ebox_tpl_remove_config(struct ebox_tpl *tpl, struct ebox_tpl_config *config)
 	} else {
 		config->etc_next->etc_prev = config->etc_prev;
 	}
+	config->etc_next = NULL;
+	config->etc_prev = NULL;
 }
 
 struct ebox_tpl_config *
@@ -443,6 +445,8 @@ ebox_tpl_config_remove_part(struct ebox_tpl_config *config,
 	} else {
 		part->etp_next->etp_prev = part->etp_prev;
 	}
+	part->etp_next = NULL;
+	part->etp_prev = NULL;
 	--config->etc_m;
 }
 
