@@ -4,6 +4,11 @@ pivy (0.10.0-1) UNRELEASED; urgency=medium
   * pivy-tool: accept and use PEM rather than DER for certs
   * pivy-ca: new tool, manages an X.509 CA on a PIV device
   * pivy-tool: add -j JSON output mode for "list" command
+  * pivy-box: option for importing config from another tpl in edit -i
+  * pivy-tool: fix for MS SID extension in certs
+  * piv: don't reset the card after a txn if we can clear PIN state instead
+  * piv: handle 6A88 SW on PIN-related commands nicely
+  * pivy-tool: fix generate on non-contiguous retired key slots
 
 pivy (0.9.0-1) UNRELEASED; urgency=medium
 
