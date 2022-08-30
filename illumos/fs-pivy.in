@@ -1,0 +1,16 @@
+#!/usr/bin/bash
+
+. /lib/svc/share/smf_include.sh
+
+export SSH_AUTH_SOCK=`/usr/bin/svcprop -p config/socket svc:/system/pivy-agent`
+
+while read name encroot kst box; do
+        if [[ "${name}" == "${encroot}" && "${name}" != "zones/swap" && \
+            "${box}" != "-" && "${kst}" != "available" ]]; then
+                @@prefix@@/bin/pivy-zfs unlock "${name}" || \
+                    exit $SMF_EXIT_ERR_FATAL
+                @@prefix@@/bin/pivy-zfs rekey "${name}"
+        fi
+done < <(/usr/sbin/zfs list -p -H -o name,encryptionroot,keystatus,rfd77:ebox)
+
+exit $SMF_EXIT_OK

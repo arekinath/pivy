@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+<service_bundle type='manifest' name='SUNWcsr:pivy-agent'>
+
+<service
+        name='system/pivy-agent'
+        type='service'
+        version='1'>
+
+        <create_default_instance enabled='false' />
+
+        <dependency
+                name='single-user'
+                grouping='require_all'
+                restart_on='none'
+                type='service'>
+                <service_fmri value='svc:/milestone/single-user' />
+        </dependency>
+
+        <exec_method
+                type='method'
+                name='start'
+                exec='@@METHODPATH@@/svc-pivy-agent'
+                timeout_seconds='0' />
+
+        <exec_method
+                type='method'
+                name='stop'
+                exec=':kill'
+                timeout_seconds='0' />
+
+        <property_group name='startd' type='framework'>
+                <propval name='duration' type='astring' value='contract' />
+        </property_group>
+
+        <property_group name='config' type='application'>
+                <propval name='guid' type='astring' value='' />
+                <propval name='cak' type='astring' value='' />
+                <propval name='socket' type='astring' value='/var/run/system-pivy-agent.sock' />
+                <propval name='askpass' type='astring' value='' />
+                <propval name='allow_any_uid' type='boolean' value='false' />
+                <propval name='allow_any_zone' type='boolean' value='false' />
+                <propval name='slot_filter' type='astring' value='all' />
+        </property_group>
+
+        <stability value='Unstable' />
+
+        <template>
+                <common_name>
+                        <loctext xml:lang='C'>
+                                PIV token agent
+                        </loctext>
+                </common_name>
+        </template>
+</service>
+
+</service_bundle>

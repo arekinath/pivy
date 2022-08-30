@@ -1,0 +1,32 @@
+#!/sbin/sh
+
+. /lib/svc/share/smf_include.sh
+
+GUID="`/usr/bin/svcprop -p config/guid $SMF_FMRI`"
+CAK="`/usr/bin/svcprop -p config/cak $SMF_FMRI | sed 's/\\\\ / /'`"
+SOCKET="`/usr/bin/svcprop -p config/socket $SMF_FMRI`"
+SSH_ASKPASS="`/usr/bin/svcprop -p config/askpass $SMF_FMRI`"
+if [ ! -z "$SSH_ASKPASS" ]; then
+	export SSH_ASKPASS
+fi
+
+OPTS=""
+
+ANY_UID="`/usr/bin/svcprop -p config/allow_any_uid $SMF_FMRI`"
+if [ "$ANY_UID" == "true" ]; then
+	OPTS="${OPTS} -U"
+fi
+
+ANY_ZONE="`/usr/bin/svcprop -p config/allow_any_zone $SMF_FMRI`"
+if [ "$ANY_ZONE" == "true" ]; then
+	OPTS="${OPTS} -Z"
+fi
+
+SLOT_FILTER="`/usr/bin/svcprop -p config/slot_filter $SMF_FMRI`"
+if [ -z "$SLOT_FILTER" ]; then
+	OPTS="${OPTS} -S '${SLOT_FILTER}'"
+fi
+
+@@prefix@@/bin/pivy-agent -i -g "$GUID" -K "$CAK" -a "$SOCKET" $OPTS &
+
+exit $SMF_EXIT_OK

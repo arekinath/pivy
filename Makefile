@@ -191,6 +191,8 @@ ifeq ($(SYSTEM), SunOS)
 		HAVE_CTF	:= yes
 	endif
 
+	SMF_METHODS	?= $(prefix)/lib/svc/method
+	SMF_MANIFESTS	?= $(prefix)/lib/svc/manifest
 endif
 LIBCRYPTO	?= $(LIBRESSL_LIB)/libcrypto.a
 LIBSSH		?= $(OPENSSH)/libssh.a
@@ -785,4 +787,25 @@ endif
 
 ifeq ($(SYSTEM), OpenBSD)
 install: install_common
+endif
+
+ifeq ($(SYSTEM), SunOS)
+_SMF_BITS=	fs-pivy \
+		svc-pivy-agent \
+		pivy-agent.xml \
+		pivy-fs.xml
+SMF_BITS=$(_SMF_BITS:%=illumos/%)
+
+illumos/%: illumos/%.in
+	sed -e 's!@@prefix@@!$(prefix)!' -e 's!@@METHODPATH@@!$(SMF_METHODS)!' < $< > $@
+all: $(SMF_BITS)
+
+install: install_common $(SMF_BITS)
+	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(SMF_METHODS)
+	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(SMF_MANIFESTS)
+	install -o $(binowner) -g $(bingroup) -m 0755 -d $(DESTDIR)$(SMF_MANIFESTS)/system
+	install -o $(binowner) -g $(bingroup) -m 0444 illumos/pivy-agent.xml $(DESTDIR)$(SMF_MANIFESTS)/system
+	install -o $(binowner) -g $(bingroup) -m 0444 illumos/pivy-fs.xml $(DESTDIR)$(SMF_MANIFESTS)/system
+	install -o $(binowner) -g $(bingroup) -m 0444 illumos/fs-pivy $(DESTDIR)$(SMF_METHODS)
+	install -o $(binowner) -g $(bingroup) -m 0444 illumos/svc-pivy-agent $(DESTDIR)$(SMF_METHODS)
 endif
