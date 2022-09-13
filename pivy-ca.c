@@ -360,10 +360,10 @@ is_uninit(struct piv_token *tok)
 	fascn = piv_chuid_get_fascn(chuid);
 	if (fascn == NULL)
 		return (1);
-	if (strcmp(piv_fascn_get_agency_code(fascn), "0000") == 0 &&
-	    strcmp(piv_fascn_get_system_code(fascn), "0000") == 0 &&
-	    strcmp(piv_fascn_get_cred_number(fascn), "000000") == 0)
-		return (1);
+	if (strcmp(piv_fascn_get_agency_code(fascn), "0000") != 0 &&
+	    strcmp(piv_fascn_get_system_code(fascn), "0000") != 0 &&
+	    strcmp(piv_fascn_get_cred_number(fascn), "000000") != 0)
+		return (0);
 	if (strcmp(piv_chuid_get_guidhex(chuid),
 	    "00000000000000000000000000000000") == 0)
 		return (1);
