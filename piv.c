@@ -3821,7 +3821,7 @@ piv_reset_pin(struct piv_token *pk, enum piv_pin type, const char *puk,
 	if (apdu->a_sw == SW_NO_ERROR) {
 		err = ERRF_OK;
 		if (pk->pt_used_pin == PIV_NO_PIN || pk->pt_used_pin == type)
-			pk->pt_used_pin == type;
+			pk->pt_used_pin = type;
 		else
 			pk->pt_reset = B_TRUE;
 
@@ -7352,6 +7352,12 @@ CMS_ContentInfo *
 piv_chuid_get_signature(struct piv_chuid *c)
 {
 	return (c->pc_sig);
+}
+
+boolean_t
+piv_chuid_is_signed(const struct piv_chuid *c)
+{
+	return (c->pc_sig != NULL);
 }
 
 errf_t *

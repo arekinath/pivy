@@ -347,6 +347,29 @@ again:
 	return (err);
 }
 
+static int
+is_uninit(struct piv_token *tok)
+{
+	const struct piv_fascn *fascn;
+	const struct piv_chuid *chuid;
+	chuid = piv_token_chuid(tok);
+	if (chuid == NULL)
+		return (1);
+	if (piv_chuid_is_signed(chuid))
+		return (0);
+	fascn = piv_chuid_get_fascn(chuid);
+	if (fascn == NULL)
+		return (1);
+	if (strcmp(piv_fascn_get_agency_code(fascn), "0000") == 0 &&
+	    strcmp(piv_fascn_get_system_code(fascn), "0000") == 0 &&
+	    strcmp(piv_fascn_get_cred_number(fascn), "000000") == 0)
+		return (1);
+	if (strcmp(piv_chuid_get_guidhex(chuid),
+	    "00000000000000000000000000000000") == 0)
+		return (1);
+	return (0);
+}
+
 static errf_t *
 cmd_setup(const char *ca_path)
 {
@@ -388,10 +411,10 @@ cmd_setup(const char *ca_path)
 	if (tokens == NULL)
 		errx(EXIT_NO_CARD, "no PIV cards/tokens found");
 	for (tok = tokens; tok != NULL; tok = piv_token_next(tok)) {
-		if (!piv_token_has_chuid(tok))
+		if (is_uninit(tok))
 			break;
 	}
-	if (tok == NULL || piv_token_has_chuid(tok))
+	if (tok == NULL || !is_uninit(tok))
 		errx(EXIT_NO_CARD, "no uninit'd PIV token/card found");
 
 	fprintf(stderr, "Setting up new CA in device '%s'...\n",

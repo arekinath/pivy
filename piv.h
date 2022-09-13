@@ -1186,6 +1186,7 @@ const char *piv_chuid_get_guidhex(const struct piv_chuid *);
 const uint8_t *piv_chuid_get_chuuid(const struct piv_chuid *);
 const uint8_t *piv_chuid_get_expiry(const struct piv_chuid *, size_t *len);
 CMS_ContentInfo *piv_chuid_get_signature(struct piv_chuid *);
+boolean_t piv_chuid_is_signed(const struct piv_chuid *);
 
 boolean_t piv_chuid_is_expired(const struct piv_chuid *);
 
