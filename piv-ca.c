@@ -2108,7 +2108,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	uint8_t *hcroot = NULL;
 	size_t hcroot_len = 0;
 	struct sshkey *cak;
-	struct cert_var_scope *scope;
+	struct cert_var_scope *scope = NULL;
 	json_object *robj = NULL, *obj = NULL;
 	char *dnstr = NULL;
 	const char *jsonstr;
@@ -3596,144 +3596,152 @@ ca_add_crl_ocsp(struct ca *ca, X509 *cert)
 	ASN1_IA5STRING *nmstr = NULL;
 	int rc;
 
-	crldps = CRL_DIST_POINTS_new();
-	if (crldps == NULL) {
-		make_sslerrf(err, "CRL_DIST_POINTS_new",
-		    "adding CRL dist points");
-		goto out;
-	}
-
-	dp = DIST_POINT_new();
-	if (dp == NULL) {
-		make_sslerrf(err, "DIST_POINT_new",
-		    "adding CRL dist points");
-		goto out;
-	}
-	dp->distpoint = DIST_POINT_NAME_new();
-	if (dp->distpoint == NULL) {
-		make_sslerrf(err, "DIST_POINT_NAME_new",
-		    "adding CRL dist points");
-		goto out;
-	}
-	dp->distpoint->type = 0;
-	dp->distpoint->name.fullname = GENERAL_NAMES_new();
-	for (uri = ca->ca_crls; uri != NULL; uri = uri->cu_next) {
-		nm = GENERAL_NAME_new();
-		nmstr = ASN1_IA5STRING_new();
-		if (nm == NULL || nmstr == NULL) {
-			make_sslerrf(err, "GENERAL_NAME_new",
+	if (ca->ca_crls != NULL) {
+		crldps = CRL_DIST_POINTS_new();
+		if (crldps == NULL) {
+			make_sslerrf(err, "CRL_DIST_POINTS_new",
 			    "adding CRL dist points");
 			goto out;
 		}
-		ASN1_STRING_set(nmstr, uri->cu_uri, -1);
-		GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
-		nmstr = NULL;	/* GENERAL_NAME_set0_value takes ownership */
-		rc = sk_GENERAL_NAME_push(dp->distpoint->name.fullname, nm);
-		if (rc == 0) {
-			make_sslerrf(err, "sk_GENERAL_NAME_push",
+
+		dp = DIST_POINT_new();
+		if (dp == NULL) {
+			make_sslerrf(err, "DIST_POINT_new",
 			    "adding CRL dist points");
 			goto out;
 		}
-		nm = NULL;
-	}
-	rc = sk_DIST_POINT_push(crldps, dp);
-	if (rc == 0) {
-		make_sslerrf(err, "sk_DIST_POINT_push",
-		    "adding CRL dist points");
-		goto out;
-	}
-
-	rc = X509_add1_ext_i2d(cert, NID_crl_distribution_points, crldps, 0,
-	    X509V3_ADD_REPLACE);
-	if (rc != 1) {
-		make_sslerrf(err, "X509_add1_ext_i2d",
-		    "adding CRL dist points");
-		goto out;
-	}
-
-	aia = AUTHORITY_INFO_ACCESS_new();
-	if (aia == NULL) {
-		make_sslerrf(err, "AUTHORITY_INFO_ACCESS_new",
-		    "adding OCSP AIA");
-		goto out;
-	}
-
-	for (uri = ca->ca_ocsps; uri != NULL; uri = uri->cu_next) {
-		nm = GENERAL_NAME_new();
-		nmstr = ASN1_IA5STRING_new();
-		if (nm == NULL || nmstr == NULL) {
-			make_sslerrf(err, "GENERAL_NAME_new",
-			    "adding OCSP AIA");
+		dp->distpoint = DIST_POINT_NAME_new();
+		if (dp->distpoint == NULL) {
+			make_sslerrf(err, "DIST_POINT_NAME_new",
+			    "adding CRL dist points");
 			goto out;
 		}
-		ASN1_STRING_set(nmstr, uri->cu_uri, -1);
-		GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
-		nmstr = NULL;	/* GENERAL_NAME_set0_value takes ownership */
-
-		ad = ACCESS_DESCRIPTION_new();
-		if (ad == NULL) {
-			make_sslerrf(err, "ACCESS_DESCRIPTION_new",
-			    "adding OCSP AIA");
-			goto out;
+		dp->distpoint->type = 0;
+		dp->distpoint->name.fullname = GENERAL_NAMES_new();
+		for (uri = ca->ca_crls; uri != NULL; uri = uri->cu_next) {
+			nm = GENERAL_NAME_new();
+			nmstr = ASN1_IA5STRING_new();
+			if (nm == NULL || nmstr == NULL) {
+				make_sslerrf(err, "GENERAL_NAME_new",
+				    "adding CRL dist points");
+				goto out;
+			}
+			ASN1_STRING_set(nmstr, uri->cu_uri, -1);
+			GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
+			/* GENERAL_NAME_set0_value takes ownership */
+			nmstr = NULL;
+			rc = sk_GENERAL_NAME_push(
+			    dp->distpoint->name.fullname, nm);
+			if (rc == 0) {
+				make_sslerrf(err, "sk_GENERAL_NAME_push",
+				    "adding CRL dist points");
+				goto out;
+			}
+			nm = NULL;
 		}
-		ad->method = OBJ_nid2obj(NID_ad_OCSP);
-		if (ad->method == NULL) {
-			make_sslerrf(err, "OBJ_nid2obj",
-			    "adding OCSP AIA (converting OCSP NID)");
-			goto out;
-		}
-		ad->location = nm;
-		nm = NULL;
-		rc = sk_ACCESS_DESCRIPTION_push(aia, ad);
+		rc = sk_DIST_POINT_push(crldps, dp);
 		if (rc == 0) {
-			make_sslerrf(err, "sk_ACCESS_DESCRIPTION_push",
+			make_sslerrf(err, "sk_DIST_POINT_push",
+			    "adding CRL dist points");
+			goto out;
+		}
+
+		rc = X509_add1_ext_i2d(cert, NID_crl_distribution_points,
+		    crldps, 0, X509V3_ADD_REPLACE);
+		if (rc != 1) {
+			make_sslerrf(err, "X509_add1_ext_i2d",
+			    "adding CRL dist points");
+			goto out;
+		}
+	}
+
+	if (ca->ca_ocsps != NULL || ca->ca_aias != NULL) {
+		aia = AUTHORITY_INFO_ACCESS_new();
+		if (aia == NULL) {
+			make_sslerrf(err, "AUTHORITY_INFO_ACCESS_new",
 			    "adding OCSP AIA");
 			goto out;
 		}
-		ad = NULL;
-	}
 
-	for (uri = ca->ca_aias; uri != NULL; uri = uri->cu_next) {
-		nm = GENERAL_NAME_new();
-		nmstr = ASN1_IA5STRING_new();
-		if (nm == NULL || nmstr == NULL) {
-			make_sslerrf(err, "GENERAL_NAME_new",
-			    "adding AIA");
-			goto out;
-		}
-		ASN1_STRING_set(nmstr, uri->cu_uri, -1);
-		GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
-		nmstr = NULL;	/* GENERAL_NAME_set0_value takes ownership */
+		for (uri = ca->ca_ocsps; uri != NULL; uri = uri->cu_next) {
+			nm = GENERAL_NAME_new();
+			nmstr = ASN1_IA5STRING_new();
+			if (nm == NULL || nmstr == NULL) {
+				make_sslerrf(err, "GENERAL_NAME_new",
+				    "adding OCSP AIA");
+				goto out;
+			}
+			ASN1_STRING_set(nmstr, uri->cu_uri, -1);
+			GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
+			/* GENERAL_NAME_set0_value takes ownership */
+			nmstr = NULL;
 
-		ad = ACCESS_DESCRIPTION_new();
-		if (ad == NULL) {
-			make_sslerrf(err, "ACCESS_DESCRIPTION_new",
-			    "adding AIA");
-			goto out;
+			ad = ACCESS_DESCRIPTION_new();
+			if (ad == NULL) {
+				make_sslerrf(err, "ACCESS_DESCRIPTION_new",
+				    "adding OCSP AIA");
+				goto out;
+			}
+			ad->method = OBJ_nid2obj(NID_ad_OCSP);
+			if (ad->method == NULL) {
+				make_sslerrf(err, "OBJ_nid2obj",
+				    "adding OCSP AIA (converting OCSP NID)");
+				goto out;
+			}
+			ad->location = nm;
+			nm = NULL;
+			rc = sk_ACCESS_DESCRIPTION_push(aia, ad);
+			if (rc == 0) {
+				make_sslerrf(err, "sk_ACCESS_DESCRIPTION_push",
+				    "adding OCSP AIA");
+				goto out;
+			}
+			ad = NULL;
 		}
-		ad->method = OBJ_nid2obj(NID_ad_ca_issuers);
-		if (ad->method == NULL) {
-			make_sslerrf(err, "OBJ_nid2obj",
-			    "adding AIA (converting CAIssuers NID)");
-			goto out;
-		}
-		ad->location = nm;
-		nm = NULL;
-		rc = sk_ACCESS_DESCRIPTION_push(aia, ad);
-		if (rc == 0) {
-			make_sslerrf(err, "sk_ACCESS_DESCRIPTION_push",
-			    "adding AIA");
-			goto out;
-		}
-		ad = NULL;
-	}
 
-	rc = X509_add1_ext_i2d(cert, NID_info_access, aia, 0,
-	    X509V3_ADD_REPLACE);
-	if (rc != 1) {
-		make_sslerrf(err, "X509_add1_ext_i2d",
-		    "adding OCSP dist points");
-		goto out;
+		for (uri = ca->ca_aias; uri != NULL; uri = uri->cu_next) {
+			nm = GENERAL_NAME_new();
+			nmstr = ASN1_IA5STRING_new();
+			if (nm == NULL || nmstr == NULL) {
+				make_sslerrf(err, "GENERAL_NAME_new",
+				    "adding AIA");
+				goto out;
+			}
+			ASN1_STRING_set(nmstr, uri->cu_uri, -1);
+			GENERAL_NAME_set0_value(nm, GEN_URI, nmstr);
+			/* GENERAL_NAME_set0_value takes ownership */
+			nmstr = NULL;
+
+			ad = ACCESS_DESCRIPTION_new();
+			if (ad == NULL) {
+				make_sslerrf(err, "ACCESS_DESCRIPTION_new",
+				    "adding AIA");
+				goto out;
+			}
+			ad->method = OBJ_nid2obj(NID_ad_ca_issuers);
+			if (ad->method == NULL) {
+				make_sslerrf(err, "OBJ_nid2obj",
+				    "adding AIA (converting CAIssuers NID)");
+				goto out;
+			}
+			ad->location = nm;
+			nm = NULL;
+			rc = sk_ACCESS_DESCRIPTION_push(aia, ad);
+			if (rc == 0) {
+				make_sslerrf(err, "sk_ACCESS_DESCRIPTION_push",
+				    "adding AIA");
+				goto out;
+			}
+			ad = NULL;
+		}
+
+		rc = X509_add1_ext_i2d(cert, NID_info_access, aia, 0,
+		    X509V3_ADD_REPLACE);
+		if (rc != 1) {
+			make_sslerrf(err, "X509_add1_ext_i2d",
+			    "adding OCSP dist points");
+			goto out;
+		}
 	}
 
 	err = ERRF_OK;

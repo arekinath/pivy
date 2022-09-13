@@ -576,8 +576,7 @@ again:
 	cana_scope(cna, root_scope);
 	cana_initial_pin(cna, "123456");
 	cana_initial_puk(cna, "12345678");
-	cana_initial_admin_key(cna, PIV_ALG_3DES, DEFAULT_ADMIN_KEY,
-	    sizeof (DEFAULT_ADMIN_KEY));
+	cana_initial_admin_key(cna, PIV_ALG_3DES, DEFAULT_ADMIN_KEY, 24);
 	cana_key_alg(cna, alg);
 	cana_dn(cna, dn);
 	cana_pin_tpl(cna, pin_tpl_name, pin_tpl);

@@ -563,6 +563,8 @@ void
 scope_free_root(struct cert_var_scope *rcvs)
 {
 	struct cert_var_scope *cvs, *ncvs;
+	if (rcvs == NULL)
+		return;
 	VERIFY(rcvs->cvs_parent == NULL);
 	cert_var_free_chain(rcvs->cvs_vars);
 	for (cvs = rcvs->cvs_children; cvs != NULL; cvs = ncvs) {
