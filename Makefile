@@ -225,10 +225,6 @@ _OBSD_COMPAT=			\
 	bsd-setres_id.c		\
 	vis.c			\
 
-ifneq ($(SYSTEM), OpenBSD)
-_OBSD_COMPAT+= 	readpassphrase.c
-endif
-
 _LIBSSH_SOURCES=		\
 	sshbuf.c		\
 	sshbuf-getput-basic.c	\
@@ -305,6 +301,10 @@ PIV_COMMON_HEADERS=		\
 	piv-internal.h		\
 	debug.h			\
 	utils.h			\
+
+ifneq ($(SYSTEM), OpenBSD)
+PIV_COMMON_SOURCES+= 	readpassphrase.c
+endif
 
 PIV_CERT_SOURCES=			\
 	piv-certs.c		\
