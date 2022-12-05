@@ -74,7 +74,7 @@ int PEM_write_X509(FILE *fp, X509 *x);
 
 boolean_t debug = B_FALSE;
 static struct cert_var_scope *root_scope = NULL;
-static SCARDCONTEXT ctx;
+static struct piv_ctx *ctx;
 static boolean_t output_json = B_FALSE;
 
 #ifndef LINT
@@ -1329,7 +1329,6 @@ errf_t *read_text_file(const char *path, char **out, size_t *outlen);
 int
 main(int argc, char *argv[])
 {
-	LONG rv;
 	errf_t *err = ERRF_OK;
 	extern char *optarg;
 	extern int optind;
@@ -1397,10 +1396,14 @@ main(int argc, char *argv[])
 
 	const char *op = argv[optind++];
 
-	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
-	if (rv != SCARD_S_SUCCESS) {
-		errfx(EXIT_IO_ERROR, pcscerrf("SCardEstablishContext", rv),
-		    "failed to initialise libpcsc");
+	ctx = piv_open();
+	VERIFY(ctx != NULL);
+
+	err = piv_establish_context(ctx, SCARD_SCOPE_SYSTEM);
+	if (err && errf_caused_by(err, "ServiceError")) {
+		errf_free(err);
+	} else if (err) {
+		errfx(EXIT_ERROR, err, "failed to initialise libpcsc");
 	}
 
 	if (strcmp(op, "setup") == 0) {

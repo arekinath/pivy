@@ -240,11 +240,40 @@ enum piv_slot_auth {
 
 #define	GUID_LEN	16
 
+struct piv_ctx;
 struct piv_slot;
 struct piv_token;
 struct piv_fascn;
 struct piv_chuid;
 struct piv_pinfo;
+
+/* Opens a PIV library context. */
+struct piv_ctx *piv_open(void);
+
+/* Frees a PIV library context and all associated structures. */
+void piv_close(struct piv_ctx *ctx);
+
+/*
+ * Attempts to establish a PCSC context for the given PIV library context.
+ *
+ * Ignores errors related to a lack of card readers on the system (these will
+ * simply lead to piv_enumerate etc returning zero readers).
+ *
+ * Errors:
+ *  - ServiceError: One of the PCSC "service not available" codes was returned
+ *                  indicating that a system daemon/service for PCSC is not
+ *                  running.
+ *  - PCSCError: Any other PCSC error
+ */
+MUST_CHECK
+errf_t *piv_establish_context(struct piv_ctx *ctx, DWORD scope);
+
+/*
+ * Sets the PCSC context used by a given PIV library context. This may only
+ * be called once per piv_ctx. Note that it must continue to be valid until
+ * piv_close() is called. The PIV library will not call SCardReleaseContext.
+ */
+void piv_set_context(struct piv_ctx *ctx, SCARDCONTEXT sctx);
 
 /*
  * Enumerates all PIV tokens attached to the given SCARDCONTEXT.
@@ -257,7 +286,7 @@ struct piv_pinfo;
  *  - PCSCError: a PCSC call failed in a way that is not retryable
  */
 MUST_CHECK
-errf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
+errf_t *piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens);
 
 /*
  * Retrieves a PIV token on the system which matches a given GUID or GUID
@@ -276,7 +305,7 @@ errf_t *piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens);
  *  - NotFoundError: token matching the guid was not found
  */
 MUST_CHECK
-errf_t *piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
+errf_t *piv_find(struct piv_ctx *ctx, const uint8_t *guid, size_t guidlen,
     struct piv_token **token);
 
 /*

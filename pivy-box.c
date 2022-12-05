@@ -253,12 +253,16 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 				    "'local-guid' keyword");
 				goto out;
 			}
-			if (!ebox_ctx_init) {
-				rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM,
-				    NULL, NULL, &ebox_ctx);
-				if (rc != SCARD_S_SUCCESS) {
-					errfx(EXIT_ERROR, pcscerrf(
-					    "SCardEstablishContext", rc),
+			if (ebox_ctx == NULL) {
+				ebox_ctx = piv_open();
+				VERIFY(ebox_ctx != NULL);
+				error = piv_establish_context(ebox_ctx,
+				    SCARD_SCOPE_SYSTEM);
+				if (error &&
+				    errf_caused_by(error, "ServiceError")) {
+					errf_free(error);
+				} else if (error) {
+					errfx(EXIT_ERROR, error,
 					    "failed to initialise libpcsc");
 				}
 			}

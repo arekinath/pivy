@@ -69,8 +69,7 @@
 #endif
 
 int ebox_authfd = -1;
-SCARDCONTEXT ebox_ctx;
-boolean_t ebox_ctx_init = B_FALSE;
+struct piv_ctx *ebox_ctx = NULL;
 char *ebox_pin;
 uint ebox_min_retries = 1;
 boolean_t ebox_batch = B_FALSE;
@@ -407,9 +406,8 @@ release_context(void)
 	if (ebox_enum_tokens != NULL)
 		piv_release(ebox_enum_tokens);
 	ebox_enum_tokens = NULL;
-	if (ebox_ctx_init)
-		SCardReleaseContext(ebox_ctx);
-	ebox_ctx_init = B_FALSE;
+	if (ebox_ctx != NULL)
+		piv_close(ebox_ctx);
 }
 
 boolean_t
@@ -445,12 +443,15 @@ can_local_unlock(struct piv_ecdh_box *box)
 	if (!piv_box_has_guidslot(box))
 		goto out;
 
-	if (!ebox_ctx_init) {
-		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
-		    &ebox_ctx);
-		if (rc != SCARD_S_SUCCESS)
+	if (ebox_ctx == NULL) {
+		ebox_ctx = piv_open();
+		VERIFY(ebox_ctx != NULL);
+		err = piv_establish_context(ebox_ctx, SCARD_SCOPE_SYSTEM);
+		if (err && errf_caused_by(err, "ServiceError")) {
+			errf_free(err);
+		} else if (err) {
 			goto out;
-		ebox_ctx_init = B_TRUE;
+		}
 	}
 
 	/*
@@ -499,7 +500,6 @@ errf_t *
 local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 {
 	errf_t *err, *agerr = NULL;
-	int rc;
 	struct piv_slot *slot, *cakslot;
 	struct piv_token *tokens = NULL, *token;
 
@@ -519,14 +519,15 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 		    "and slot information, can't unlock with local hardware"));
 	}
 
-	if (!ebox_ctx_init) {
-		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
-		    &ebox_ctx);
-		if (rc != SCARD_S_SUCCESS) {
-			errfx(EXIT_ERROR, pcscerrf("SCardEstablishContext", rc),
-			    "failed to initialise libpcsc");
+	if (ebox_ctx == NULL) {
+		ebox_ctx = piv_open();
+		VERIFY(ebox_ctx != NULL);
+		err = piv_establish_context(ebox_ctx, SCARD_SCOPE_SYSTEM);
+		if (err && errf_caused_by(err, "ServiceError")) {
+			errf_free(err);
+		} else if (err) {
+			errfx(EXIT_ERROR, err, "failed to initialise libpcsc");
 		}
-		ebox_ctx_init = B_TRUE;
 	}
 
 	/*
@@ -1597,7 +1598,6 @@ read_tpl_file(const char *tpl)
 void
 interactive_select_local_token(struct ebox_tpl_part **ppart)
 {
-	int rc;
 	errf_t *error;
 	struct piv_token *tokens = NULL, *token;
 	struct piv_slot *slot;
@@ -1609,14 +1609,16 @@ interactive_select_local_token(struct ebox_tpl_part **ppart)
 	char k = '0';
 	char *line;
 
-	if (!ebox_ctx_init) {
-		rc = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
-		    &ebox_ctx);
-		if (rc != SCARD_S_SUCCESS) {
-			errfx(EXIT_ERROR, pcscerrf("SCardEstablishContext", rc),
+	if (ebox_ctx == NULL) {
+		ebox_ctx = piv_open();
+		VERIFY(ebox_ctx != NULL);
+		error = piv_establish_context(ebox_ctx, SCARD_SCOPE_SYSTEM);
+		if (error && errf_caused_by(error, "ServiceError")) {
+			errf_free(error);
+		} else if (error) {
+			errfx(EXIT_ERROR, error,
 			    "failed to initialise libpcsc");
 		}
-		ebox_ctx_init = B_TRUE;
 	}
 
 reenum:
@@ -1955,7 +1957,7 @@ interactive_select_tpl(struct ebox_tpl **ptpl)
 	struct ebox_tpl *tpl;
 	struct ebox_tpl_config *c;
 	struct tpl_selector *sel;
-	char *line, *p;
+	char *line;
 
 	q = calloc(1, sizeof (struct question));
 	question_printf(q, "-- Select a template --\n");

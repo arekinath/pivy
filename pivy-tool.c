@@ -101,7 +101,7 @@ static struct piv_slot *override = NULL;
 static struct cert_var_scope *cvroot = NULL;
 const char *cvtpl_name = NULL;
 
-SCARDCONTEXT ctx;
+static struct piv_ctx *piv_ctx;
 
 static errf_t *set_default_slot_cert_vars(uint slotid);
 
@@ -2132,9 +2132,9 @@ cmd_unbox(void)
 	free(buf);
 
 	if (piv_box_has_guidslot(box))
-		err = piv_find(ctx, piv_box_guid(box), GUID_LEN, &tk);
+		err = piv_find(piv_ctx, piv_box_guid(box), GUID_LEN, &tk);
 	if (err || !piv_box_has_guidslot(box))
-		err = piv_enumerate(ctx, &tk);
+		err = piv_enumerate(piv_ctx, &tk);
 	if (err)
 		return (err);
 	ks = (selk = tk);
@@ -2532,7 +2532,7 @@ check_select_key(void)
 	size_t len;
 
 	if (guid_len == 0) {
-		err = piv_enumerate(ctx, &t);
+		err = piv_enumerate(piv_ctx, &t);
 		if (err) {
 			errfx(EXIT_IO_ERROR, err,
 			    "failed to enumerate PIV tokens");
@@ -2553,7 +2553,7 @@ check_select_key(void)
 	if (buf_is_zero(guid, guid_len))
 		len = 0;
 
-	err = piv_find(ctx, guid, len, &t);
+	err = piv_find(piv_ctx, guid, len, &t);
 	if (errf_caused_by(err, "DuplicateError"))
 		errx(EXIT_NO_CARD, "GUID prefix specified is not unique");
 	if (errf_caused_by(err, "NotFoundError")) {
@@ -2606,7 +2606,7 @@ cmd_factory_reset(void)
 }
 
 static errf_t *
-cmd_setup(SCARDCONTEXT ctx)
+cmd_setup(void)
 {
 	boolean_t usetouch = B_FALSE;
 	errf_t *err;
@@ -3007,19 +3007,19 @@ main(int argc, char *argv[])
 
 	const char *op = argv[optind++];
 
-	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
-	if (rv != SCARD_S_SUCCESS) {
-		errfx(EXIT_IO_ERROR, pcscerrf("SCardEstablishContext", rv),
-		    "failed to initialise libpcsc");
+	piv_ctx = piv_open();
+	VERIFY(piv_ctx != NULL);
+
+	err = piv_establish_context(piv_ctx, SCARD_SCOPE_SYSTEM);
+	if (err && errf_caused_by(err, "ServiceError")) {
+		warnfx(err, "failed to create PCSC context");
+		errf_free(err);
+	} else if (err) {
+		errfx(EXIT_IO_ERROR, err, "failed to initialise libpcsc");
 	}
 
-#if 0
-	if (piv_system_token_find(ks, &sysk) != 0)
-		sysk = NULL;
-#endif
-
 	if (strcmp(op, "list") == 0) {
-		err = piv_enumerate(ctx, &ks);
+		err = piv_enumerate(piv_ctx, &ks);
 		if (err)
 			errfx(1, err, "failed to enumerate PIV tokens");
 		if (optind < argc)
@@ -3033,16 +3033,6 @@ main(int argc, char *argv[])
 		}
 		check_select_key();
 		err = cmd_init();
-
-#if 0
-	} else if (strcmp(op, "set-system") == 0) {
-		if (optind < argc) {
-			fprintf(stderr, "error: too many arguments\n");
-			usage();
-		}
-		check_select_key();
-		cmd_set_system();
-#endif
 
 	} else if (strcmp(op, "change-pin") == 0) {
 		if (optind < argc) {
@@ -3211,7 +3201,7 @@ main(int argc, char *argv[])
 			usage();
 		}
 		check_select_key();
-		err = cmd_setup(ctx);
+		err = cmd_setup();
 
 	} else if (strcmp(op, "factory-reset") == 0) {
 		if (optind < argc) {

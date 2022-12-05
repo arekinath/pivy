@@ -177,6 +177,12 @@ struct piv_slot {
 };
 
 struct piv_token {
+	struct piv_ctx *pt_ctx;
+
+	/* piv_ctx list of all tokens created. */
+	struct piv_token *pt_lib_prev;
+	struct piv_token *pt_lib_next;
+
 	/*
 	 * Next in the enumeration. If this token was returned by piv_find()
 	 * then this will always be NULL. piv_enumerate() can return a linked
@@ -331,6 +337,72 @@ struct piv_fascn {
 	enum piv_fascn_poa	 pf_poa;
 	char			*pf_str_cache;
 };
+
+struct piv_ctx {
+	boolean_t		 pc_scard_init;
+	boolean_t		 pc_scard_owned;
+	SCARDCONTEXT		 pc_scard;
+	struct piv_token	*pc_tokens;
+};
+
+struct piv_ctx *
+piv_open(void)
+{
+	struct piv_ctx *ctx;
+	ctx = calloc(1, sizeof (*ctx));
+	return (ctx);
+}
+
+static void piv_release_one(struct piv_token *pk);
+
+void
+piv_close(struct piv_ctx *ctx)
+{
+	struct piv_token *pt, *npt;
+	if (ctx == NULL)
+		return;
+	if (ctx->pc_scard_owned)
+		SCardReleaseContext(ctx->pc_scard);
+	for (pt = ctx->pc_tokens; pt != NULL; pt = npt) {
+		npt = pt->pt_lib_next;
+		piv_release_one(pt);
+	}
+	free(ctx);
+}
+
+void
+piv_set_context(struct piv_ctx *ctx, SCARDCONTEXT sctx)
+{
+	VERIFY(!ctx->pc_scard_init);
+	ctx->pc_scard_init = B_TRUE;
+	ctx->pc_scard_owned = B_FALSE;
+	ctx->pc_scard = sctx;
+}
+
+errf_t *
+piv_establish_context(struct piv_ctx *ctx, DWORD scope)
+{
+	DWORD rv;
+	VERIFY(!ctx->pc_scard_init);
+	rv = SCardEstablishContext(scope, NULL, NULL, &ctx->pc_scard);
+	switch (rv) {
+	case SCARD_S_SUCCESS:
+		ctx->pc_scard_init = B_TRUE;
+		ctx->pc_scard_owned = B_TRUE;
+		return (ERRF_OK);
+	case SCARD_E_NO_READERS_AVAILABLE:
+		return (ERRF_OK);
+	case SCARD_E_NO_SERVICE:
+#if defined(SCARD_E_SERVICE_STOPPED)
+	case SCARD_E_SERVICE_STOPPED:	/* This is a pcsclite-ism */
+#endif
+		return (errf("ServiceError",
+		    pcscerrf("SCardEstablishContext", rv),
+		    "PC/SC system service/daemon not available"));
+	default:
+		return (pcscerrf("SCardEstablishContext", rv));
+	}
+}
 
 /* Helper to dump out APDU data */
 static inline void
@@ -1115,30 +1187,39 @@ invdata:
 }
 
 errf_t *
-piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
+piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 {
 	DWORD rv, readersLen = 0;
 	LPTSTR readers, thisrdr;
 	struct piv_token *ks = NULL;
 	errf_t *err;
 
-	rv = SCardListReaders(ctx, NULL, NULL, &readersLen);
+	if (!ctx->pc_scard_init) {
+		*tokens = NULL;
+		return (ERRF_OK);
+	}
+
+	rv = SCardListReaders(ctx->pc_scard, NULL, NULL, &readersLen);
 	switch (rv) {
 	case SCARD_S_SUCCESS:
 		break;
-	case SCARD_E_NO_SERVICE:
 	case SCARD_E_INVALID_HANDLE:
+	case SCARD_E_NO_SERVICE:
 #if defined(SCARD_E_SERVICE_STOPPED)
 	case SCARD_E_SERVICE_STOPPED:	/* This is a pcsclite-ism */
 #endif
 		return (errf("PCSCContextError",
 		    pcscerrf("SCardListReaders", rv),
 		    "PCSC context is not functional"));
+	case SCARD_E_NO_READERS_AVAILABLE:
+		/* Pretend this isn't an error: we just didn't find any rdrs */
+		*tokens = NULL;
+		return (ERRF_OK);
 	default:
 		return (pcscerrf("SCardListReaders", rv));
 	}
 	readers = calloc(1, readersLen);
-	rv = SCardListReaders(ctx, NULL, readers, &readersLen);
+	rv = SCardListReaders(ctx->pc_scard, NULL, readers, &readersLen);
 	if (rv != SCARD_S_SUCCESS) {
 		free(readers);
 		return (pcscerrf("SCardListReaders", rv));
@@ -1149,7 +1230,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		struct piv_token *key;
 		DWORD activeProtocol;
 
-		rv = SCardConnect(ctx, thisrdr, SCARD_SHARE_SHARED,
+		rv = SCardConnect(ctx->pc_scard, thisrdr, SCARD_SHARE_SHARED,
 		    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, &card,
 		    &activeProtocol);
 		if (rv != SCARD_S_SUCCESS) {
@@ -1161,6 +1242,11 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 		}
 
 		key = calloc(1, sizeof (struct piv_token));
+		key->pt_ctx = ctx;
+		key->pt_lib_next = ctx->pc_tokens;
+		if (ctx->pc_tokens != NULL)
+			ctx->pc_tokens->pt_lib_prev = key;
+		ctx->pc_tokens = key;
 		key->pt_cardhdl = card;
 		key->pt_rdrname = strdup(thisrdr);
 		key->pt_proto = activeProtocol;
@@ -1244,7 +1330,7 @@ piv_enumerate(SCARDCONTEXT ctx, struct piv_token **tokens)
 }
 
 errf_t *
-piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
+piv_find(struct piv_ctx *ctx, const uint8_t *guid, size_t guidlen,
     struct piv_token **token)
 {
 	DWORD rv, readersLen = 0;
@@ -1252,23 +1338,31 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 	struct piv_token *found = NULL, *key;
 	errf_t *err;
 
-	rv = SCardListReaders(ctx, NULL, NULL, &readersLen);
+	if (!ctx->pc_scard_init) {
+		return (errf("NotFoundError", NULL,
+		    "No PIV token found matching GUID"));
+	}
+
+	rv = SCardListReaders(ctx->pc_scard, NULL, NULL, &readersLen);
 	switch (rv) {
 	case SCARD_S_SUCCESS:
 		break;
-	case SCARD_E_NO_SERVICE:
 	case SCARD_E_INVALID_HANDLE:
+	case SCARD_E_NO_SERVICE:
 #if defined(SCARD_E_SERVICE_STOPPED)
 	case SCARD_E_SERVICE_STOPPED:	/* This is a pcsclite-ism */
 #endif
 		return (errf("PCSCContextError",
 		    pcscerrf("SCardListReaders", rv),
 		    "PCSC context is not functional"));
+	case SCARD_E_NO_READERS_AVAILABLE:
+		return (errf("NotFoundError", NULL,
+		    "No PIV token found matching GUID"));
 	default:
 		return (pcscerrf("SCardListReaders", rv));
 	}
 	readers = calloc(1, readersLen);
-	rv = SCardListReaders(ctx, NULL, readers, &readersLen);
+	rv = SCardListReaders(ctx->pc_scard, NULL, readers, &readersLen);
 	if (rv != SCARD_S_SUCCESS) {
 		free(readers);
 		return (pcscerrf("SCardListReaders", rv));
@@ -1281,7 +1375,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 		SCARDHANDLE card;
 		DWORD activeProtocol;
 
-		rv = SCardConnect(ctx, thisrdr, SCARD_SHARE_SHARED,
+		rv = SCardConnect(ctx->pc_scard, thisrdr, SCARD_SHARE_SHARED,
 		    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, &card,
 		    &activeProtocol);
 		if (rv != SCARD_S_SUCCESS) {
@@ -1292,6 +1386,7 @@ piv_find(SCARDCONTEXT ctx, const uint8_t *guid, size_t guidlen,
 			continue;
 		}
 
+		key->pt_ctx = ctx;
 		key->pt_cardhdl = card;
 		key->pt_rdrname = strdup(thisrdr);
 		VERIFY(key->pt_rdrname != NULL);
@@ -1388,6 +1483,10 @@ nopenotxn:
 	}
 
 	key = found;
+	key->pt_lib_next = ctx->pc_tokens;
+	if (ctx->pc_tokens != NULL)
+		ctx->pc_tokens->pt_lib_prev = key;
+	ctx->pc_tokens = key;
 	err = ERRF_OK;
 
 	if (err == ERRF_OK) {
@@ -1440,34 +1539,46 @@ nopenotxn:
 	return (ERRF_OK);
 }
 
+static void
+piv_release_one(struct piv_token *pk)
+{
+	struct piv_slot *ps, *psnext;
+	VERIFY(pk->pt_intxn == B_FALSE);
+	(void) SCardDisconnect(pk->pt_cardhdl, SCARD_LEAVE_CARD);
+
+	for (ps = pk->pt_slots; ps != NULL; ps = psnext) {
+		OPENSSL_free((void *)ps->ps_subj);
+		OPENSSL_free((void *)ps->ps_issuer);
+		OPENSSL_free((void *)ps->ps_cert_ser_hex);
+		X509_free(ps->ps_x509);
+		sshkey_free(ps->ps_pubkey);
+		psnext = ps->ps_next;
+		free(ps);
+	}
+	free(pk->pt_hist_url);
+	free(pk->pt_app_label);
+	free(pk->pt_app_uri);
+	free((char *)pk->pt_rdrname);
+	free(pk->pt_guidhex);
+	piv_chuid_free(pk->pt_chuid);
+
+	if (pk->pt_lib_prev != NULL)
+		pk->pt_lib_prev->pt_lib_next = pk->pt_lib_next;
+	if (pk->pt_lib_next != NULL)
+		pk->pt_lib_next->pt_lib_prev = pk->pt_lib_prev;
+	if (pk->pt_lib_prev == NULL)
+		pk->pt_ctx->pc_tokens = pk->pt_lib_next;
+
+	free(pk);
+}
+
 void
 piv_release(struct piv_token *pk)
 {
 	struct piv_token *next;
-	struct piv_slot *ps, *psnext;
-
 	for (; pk != NULL; pk = next) {
-		VERIFY(pk->pt_intxn == B_FALSE);
-		(void) SCardDisconnect(pk->pt_cardhdl, SCARD_LEAVE_CARD);
-
-		for (ps = pk->pt_slots; ps != NULL; ps = psnext) {
-			OPENSSL_free((void *)ps->ps_subj);
-			OPENSSL_free((void *)ps->ps_issuer);
-			OPENSSL_free((void *)ps->ps_cert_ser_hex);
-			X509_free(ps->ps_x509);
-			sshkey_free(ps->ps_pubkey);
-			psnext = ps->ps_next;
-			free(ps);
-		}
-		free(pk->pt_hist_url);
-		free(pk->pt_app_label);
-		free(pk->pt_app_uri);
-		free((char *)pk->pt_rdrname);
-		free(pk->pt_guidhex);
-		piv_chuid_free(pk->pt_chuid);
-
 		next = pk->pt_next;
-		free(pk);
+		piv_release_one(pk);
 	}
 }
 

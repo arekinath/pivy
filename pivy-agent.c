@@ -166,7 +166,7 @@ static struct piv_token *ks = NULL;
 static struct piv_token *selk = NULL;
 static boolean_t txnopen = B_FALSE;
 static uint64_t txntimeout = 0;
-static SCARDCONTEXT ctx;
+static struct piv_ctx *ctx;
 static uint64_t last_update;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
@@ -458,7 +458,6 @@ agent_piv_open(void)
 {
 	struct piv_slot *slot;
 	errf_t *err = NULL;
-	int rv;
 
 	if (txnopen) {
 		txntimeout = monotime() + 2000;
@@ -479,13 +478,11 @@ findagain:
 			bunyan_log(BNY_TRACE, "got context error, re-initing",
 			    "error", BNY_ERF, err, NULL);
 			errf_free(err);
-			SCardReleaseContext(ctx);
-			rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL,
-			    NULL, &ctx);
-			if (rv != SCARD_S_SUCCESS) {
-				err = pcscerrf("SCardEstablishContext", rv);
+			piv_close(ctx);
+			ctx = piv_open();
+			err = piv_establish_context(ctx, SCARD_SCOPE_SYSTEM);
+			if (err)
 				return (err);
-			}
 			goto findagain;
 		} else if (err) {
 			ks = NULL;
@@ -2501,7 +2498,7 @@ cleanup_handler(int sig)
 	if (selk != NULL && piv_token_in_txn(selk))
 		piv_txn_end(selk);
 	piv_release(ks);
-	SCardReleaseContext(ctx);
+	piv_close(ctx);
 	_exit(2);
 }
 
@@ -2995,9 +2992,15 @@ skip:
 	signal(SIGHUP, cleanup_handler);
 	signal(SIGTERM, cleanup_handler);
 
-	r = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
-	if (r != SCARD_S_SUCCESS) {
-		err = pcscerrf("SCardEstablishContext", r);
+	ctx = piv_open();
+	VERIFY(ctx != NULL);
+
+	err = piv_establish_context(ctx, SCARD_SCOPE_SYSTEM);
+	if (err && errf_caused_by(err, "ServiceError")) {
+		bunyan_log(BNY_WARN, "failed to create PCSC context (ignoring)",
+		    "error", BNY_ERF, err, NULL);
+		errf_free(err);
+	} else if (err) {
 		bunyan_log(BNY_ERROR, "error setting up PCSC lib context",
 		    "error", BNY_ERF, err, NULL);
 		return (1);

@@ -43,8 +43,7 @@ extern char *ebox_pin;
 extern uint ebox_min_retries;
 extern boolean_t ebox_batch;
 
-extern SCARDCONTEXT ebox_ctx;
-extern boolean_t ebox_ctx_init;
+extern struct piv_ctx *ebox_ctx;
 
 extern const char *wordlist[];
 

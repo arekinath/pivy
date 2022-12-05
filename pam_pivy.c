@@ -150,7 +150,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	const struct passwd *pwent;
 	int res = PAM_AUTHINFO_UNAVAIL;
 	int rc;
-	SCARDCONTEXT ctx;
+	struct piv_ctx *ctx;
 	struct piv_token *tokens = NULL, *token;
 	struct keylist *keys = NULL, *keyle, *nkeyle;
 	struct tkconfig *tkcs = NULL, *tkc, *ntkc;
@@ -171,9 +171,14 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	if (pwent == NULL)
 		return (PAM_AUTHINFO_UNAVAIL);
 
-	res = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &ctx);
-	if (res != SCARD_S_SUCCESS)
+	ctx = piv_open();
+	if (ctx == NULL)
 		return (PAM_AUTHINFO_UNAVAIL);
+	err = piv_establish_context(ctx, SCARD_SCOPE_SYSTEM);
+	if (err) {
+		errf_free(err);
+		return (PAM_AUTHINFO_UNAVAIL);
+	}
 
 	akpath = malloc(PATH_MAX);
 	if (akpath == NULL) {
@@ -505,7 +510,7 @@ out:
 		pin = NULL;
 	}
 	piv_release(tokens);
-	SCardReleaseContext(ctx);
+	piv_close(ctx);
 
 	return (res);
 }

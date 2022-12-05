@@ -133,7 +133,7 @@ struct ca_session_agent {
 	struct sshkey		*csa_rebox_key;
 };
 struct ca_session_direct {
-	SCARDCONTEXT		 csd_context;
+	struct piv_ctx		*csd_context;
 	struct piv_token	*csd_token;
 	struct piv_slot		*csd_cakslot;
 	struct piv_slot		*csd_slot;
@@ -4615,7 +4615,6 @@ ca_open_session(struct ca *ca, struct ca_session **outsess)
 	struct ca_session_direct *sd;
 	errf_t *err;
 	int rc;
-	long rv;
 	uint i;
 	int found = 0, in_txn = 0;
 	struct sshkey *k;
@@ -4667,12 +4666,12 @@ direct:
 	sd = &sess->cs_direct;
 	bzero(sd, sizeof (*sd));
 
-	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL,
-	    &sd->csd_context);
-	if (rv != SCARD_S_SUCCESS) {
-		err = pcscerrf("SCardEstablishContext", rv);
+	sd->csd_context = piv_open();
+	VERIFY(sd->csd_context != NULL);
+
+	err = piv_establish_context(sd->csd_context, SCARD_SCOPE_SYSTEM);
+	if (err != ERRF_OK)
 		goto out;
-	}
 
 	err = piv_find(sd->csd_context, ca->ca_guid, sizeof (ca->ca_guid),
 	    &sd->csd_token);
@@ -4752,7 +4751,7 @@ ca_close_session(struct ca_session *sess)
 	} else if (sess->cs_type == CA_SESSION_DIRECT) {
 		struct ca_session_direct *csd = &sess->cs_direct;
 		piv_release(csd->csd_token);
-		SCardReleaseContext(csd->csd_context);
+		piv_close(csd->csd_context);
 		if (csd->csd_pin != NULL)
 			explicit_bzero(csd->csd_pin, strlen(csd->csd_pin));
 		free(csd->csd_pin);
