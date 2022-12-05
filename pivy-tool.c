@@ -315,14 +315,6 @@ assert_pin(struct piv_token *pk, struct piv_slot *slot, boolean_t prompt)
 	enum piv_pin auth = piv_token_default_auth(pk);
 	boolean_t touch = B_FALSE;
 
-#if 0
-	if (pin == NULL && pk == sysk) {
-		rv = piv_system_token_auth(pk);
-		if (rv == 0)
-			return;
-	}
-#endif
-
 	if (slot != NULL) {
 		enum piv_slot_auth rauth = piv_slot_get_auth(pk, slot);
 		if (rauth & PIV_SLOT_AUTH_PIN)
@@ -336,13 +328,15 @@ assert_pin(struct piv_token *pk, struct piv_slot *slot, boolean_t prompt)
 
 	if (pin == NULL && prompt) {
 		char prompt[64];
+		char pinbuf[16];
 		char *guid = piv_token_shortid(pk);
 		snprintf(prompt, 64, "Enter %s for token %s: ",
 		    pin_type_to_name(auth), guid);
 		do {
-			pin = getpass(prompt);
+			pin = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (pin == NULL && errno == EINTR);
-		if ((pin == NULL && errno == ENXIO) || strlen(pin) < 1) {
+		if ((pin == NULL && errno == ENOTTY) || strlen(pin) < 1) {
 			piv_txn_end(pk);
 			errx(EXIT_PIN, "a PIN is required to unlock "
 			    "token %s", guid);
@@ -1168,63 +1162,6 @@ admin_again:
 	return (ERRF_OK);
 }
 
-#if 0
-static void
-cmd_set_system(void)
-{
-	int rv;
-	char prompt[64];
-	char *guid;
-	uint retries = min_retries;
-
-	if (pin == NULL) {
-		guid = buf_to_hex(selk->pt_guid, 4, B_FALSE);
-		snprintf(prompt, 64, "Enter PIV PIN for token %s: ", guid);
-		do {
-			pin = getpass(prompt);
-		} while (pin == NULL && errno == EINTR);
-		if (pin == NULL && errno == ENXIO) {
-			fprintf(stderr, "error: a PIN code is required to "
-			    "unlock token %s\n", guid);
-			exit(4);
-		} else if (pin == NULL) {
-			perror("getpass");
-			exit(3);
-		}
-		pin = strdup(pin);
-		free(guid);
-	}
-
-	VERIFY0(piv_txn_begin(selk));
-	assert_select(selk);
-#if 0
-	rv = piv_system_token_set(selk, pin, &retries);
-#endif
-	piv_txn_end(selk);
-
-	if (rv == EACCES) {
-		if (retries == 0) {
-			fprintf(stderr, "error: token is locked due to too "
-			    "many invalid PIN code entries\n");
-			exit(10);
-		}
-		fprintf(stderr, "error: invalid PIN code (%d attempts "
-		    "remaining)\n", retries);
-		exit(4);
-	} else if (rv == EAGAIN) {
-		fprintf(stderr, "error: PIN code only has %d retries "
-		    "remaining, refusing to attempt unlock\n", retries);
-		exit(5);
-	} else if (rv != 0) {
-		fprintf(stderr, "error: failed to set system token (rv = %d)\n",
-		    rv);
-		exit(1);
-	}
-
-	exit(0);
-}
-#endif
-
 static errf_t *
 cmd_change_pin(enum piv_pin pintype)
 {
@@ -1238,27 +1175,31 @@ cmd_change_pin(enum piv_pin pintype)
 	guidhex = piv_token_shortid(selk);
 
 	if (pin == NULL) {
+		char pinbuf[16];
 		snprintf(prompt, 64, "Enter current %s (%s): ",
 		    pin_type_to_name(pintype), guidhex);
 		do {
-			p = getpass(prompt);
+			p = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (p == NULL && errno == EINTR);
 		if (p == NULL) {
-			err = errfno("getpass", errno, "");
+			err = errfno("readpassphrase", errno, "");
 			return (err);
 		}
 		pin = strdup(p);
 	}
 
 	if (newpin == NULL) {
+		char pinbuf[16];
 again:
 		snprintf(prompt, 64, "Enter new %s (%s): ",
 		    pin_type_to_name(pintype), guidhex);
 		do {
-			p = getpass(prompt);
+			p = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (p == NULL && errno == EINTR);
 		if (p == NULL) {
-			err = errfno("getpass", errno, "");
+			err = errfno("readpassphrase", errno, "");
 			return (err);
 		}
 		if (strlen(p) < 4 || strlen(p) > 8) {
@@ -1269,10 +1210,11 @@ again:
 		snprintf(prompt, 64, "Confirm new %s (%s): ",
 		    pin_type_to_name(pintype), guidhex);
 		do {
-			p = getpass(prompt);
+			p = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (p == NULL && errno == EINTR);
 		if (p == NULL) {
-			err = errfno("getpass", errno, "");
+			err = errfno("readpassphrase", errno, "");
 			return (err);
 		}
 		if (strcmp(p, newpin) != 0) {
@@ -1316,25 +1258,29 @@ cmd_reset_pin(void)
 
 	guidhex = piv_token_shortid(selk);
 	if (pin == NULL) {
+		char pinbuf[16];
 		snprintf(prompt, 64, "Enter PUK (%s): ", guidhex);
 		do {
-			p = getpass(prompt);
+			p = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (p == NULL && errno == EINTR);
 		if (p == NULL) {
-			err = errfno("getpass", errno, "");
+			err = errfno("readpassphrase", errno, "");
 			return (err);
 		}
 		pin = strdup(p);
 	}
 
 	if (newpin == NULL) {
+		char pinbuf[16];
 again:
 		snprintf(prompt, 64, "Enter new PIV PIN (%s): ", guidhex);
 		do {
-			p = getpass(prompt);
+			p = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (p == NULL && errno == EINTR);
 		if (p == NULL) {
-			err = errfno("getpass", errno, "");
+			err = errfno("readpassphrase", errno, "");
 			return (err);
 		}
 		if (strlen(p) < 4 || strlen(p) > 8) {
@@ -1344,10 +1290,11 @@ again:
 		newpin = strdup(p);
 		snprintf(prompt, 64, "Confirm new PIV PIN (%s): ", guidhex);
 		do {
-			p = getpass(prompt);
+			p = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (p == NULL && errno == EINTR);
 		if (p == NULL) {
-			err = errfno("getpass", errno, "");
+			err = errfno("readpassphrase", errno, "");
 			return (err);
 		}
 		if (strcmp(p, newpin) != 0) {
@@ -1504,10 +1451,13 @@ cmd_import(uint slotid)
 
 	rv = sshkey_parse_private_fileblob(buf, "", &priv, &comment);
 	if (rv == SSH_ERR_KEY_WRONG_PASSPHRASE) {
+		char passbuf[256];
 		do {
-			pass = getpass("Enter passphrase for key: ");
+			pass = readpassphrase("Enter passphrase for key: ",
+			    passbuf, sizeof (passbuf), RPP_ECHO_OFF |
+			    RPP_REQUIRE_TTY);
 		} while (pass == NULL && errno == EINTR);
-		if ((pass == NULL && errno == ENXIO) || strlen(pass) < 1) {
+		if ((pass == NULL && errno == ENOTTY) || strlen(pass) < 1) {
 			errx(EXIT_PIN, "a passphrase is required to unlock "
 			    "the given public key");
 		}
@@ -2619,6 +2569,7 @@ static errf_t *
 cmd_factory_reset(void)
 {
 	char *resp;
+	char respbuf[16];
 	errf_t *err;
 
 	if (!piv_token_is_ykpiv(selk)) {
@@ -2636,7 +2587,8 @@ cmd_factory_reset(void)
 	fprintf(stderr, "WARNING: this will completely reset the PIV applet "
 	    "on this Yubikey, erasing all keys and certificates!\n");
 	do {
-		resp = getpass("Type 'YES' to continue: ");
+		resp = readpassphrase("Type 'YES' to continue: ",
+		    respbuf, sizeof (respbuf), RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 	} while (resp == NULL && errno == EINTR);
 	if (resp == NULL || strcmp(resp, "YES") != 0) {
 		return (ERRF_OK);

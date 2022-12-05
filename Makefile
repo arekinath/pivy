@@ -223,7 +223,11 @@ _OBSD_COMPAT=			\
 	bcrypt_pbkdf.c		\
 	base64.c		\
 	bsd-setres_id.c		\
-	vis.c
+	vis.c			\
+
+ifneq ($(SYSTEM), OpenBSD)
+_OBSD_COMPAT+= 	readpassphrase.c
+endif
 
 _LIBSSH_SOURCES=		\
 	sshbuf.c		\

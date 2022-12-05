@@ -83,4 +83,18 @@ char *unparse_lifetime(unsigned long);
     errf("JSONError", NULL, func " returned error: %s", \
     ##__VA_ARGS__, json_tokener_error_desc(jerr))
 
+#ifndef __OpenBSD__
+
+#define RPP_ECHO_OFF    0x00		/* Turn off echo (default). */
+#define RPP_ECHO_ON     0x01		/* Leave echo on. */
+#define RPP_REQUIRE_TTY 0x02		/* Fail if there is no tty. */
+#define RPP_FORCELOWER  0x04		/* Force input to lower case. */
+#define RPP_FORCEUPPER  0x08		/* Force input to upper case. */
+#define RPP_SEVENBIT    0x10		/* Strip the high bit from input. */
+#define RPP_STDIN       0x20		/* Read from stdin, not /dev/tty */
+
+char * readpassphrase(const char *, char *, size_t, int);
+
+#endif /* __OpenBSD__ */
+
 #endif

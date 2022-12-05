@@ -188,13 +188,15 @@ again:
 		return;
 	if (ebox_pin == NULL && prompt) {
 		char prompt[64];
+		char pinbuf[16];
 		char *guid = piv_token_shortid(pk);
 		snprintf(prompt, 64, fmt,
 		    pin_type_to_name(auth), guid, partname);
 		do {
-			ebox_pin = getpass(prompt);
+			ebox_pin = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
+			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
 		} while (ebox_pin == NULL && errno == EINTR);
-		if ((ebox_pin == NULL && errno == ENXIO) ||
+		if ((ebox_pin == NULL && errno == ENOTTY) ||
 		    strlen(ebox_pin) < 1) {
 			piv_txn_end(pk);
 			errx(EXIT_PIN, "a PIN is required to unlock "
