@@ -2611,6 +2611,7 @@ cmd_setup(void)
 	boolean_t usetouch = B_FALSE;
 	errf_t *err;
 	const char *realpin;
+	struct piv_slot *slot;
 
 	if (!piv_token_is_ykpiv(selk)) {
 		err = funcerrf(NULL, "setup command is only for YubiKeys");
@@ -2619,6 +2620,21 @@ cmd_setup(void)
 
 	if (ykpiv_version_compare(selk, 4, 3, 0) == 1) {
 		usetouch = B_TRUE;
+	}
+
+	if ((err = piv_txn_begin(selk)))
+		return (err);
+	assert_select(selk);
+	err = piv_read_all_certs(selk);
+	piv_txn_end(selk);
+
+	slot = NULL;
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
+		if (piv_slot_pubkey(slot) != NULL) {
+			err = funcerrf(NULL, "PIV token has already generated"
+			    " keys. Use factory-reset to clear them");
+			return (err);
+		}
 	}
 
 	if (!piv_token_has_chuid(selk)) {
@@ -2994,6 +3010,8 @@ main(int argc, char *argv[])
 				    rv), "failed to parse public key in -k");
 			}
 			break;
+		default:
+			usage();
 		}
 	}
 
