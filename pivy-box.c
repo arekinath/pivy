@@ -1495,8 +1495,23 @@ cmd_key_info(int argc, char *argv[])
 	struct ebox_tpl *tpl;
 	struct ebox_config *config = NULL;
 	errf_t *error;
+	const char *fname;
 
-	buf = read_stdin_b64(EBOX_MAX_SIZE);
+	if (argc == 1) {
+		FILE *file;
+		fname = argv[0];
+		file = fopen(fname, "r");
+		if (file == NULL)
+			err(EXIT_USAGE, "failed to open file %s", fname);
+		buf = read_file_b64(EBOX_MAX_SIZE, file);
+		fclose(file);
+	} else if (argc == 0) {
+		buf = read_stdin_b64(EBOX_MAX_SIZE);
+	} else {
+		errx(EXIT_USAGE, "too many arguments for pivy-box "
+		    "key info");
+	}
+
 	error = sshbuf_get_ebox(buf, &ebox);
 	if (error) {
 		errfx(EXIT_ERROR, error, "failed to parse input as "
