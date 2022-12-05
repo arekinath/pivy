@@ -33,6 +33,14 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifndef _NSIG
+# ifdef NSIG
+#  define _NSIG NSIG
+# else
+#  define _NSIG 128
+# endif
+#endif
+
 #ifndef _PATH_TTY
 # define _PATH_TTY "/dev/tty"
 #endif
