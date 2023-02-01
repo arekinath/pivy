@@ -7384,6 +7384,9 @@ piv_chuid_decode(const uint8_t *data, size_t len, struct piv_chuid **out)
 				goto out;
 			chuid->pc_flags |= PIV_CHUID_HAS_CHUUID;
 			break;
+		case 0x3D:	/* Authentication Key Map (Deprecated) */
+			tlv_skip(tlv);
+			break;
 		case 0x3E:	/* Issuer Signature */
 			err = tlv_read_alloc(tlv, &d, &dlen);
 			if (err)
