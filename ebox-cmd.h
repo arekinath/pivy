@@ -161,4 +161,9 @@ void printwrap(FILE *stream, const char *data, size_t col);
 char *readline(const char *prompt);
 #endif
 
+struct ans_config {
+	struct ebox_config	*ac_config;
+	struct answer		*ac_ans;
+};
+
 #endif

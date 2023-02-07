@@ -75,11 +75,6 @@ uint ebox_min_retries = 1;
 boolean_t ebox_batch = B_FALSE;
 struct piv_token *ebox_enum_tokens = NULL;
 
-struct ans_config {
-	struct ebox_config	*ac_config;
-	struct answer		*ac_ans;
-};
-
 #if defined(__sun)
 static GetLine *sungl = NULL;
 static FILE *devterm = NULL;

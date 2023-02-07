@@ -86,6 +86,7 @@ unlock_or_recover(struct ebox *ebox, const char *descr, boolean_t *recovered)
 	errf_t *error;
 	struct question *q = NULL;
 	struct answer *a;
+	struct ans_config *ac;
 	char k = '0';
 
 	/* Try to use the pivy-agent to unlock first if we have one. */
@@ -141,15 +142,21 @@ unlock_or_recover(struct ebox *ebox, const char *descr, boolean_t *recovered)
 	config = NULL;
 	while ((config = ebox_next_config(ebox, config)) != NULL) {
 		tconfig = ebox_config_tpl(config);
-		a = ebox_config_alloc_private(config, sizeof (struct answer));
+		ac = ebox_config_alloc_private(config, sizeof (*ac));
+		VERIFY(ac != NULL);
+		a = calloc(1, sizeof (*a));
+		VERIFY(a != NULL);
+		ac->ac_ans = a;
+		ac->ac_config = config;
 		a->a_key = ++k;
-		a->a_priv = config;
+		a->a_priv = ac;
 		make_answer_text_for_config(tconfig, a);
 		add_answer(q, a);
 	}
 again:
 	question_prompt(q, &a);
-	config = (struct ebox_config *)a->a_priv;
+	ac = a->a_priv;
+	config = ac->ac_config;
 	tconfig = ebox_config_tpl(config);
 	if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
 		part = ebox_config_next_part(config, NULL);
