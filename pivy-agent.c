@@ -2194,7 +2194,7 @@ handle_socket_read(u_int socknum)
 	if (getpeerucred(fd, &peer) != 0) {
 		error("getpeerucred %d failed: %s", fd, strerror(errno));
 		close(fd);
-		return -1;
+		return 0;
 	}
 	euid = ucred_geteuid(peer);
 	egid = ucred_getegid(peer);
@@ -2218,7 +2218,7 @@ handle_socket_read(u_int socknum)
 		error("zoneid mismatch: peer zoneid %u != zoneid %u",
 		    (u_int) zid, (u_int) getzoneid());
 		close(fd);
-		return -1;
+		return 0;
 	}
 #elif defined(__OpenBSD__)
 	peer = calloc(1, sizeof (struct sockpeercred));
@@ -2227,7 +2227,7 @@ handle_socket_read(u_int socknum)
 		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
 		close(fd);
 		free(peer);
-		return -1;
+		return 0;
 	}
 	euid = peer->uid;
 	egid = peer->gid;
@@ -2240,7 +2240,7 @@ handle_socket_read(u_int socknum)
 		error("getsockopts(LOCAL_PEERCRED) %d failed: %s", fd, strerror(errno));
 		close(fd);
 		free(peer);
-		return -1;
+		return 0;
 	}
 	euid = peer->cr_uid;
 	if (peer->cr_ngroups > 0)
@@ -2260,7 +2260,7 @@ handle_socket_read(u_int socknum)
 		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
 		close(fd);
 		free(peer);
-		return -1;
+		return 0;
 	}
 	euid = peer->uid;
 	egid = peer->gid;
@@ -2286,14 +2286,14 @@ handle_socket_read(u_int socknum)
 	if (getpeereid(fd, &euid, &egid) < 0) {
 		error("getpeereid %d failed: %s", fd, strerror(errno));
 		close(fd);
-		return -1;
+		return 0;
 	}
 #endif
 	if (check_client_uid && (euid != 0) && (getuid() != euid)) {
 		error("uid mismatch: peer euid %u != uid %u",
 		    (u_int) euid, (u_int) getuid());
 		close(fd);
-		return -1;
+		return 0;
 	}
 	ent = new_socket(AUTH_CONNECTION, fd);
 	ent->se_pid = pid;
