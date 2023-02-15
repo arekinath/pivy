@@ -56,6 +56,16 @@ if [ -n "${SLOT_FILTER}" ]; then
 	OPTS="${OPTS} -S ${SLOT_FILTER}"
 fi
 
+SOCKET_OWNER="`getprop_default config/socket_owner ''`"
+SOCKET_MODE="`getprop_default config/socket_mode ''`"
+
 @@prefix@@/bin/pivy-agent -i -g "$GUID" -K "$CAK" -a "$SOCKET" $OPTS &
+
+if [ -n "${SOCKET_OWNER}" ]; then
+	/usr/bin/chown ${SOCKET_OWNER} ${SOCKET}
+fi
+if [ -n "${SOCKET_MODE}" ]; then
+	/usr/bin/chmod ${SOCKET_MODE} ${SOCKET}
+fi
 
 exit $SMF_EXIT_OK
