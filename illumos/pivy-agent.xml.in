@@ -40,6 +40,8 @@
                 <propval name='askpass' type='astring' value='' />
                 <propval name='allow_any_uid' type='boolean' value='false' />
                 <propval name='allow_any_zone' type='boolean' value='false' />
+                <propval name='allowed_users' type='astring' value='' />
+                <propval name='allowed_zones' type='astring' value='' />
                 <propval name='slot_filter' type='astring' value='all' />
         </property_group>
 

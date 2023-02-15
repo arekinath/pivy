@@ -35,6 +35,22 @@ if [ "$ANY_ZONE" == "true" ]; then
 	OPTS="${OPTS} -Z"
 fi
 
+ALLOWED_USERS="`getprop_default config/allowed_users ''`"
+if [ -n "$ALLOWED_USERS" ]; then
+	IFS=', '
+	for user in $ALLOWED_USERS; do
+		OPTS="${OPTS} -u ${user}"
+	done
+fi
+
+ALLOWED_ZONES="`getprop_default config/allowed_zones ''`"
+if [ -n "$ALLOWED_ZONES" ]; then
+	IFS=', '
+	for zone in $ALLOWED_ZONES; do
+		OPTS="${OPTS} -z ${zone}"
+	done
+fi
+
 SLOT_FILTER="`getprop_default config/slot_filter ''`"
 if [ -n "${SLOT_FILTER}" ]; then
 	OPTS="${OPTS} -S ${SLOT_FILTER}"
