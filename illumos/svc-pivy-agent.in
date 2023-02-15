@@ -3,22 +3,31 @@
 . /lib/svc/share/smf_include.sh
 
 set -e
+set -o pipefail
 
 getprop() {
 	prop="$1"
-	/usr/bin/svcprop -p "$prop" $SMF_FMRI
+	rval="`/usr/bin/svcprop -p "$prop" $SMF_FMRI`"
+	eval printf "%s" "${rval}"
+}
+
+getprop_opt() {
+	prop="$1"
+	rval="`/usr/bin/svcprop -p "$prop" $SMF_FMRI 2>/dev/null || true`"
+	eval printf "%s" "${rval}"
 }
 
 getprop_default() {
 	prop="$1"
 	default="$2"
-	/usr/bin/svcprop -p "$prop" $SMF_FMRI 2>/dev/null || echo "$default"
+	rval="`/usr/bin/svcprop -p "$prop" $SMF_FMRI 2>/dev/null || echo "$default"`"
+	eval printf "%s" "${rval}"
 }
 
 GUID="`getprop config/guid`"
-CAK="`getprop config/cak | sed 's/\\\\ / /'`"
+CAK="`getprop config/cak`"
 SOCKET="`getprop config/socket`"
-SSH_ASKPASS="`getprop_default config/askpass ''`"
+SSH_ASKPASS="`getprop_opt config/askpass`"
 if [ -n "$SSH_ASKPASS" ]; then
 	export SSH_ASKPASS
 fi
@@ -35,29 +44,31 @@ if [ "$ANY_ZONE" == "true" ]; then
 	OPTS="${OPTS} -Z"
 fi
 
-ALLOWED_USERS="`getprop_default config/allowed_users ''`"
+ALLOWED_USERS="`getprop_opt config/allowed_users`"
 if [ -n "$ALLOWED_USERS" ]; then
 	IFS=', '
 	for user in $ALLOWED_USERS; do
 		OPTS="${OPTS} -u ${user}"
 	done
+	unset IFS
 fi
 
-ALLOWED_ZONES="`getprop_default config/allowed_zones ''`"
+ALLOWED_ZONES="`getprop_opt config/allowed_zones`"
 if [ -n "$ALLOWED_ZONES" ]; then
 	IFS=', '
 	for zone in $ALLOWED_ZONES; do
 		OPTS="${OPTS} -z ${zone}"
 	done
+	unset IFS
 fi
 
-SLOT_FILTER="`getprop_default config/slot_filter ''`"
+SLOT_FILTER="`getprop_opt config/slot_filter`"
 if [ -n "${SLOT_FILTER}" ]; then
 	OPTS="${OPTS} -S ${SLOT_FILTER}"
 fi
 
-SOCKET_OWNER="`getprop_default config/socket_owner ''`"
-SOCKET_MODE="`getprop_default config/socket_mode ''`"
+SOCKET_OWNER="`getprop_opt config/socket_owner`"
+SOCKET_MODE="`getprop_opt config/socket_mode`"
 
 @@prefix@@/bin/pivy-agent -i -g "$GUID" -K "$CAK" -a "$SOCKET" $OPTS &
 
