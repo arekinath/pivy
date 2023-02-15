@@ -2756,6 +2756,7 @@ main(int ac, char **av)
 	int r;
 	errf_t *err;
 	struct passwd *pwd;
+	boolean_t do_umask = B_TRUE;
 
 #if !defined(__APPLE__)
 	int fd;
@@ -2797,12 +2798,14 @@ main(int ac, char **av)
 			break;
 		case 'U':
 			allow_any_uid = B_TRUE;
+			do_umask = B_FALSE;
 			break;
 		case 'u':
 			pwd = getpwnam(optarg);
 			if (pwd == NULL)
 				fatal("getpwnam: user '%s' not found", optarg);
 			add_uid(pwd->pw_uid);
+			do_umask = B_FALSE;
 			break;
 #if defined(__sun)
 		case 'Z':
@@ -2937,14 +2940,16 @@ main(int ac, char **av)
 		strlcpy(socket_name, agentsocket, sizeof socket_name);
 	}
 
-	prev_mask = umask(0177);
+	if (do_umask)
+		prev_mask = umask(0177);
 	sock = unix_listener(socket_name, SSH_LISTEN_BACKLOG, 0);
 	if (sock < 0) {
 		/* XXX - unix_listener() calls error() not perror() */
 		*socket_name = '\0'; /* Don't unlink any existing file */
 		cleanup_exit(1);
 	}
-	umask(prev_mask);
+	if (do_umask)
+		umask(prev_mask);
 
 	if (d_flag) {
 		ssh_dbglevel = BNY_TRACE;
