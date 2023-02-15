@@ -87,6 +87,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <libgen.h>
+#include <pwd.h>
 
 #include "utils.h"
 #include "debug.h"
@@ -171,13 +172,27 @@ static uint64_t last_update;
 static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static boolean_t sign_9d = B_FALSE;
-static boolean_t check_client_uid = B_TRUE;
 static confirm_mode_t confirm_mode = C_NEVER;
-#if defined(__sun)
-static boolean_t check_client_zoneid = B_TRUE;
-#endif
 /* One bit per slot, bit# = slot# & 0x7f */
 static uint64_t slot_ena_mask = 0x743ffffc;
+
+typedef struct uid_entry {
+	struct uid_entry *ue_next;
+	uid_t ue_uid;
+} uid_entry_t;
+#define	UID_MOD		32
+static uid_entry_t *uid_allow[UID_MOD] = { NULL };
+static boolean_t allow_any_uid = B_FALSE;
+
+#if defined(__sun)
+typedef struct zone_entry {
+	struct zone_entry *ze_next;
+	zoneid_t ze_zid;
+} zone_entry_t;
+#define ZID_MOD		32
+static zone_entry_t *zone_allow[ZID_MOD] = { NULL };
+static boolean_t allow_any_zoneid = B_FALSE;
+#endif
 
 static char *pinmem = NULL;
 static char *pin = NULL;
@@ -332,6 +347,54 @@ monotime(void)
 	msec += tv.tv_usec / 1000;
 	return (msec);
 }
+
+static void
+add_uid(uid_t uid)
+{
+	uid_entry_t *ue;
+	uint slot = uid % UID_MOD;
+	ue = calloc(1, sizeof (uid_entry_t));
+	ue->ue_uid = uid;
+	ue->ue_next = uid_allow[slot];
+	uid_allow[slot] = ue;
+}
+
+static int
+check_uid(uid_t uid)
+{
+	uid_entry_t *ue;
+	uint slot = uid % UID_MOD;
+	for (ue = uid_allow[slot]; ue != NULL; ue = ue->ue_next) {
+		if (ue->ue_uid == uid)
+			return (1);
+	}
+	return (0);
+}
+
+#if defined(__sun)
+static void
+add_zid(zoneid_t zid)
+{
+	zone_entry_t *ze;
+	uint slot = zid % ZID_MOD;
+	ze = calloc(1, sizeof (zone_entry_t));
+	ze->ze_zid = zid;
+	ze->ze_next = zone_allow[slot];
+	zone_allow[slot] = ze;
+}
+
+static int
+check_zid(zoneid_t zid)
+{
+	zone_entry_t *ze;
+	uint slot = zid % ZID_MOD;
+	for (ze = zone_allow[slot]; ze != NULL; ze = ze->ze_next) {
+		if (ze->ze_zid == zid)
+			return (1);
+	}
+	return (0);
+}
+#endif
 
 static void
 agent_piv_close(boolean_t force)
@@ -2214,9 +2277,9 @@ handle_socket_read(u_int socknum)
 		fclose(f);
 	}
 	free(psinfo);
-	if (check_client_zoneid && zid != getzoneid()) {
-		error("zoneid mismatch: peer zoneid %u != zoneid %u",
-		    (u_int) zid, (u_int) getzoneid());
+	if (!allow_any_zoneid && !check_zid(zid)) {
+		error("zoneid mismatch: peer zoneid %u not on allow list",
+		    (u_int) zid);
 		close(fd);
 		return 0;
 	}
@@ -2289,9 +2352,9 @@ handle_socket_read(u_int socknum)
 		return 0;
 	}
 #endif
-	if (check_client_uid && (euid != 0) && (getuid() != euid)) {
-		error("uid mismatch: peer euid %u != uid %u",
-		    (u_int) euid, (u_int) getuid());
+	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
+		error("uid mismatch: peer euid %u not on allow list",
+		    (u_int) euid);
 		close(fd);
 		return 0;
 	}
@@ -2545,8 +2608,10 @@ usage(void)
 	    "  -K cak                9E (card auth) key to authenticate PIV token\n"
 	    "  -k                    Kill an already-running agent\n"
 	    "  -U                    Don't check client UID (allow any uid to connect)\n"
+	    "  -u username           Allow specific user to connect (can be given multiple times)\n"
 #if defined(__sun)
 	    "  -Z                    Don't check client zoneid (allow any zone to connect)\n"
+	    "  -z zonename           Allow specific zone to connect (can be given multiple times)\n"
 #endif
 	    "  -S !all,9a,9e,...     Filter the key slots available through the\n"
 	    "                        agent. By default all keys are available,\n"
@@ -2690,10 +2755,20 @@ main(int ac, char **av)
 	char *ptr;
 	int r;
 	errf_t *err;
+	struct passwd *pwd;
 
 #if !defined(__APPLE__)
 	int fd;
 #endif
+
+#if defined(__sun)
+	zoneid_t zid;
+
+	zid = getzoneid();
+	add_zid(zid);
+#endif
+
+	add_uid(geteuid());
 
 	/* Ensure that fds 0, 1 and 2 are open or directed to /dev/null */
 	sanitise_stdfd();
@@ -2709,7 +2784,7 @@ main(int ac, char **av)
 
 	__progname = "pivy-agent";
 
-	while ((ch = getopt(ac, av, "cCDdkisE:a:P:g:K:mZUS:")) != -1) {
+	while ((ch = getopt(ac, av, "cCDdkisE:a:P:g:K:mZUS:u:z:")) != -1) {
 		switch (ch) {
 		case 'g':
 			guid = parse_hex(optarg, &len);
@@ -2721,11 +2796,25 @@ main(int ac, char **av)
 			}
 			break;
 		case 'U':
-			check_client_uid = B_FALSE;
+			allow_any_uid = B_TRUE;
+			break;
+		case 'u':
+			pwd = getpwnam(optarg);
+			if (pwd == NULL)
+				fatal("getpwnam: user '%s' not found", optarg);
+			add_uid(pwd->pw_uid);
 			break;
 #if defined(__sun)
 		case 'Z':
-			check_client_zoneid = B_FALSE;
+			allow_any_zoneid = B_TRUE;
+			break;
+		case 'z':
+			zid = getzoneidbyname(optarg);
+			if (zid == -1) {
+				fatal("getzoneidbyname: zone '%s' not found",
+				    optarg);
+			}
+			add_zid(zid);
 			break;
 #endif
 		case 'K':
