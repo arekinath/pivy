@@ -129,7 +129,6 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 	enum piv_slotid slotid = PIV_SLOT_KEY_MGMT;
 	struct piv_token *token;
 	struct piv_slot *slot;
-	unsigned int parsed;
 
 	for (; i < argc; ++i) {
 		if (strcmp(argv[i], "part") == 0 ||
@@ -182,7 +181,6 @@ parse_keywords_part(struct ebox_tpl_config *config, int argc, char *argv[],
 				    "keyword: '%s'", argv[i]);
 				goto out;
 			}
-			slotid = parsed;
 		} else if (strcmp(argv[i], "key") == 0) {
 			if (++i > argc) {
 				error = errf("SyntaxError", NULL,
