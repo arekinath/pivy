@@ -3089,7 +3089,7 @@ piv_sign_crl(struct piv_token *tkn, struct piv_slot *slot,
 	X509_ALGOR *algor = NULL;
 	ASN1_OBJECT *algobj;
 	uint8_t *tbs = NULL, *sig = NULL;
-	size_t tbslen, siglen;
+	size_t tbslen, siglen = 0;
 	AUTHORITY_KEYID *akid = NULL;
 	ASN1_OCTET_STRING *kid = NULL;
 
@@ -3189,7 +3189,7 @@ piv_sign_cert_req(struct piv_token *tkn, struct piv_slot *slot,
 	X509_ALGOR *algor = NULL;
 	ASN1_OBJECT *algobj;
 	uint8_t *tbs = NULL, *sig = NULL;
-	size_t tbslen, siglen;
+	size_t tbslen, siglen = 0;
 
 	if (pubkey == NULL)
 		pubkey = piv_slot_pubkey(slot);

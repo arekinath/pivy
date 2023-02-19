@@ -1836,6 +1836,7 @@ ca_write_pukpin(struct ca *ca, enum piv_pin type, boolean_t old,
 		break;
 	default:
 		VERIFY(0);
+		return (NULL);
 	}
 
 	err = ebox_create(cet->cet_tpl, (const uint8_t *)pin, strlen(pin),
@@ -2086,7 +2087,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	FILE *caf = NULL, *crtf = NULL;
 	struct sshkey *cakey = NULL, *pubkey = NULL;
 	int sshkt;
-	uint sshksz;
+	uint sshksz = 0;
 	int rc;
 	size_t done;
 	char *newpin = NULL, *newpuk = NULL;
@@ -2107,7 +2108,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	size_t nadmin_len = 0;
 	uint8_t *hcroot = NULL;
 	size_t hcroot_len = 0;
-	struct sshkey *cak;
+	struct sshkey *cak = NULL;
 	struct cert_var_scope *scope = NULL;
 	json_object *robj = NULL, *obj = NULL;
 	char *dnstr = NULL;
@@ -2251,6 +2252,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 		err = errf("UnsupportedAlgorithm", NULL, "PIV algorithm "
 		    "%d (%s) not supported for CA key", args->cna_key_alg,
 		    piv_alg_to_string(args->cna_key_alg));
+		goto out;
 	}
 
 	rc = sshkey_generate(sshkt, sshksz, &cakey);
@@ -2691,6 +2693,7 @@ ca_get_ebox(struct ca *ca, enum ca_ebox_type type)
 		break;
 	case CA_EBOX_KEY_BACKUP:
 		VERIFY(0);
+		return (NULL);
 	}
 
 	if (*p != NULL)
@@ -3249,14 +3252,14 @@ ca_cert_tpl_make_scope(struct ca_cert_tpl *tpl, struct cert_var_scope *parent)
 errf_t *
 ca_log_verify(struct ca *ca, char **final_hash, log_iter_cb_t cb, void *cookie)
 {
-	FILE *logf;
+	FILE *logf = NULL;
 	char fname[PATH_MAX];
 	json_object *obj = NULL, *hobj;
 	struct stat st;
 	int rc;
 	errf_t *err;
 	size_t len, pos, lineno, llen;
-	char *buf;
+	char *buf = NULL;
 	const char *p;
 	enum json_tokener_error jerr;
 	struct json_tokener *tok = NULL;
@@ -3933,7 +3936,7 @@ static errf_t *
 ca_log_crl_gen(struct ca *ca, struct ca_session *sess, X509_CRL *crl, uint seq)
 {
 	json_object *robj = NULL, *obj = NULL;
-	FILE *logf;
+	FILE *logf = NULL;
 	char fname[PATH_MAX];
 	const char *line;
 	size_t done;
@@ -4078,7 +4081,7 @@ static errf_t *
 ca_log_revoke_serial(struct ca *ca, struct ca_session *sess, BIGNUM *serial)
 {
 	json_object *robj = NULL, *obj = NULL;
-	FILE *logf;
+	FILE *logf = NULL;
 	char fname[PATH_MAX];
 	const char *line;
 	size_t done;
@@ -4174,7 +4177,7 @@ ca_log_cert_action(struct ca *ca, struct ca_session *sess, const char *action,
     const char *tpl, struct cert_var_scope *scope, X509 *cert)
 {
 	json_object *robj = NULL, *obj = NULL;
-	FILE *logf;
+	FILE *logf = NULL;
 	char fname[PATH_MAX];
 	const char *line;
 	size_t done;

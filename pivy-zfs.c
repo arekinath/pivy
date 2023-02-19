@@ -393,7 +393,7 @@ cmd_rekey(const char *fsname)
 	boolean_t recovered;
 	int rc;
 	const uint8_t *key = NULL;
-	const uint8_t *nkey;
+	uint8_t *nkey;
 	size_t keylen, nkeylen;
 	const char *propname;
 #if defined(DMU_OT_ENCRYPTED)

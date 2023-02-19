@@ -2221,7 +2221,7 @@ handle_socket_read(u_int socknum)
 	gid_t egid;
 	int fd;
 	pid_t pid = 0;
-#if defined(__sun) || defined(SO_PEERCRED)
+#if defined(__sun) || (defined(SO_PEERCRED) && !defined(__OpenBSD__))
 	uint i;
 	FILE *f;
 #endif
