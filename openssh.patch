@@ -1,7 +1,32 @@
+From bcabb1ad8766f4bf49d1b63c85635f371c77aea3 Mon Sep 17 00:00:00 2001
+From: Alex Wilson <alex@cooperi.net>
+Date: Wed, 9 Mar 2022 14:38:30 +1000
+Subject: [PATCH] xxx: pivy changes
+
+---
+ authfd.c                        |   2 +-
+ authfd.h                        |   4 +
+ cipher.c                        |   6 +-
+ defines.h                       |   2 +-
+ digest.h                        |  14 +-
+ misc.c                          |   2 +
+ openbsd-compat/arc4random.c     |   7 +
+ openbsd-compat/bcrypt_pbkdf.c   |   2 +-
+ openbsd-compat/openbsd-compat.h |   4 +-
+ sshbuf-getput-basic.c           | 198 ++++++++++++++++
+ sshbuf-getput-crypto.c          |  72 +++++-
+ sshbuf.c                        |  18 ++
+ sshbuf.h                        |  19 ++
+ ssherr.h                        |  26 +++
+ sshkey.c                        | 391 +++++++++++++++++++++++++++++++-
+ sshkey.h                        |  13 ++
+ 16 files changed, 764 insertions(+), 16 deletions(-)
+
 diff --git a/authfd.c b/authfd.c
---- openssh/authfd.c
+index b633e35ea..da34bdaa6 100644
+--- a/authfd.c
 +++ openssh/authfd.c
-@@ -134,7 +134,7 @@ ssh_get_authentication_socket(int *fdp)
+@@ -135,7 +135,7 @@ ssh_get_authentication_socket(int *fdp)
  }
  
  /* Communicate with agent: send request and read reply */
@@ -11,7 +36,8 @@ diff --git a/authfd.c b/authfd.c
  {
  	int r;
 diff --git a/authfd.h b/authfd.h
---- openssh/authfd.h
+index 7a1c0ddff..7272faab3 100644
+--- a/authfd.h
 +++ openssh/authfd.h
 @@ -59,6 +59,8 @@ int	ssh_update_card(int sock, int add, const char *reader_id,
  	    size_t ndest_constraints);
@@ -32,21 +58,21 @@ diff --git a/authfd.h b/authfd.h
  #define	SSH_AGENT_CONSTRAIN_CONFIRM		2
  #define	SSH_AGENT_CONSTRAIN_MAXSIGN		3
 diff --git a/cipher.c b/cipher.c
---- openssh/cipher.c
+index 02aea4089..ae0151bee 100644
+--- a/cipher.c
 +++ openssh/cipher.c
-@@ -95,9 +95,9 @@ static const struct sshcipher ciphers[] = {
+@@ -94,16 +94,16 @@ static const struct sshcipher ciphers[] = {
+ 	{ "aes128-ctr",		16, 16, 0, 0, 0, EVP_aes_128_ctr },
  	{ "aes192-ctr",		16, 24, 0, 0, 0, EVP_aes_192_ctr },
  	{ "aes256-ctr",		16, 32, 0, 0, 0, EVP_aes_256_ctr },
- # ifdef OPENSSL_HAVE_EVPGCM
 -	{ "aes128-gcm@openssh.com",
 +	{ "aes128-gcm",
  				16, 16, 12, 16, 0, EVP_aes_128_gcm },
 -	{ "aes256-gcm@openssh.com",
 +	{ "aes256-gcm",
  				16, 32, 12, 16, 0, EVP_aes_256_gcm },
- # endif /* OPENSSL_HAVE_EVPGCM */
  #else
-@@ -105,7 +105,7 @@ static const struct sshcipher ciphers[] = {
+ 	{ "aes128-ctr",		16, 16, 0, 0, CFLAG_AESCTR, NULL },
  	{ "aes192-ctr",		16, 24, 0, 0, CFLAG_AESCTR, NULL },
  	{ "aes256-ctr",		16, 32, 0, 0, CFLAG_AESCTR, NULL },
  #endif
@@ -56,7 +82,8 @@ diff --git a/cipher.c b/cipher.c
  	{ "none",		8, 0, 0, 0, CFLAG_NONE, NULL },
  
 diff --git a/defines.h b/defines.h
---- openssh/defines.h
+index 279e509aa..939b35ef3 100644
+--- a/defines.h
 +++ openssh/defines.h
 @@ -906,7 +906,7 @@ struct winsize {
   */
@@ -68,7 +95,8 @@ diff --git a/defines.h b/defines.h
  
  #ifndef HAVE_VA_COPY
 diff --git a/digest.h b/digest.h
---- openssh/digest.h
+index 274574d0e..4b569962f 100644
+--- a/digest.h
 +++ openssh/digest.h
 @@ -22,12 +22,14 @@
  #define SSH_DIGEST_MAX_LENGTH	64
@@ -92,9 +120,10 @@ diff --git a/digest.h b/digest.h
  struct sshbuf;
  struct ssh_digest_ctx;
 diff --git a/misc.c b/misc.c
---- openssh/misc.c
+index c098dc610..d4742bc36 100644
+--- a/misc.c
 +++ openssh/misc.c
-@@ -2716,7 +2716,9 @@ subprocess(const char *tag, const char *command,
+@@ -2741,7 +2741,9 @@ subprocess(const char *tag, const char *command,
  			error("%s: dup2: %s", tag, strerror(errno));
  			_exit(1);
  		}
@@ -105,11 +134,12 @@ diff --git a/misc.c b/misc.c
  		if (geteuid() == 0 &&
  		    initgroups(pw->pw_name, pw->pw_gid) == -1) {
 diff --git a/openbsd-compat/arc4random.c b/openbsd-compat/arc4random.c
---- openssh/openbsd-compat/arc4random.c
+index ffd33734d..b4d67b7fc 100644
+--- a/openbsd-compat/arc4random.c
 +++ openssh/openbsd-compat/arc4random.c
-@@ -264,6 +264,13 @@ arc4random_buf(void *buf, size_t n)
- 	_ARC4_UNLOCK();
+@@ -231,6 +231,13 @@ arc4random_buf(void *buf, size_t n)
  }
+ DEF_WEAK(arc4random_buf);
  # endif /* !HAVE_ARC4RANDOM_BUF */
 +#else /* !HAVE_ARC4RANDOM */
 +# ifndef HAVE_ARC4RANDOM_STIR
@@ -122,7 +152,8 @@ diff --git a/openbsd-compat/arc4random.c b/openbsd-compat/arc4random.c
  
  /* arc4random_buf() that uses platform arc4random() */
 diff --git a/openbsd-compat/bcrypt_pbkdf.c b/openbsd-compat/bcrypt_pbkdf.c
---- openssh/openbsd-compat/bcrypt_pbkdf.c
+index 5a22ba3b4..f006b14cc 100644
+--- a/openbsd-compat/bcrypt_pbkdf.c
 +++ openssh/openbsd-compat/bcrypt_pbkdf.c
 @@ -137,7 +137,7 @@ bcrypt_pbkdf(const char *pass, size_t passlen, const uint8_t *salt, size_t saltl
  	memcpy(countsalt, salt, saltlen);
@@ -134,28 +165,23 @@ diff --git a/openbsd-compat/bcrypt_pbkdf.c b/openbsd-compat/bcrypt_pbkdf.c
  	/* generate key, sizeof(out) at a time */
  	for (count = 1; keylen > 0; count++) {
 diff --git a/openbsd-compat/openbsd-compat.h b/openbsd-compat/openbsd-compat.h
---- openssh/openbsd-compat/openbsd-compat.h
+index 895ecf9ea..0e83b55c6 100644
+--- a/openbsd-compat/openbsd-compat.h
 +++ openssh/openbsd-compat/openbsd-compat.h
-@@ -206,13 +206,11 @@ int writev(int, struct iovec *, int);
- int getpeereid(int , uid_t *, gid_t *);
+@@ -222,8 +222,8 @@ uint32_t arc4random(void);
+ void arc4random_buf(void *, size_t);
  #endif
  
--#ifdef HAVE_ARC4RANDOM
--# ifndef HAVE_ARC4RANDOM_STIR
--#  define arc4random_stir()
--# endif
--#else
--unsigned int arc4random(void);
-+#ifndef HAVE_ARC4RANDOM_STIR
- void arc4random_stir(void);
-+#endif /* !HAVE_ARC4RANDOM_STIR */
-+#ifndef HAVE_ARC4RANDOM
-+unsigned int arc4random(void);
- #endif /* !HAVE_ARC4RANDOM */
+-#ifndef HAVE_ARC4RANDOM_STIR
+-# define arc4random_stir()
++#if !defined(HAVE_ARC4RANDOM_STIR) && !defined(HAVE_ARC4RANDOM)
++void arc4random_stir(void);
+ #endif
  
- #ifndef HAVE_ARC4RANDOM_BUF
+ #ifndef HAVE_ARC4RANDOM_UNIFORM
 diff --git a/sshbuf-getput-basic.c b/sshbuf-getput-basic.c
---- openssh/sshbuf-getput-basic.c
+index 5c71b0e53..3305d52f7 100644
+--- a/sshbuf-getput-basic.c
 +++ openssh/sshbuf-getput-basic.c
 @@ -302,6 +302,41 @@ sshbuf_get_cstring(struct sshbuf *buf, char **valp, size_t *lenp)
  	return 0;
@@ -394,7 +420,8 @@ diff --git a/sshbuf-getput-basic.c b/sshbuf-getput-basic.c
 +	return 0;
 +}
 diff --git a/sshbuf-getput-crypto.c b/sshbuf-getput-crypto.c
---- openssh/sshbuf-getput-crypto.c
+index 56ffdd861..ad0b6d716 100644
+--- a/sshbuf-getput-crypto.c
 +++ openssh/sshbuf-getput-crypto.c
 @@ -63,8 +63,10 @@ get_ec(const u_char *d, size_t len, EC_POINT *v, const EC_GROUP *g)
  	if (len == 0 || len > SSHBUF_MAX_ECPOINT)
@@ -489,10 +516,37 @@ diff --git a/sshbuf-getput-crypto.c b/sshbuf-getput-crypto.c
 +}
  #endif /* OPENSSL_HAS_ECC */
  #endif /* WITH_OPENSSL */
+diff --git a/sshbuf.c b/sshbuf.c
+index d7f4e4ab6..f82a51c6f 100644
+--- a/sshbuf.c
++++ openssh/sshbuf.c
+@@ -425,3 +425,21 @@ sshbuf_consume_end(struct sshbuf *buf, size_t len)
+ 	return 0;
+ }
+ 
++
++size_t
++sshbuf_offset(const struct sshbuf *buf)
++{
++	return buf->off;
++}
++
++int
++sshbuf_rewind(struct sshbuf *buf, size_t pos)
++{
++	int r;
++	if ((r = sshbuf_check_sanity(buf)) != 0)
++		return r;
++	if (pos > sshbuf_len(buf))
++		return SSH_ERR_INVALID_ARGUMENT;
++	buf->off = pos;
++	return 0;
++}
 diff --git a/sshbuf.h b/sshbuf.h
---- openssh/sshbuf.h
+index e2155f9a4..f83d58333 100644
+--- a/sshbuf.h
 +++ openssh/sshbuf.h
-@@ -208,6 +208,14 @@ int	sshbuf_put_string(struct sshbuf *buf, const void *v, size_t len);
+@@ -193,6 +193,14 @@ int	sshbuf_put_string(struct sshbuf *buf, const void *v, size_t len);
  int	sshbuf_put_cstring(struct sshbuf *buf, const char *v);
  int	sshbuf_put_stringb(struct sshbuf *buf, const struct sshbuf *v);
  
@@ -507,7 +561,7 @@ diff --git a/sshbuf.h b/sshbuf.h
  /*
   * "Direct" variant of sshbuf_get_string, returns pointer into the sshbuf to
   * avoid an malloc+memcpy. The pointer is guaranteed to be valid until the
-@@ -215,13 +223,18 @@ int	sshbuf_put_stringb(struct sshbuf *buf, const struct sshbuf *v);
+@@ -200,13 +208,18 @@ int	sshbuf_put_stringb(struct sshbuf *buf, const struct sshbuf *v);
   */
  int	sshbuf_get_string_direct(struct sshbuf *buf, const u_char **valp,
  	    size_t *lenp);
@@ -526,7 +580,7 @@ diff --git a/sshbuf.h b/sshbuf.h
  
  /*
   * Functions to extract or store SSH wire encoded bignums and elliptic
-@@ -238,6 +251,9 @@ int	sshbuf_get_ec(struct sshbuf *buf, EC_POINT *v, const EC_GROUP *g);
+@@ -223,6 +236,9 @@ int	sshbuf_get_ec(struct sshbuf *buf, EC_POINT *v, const EC_GROUP *g);
  int	sshbuf_get_eckey(struct sshbuf *buf, EC_KEY *v);
  int	sshbuf_put_ec(struct sshbuf *buf, const EC_POINT *v, const EC_GROUP *g);
  int	sshbuf_put_eckey(struct sshbuf *buf, const EC_KEY *v);
@@ -536,8 +590,19 @@ diff --git a/sshbuf.h b/sshbuf.h
  # endif /* OPENSSL_HAS_ECC */
  #endif /* WITH_OPENSSL */
  
+@@ -344,6 +360,9 @@ int sshbuf_read(int, struct sshbuf *, size_t, size_t *)
+ 		((u_char *)(p))[1] = __v & 0xff; \
+ 	} while (0)
+ 
++size_t	sshbuf_offset(const struct sshbuf *buf);
++int	sshbuf_rewind(struct sshbuf *buf, size_t pos);
++
+ /* Internal definitions follow. Exposed for regress tests */
+ #ifdef SSHBUF_INTERNAL
+ 
 diff --git a/ssherr.h b/ssherr.h
---- openssh/ssherr.h
+index 085e75274..e97c45771 100644
+--- a/ssherr.h
 +++ openssh/ssherr.h
 @@ -86,4 +86,30 @@
  /* Translate a numeric error code to a human-readable error string */
@@ -571,51 +636,33 @@ diff --git a/ssherr.h b/ssherr.h
 +
  #endif /* _SSHERR_H */
 diff --git a/sshkey.c b/sshkey.c
---- openssh/sshkey.c
+index 43712253d..7c1ac7f2b 100644
+--- a/sshkey.c
 +++ openssh/sshkey.c
-@@ -2790,6 +2790,7 @@ sshkey_sign(struct sshkey *key,
- 	case KEY_ED25519_CERT:
- 		r = ssh_ed25519_sign(key, sigp, lenp, data, datalen, compat);
- 		break;
+@@ -2096,17 +2096,21 @@ sshkey_sign(struct sshkey *key,
+ 		return SSH_ERR_KEY_TYPE_UNKNOWN;
+ 	if ((r = sshkey_unshield_private(key)) != 0)
+ 		return r;
 +#if defined(WITH_SK)
- 	case KEY_ED25519_SK:
- 	case KEY_ED25519_SK_CERT:
- 	case KEY_ECDSA_SK_CERT:
-@@ -2797,6 +2798,7 @@ sshkey_sign(struct sshkey *key,
+ 	if (sshkey_is_sk(key)) {
  		r = sshsk_sign(sk_provider, key, sigp, lenp, data,
  		    datalen, compat, sk_pin);
- 		break;
+ 	} else {
 +#endif
- #ifdef WITH_XMSS
- 	case KEY_XMSS:
- 	case KEY_XMSS_CERT:
-@@ -2835,10 +2837,12 @@ sshkey_verify(const struct sshkey *key,
- 	case KEY_ECDSA_CERT:
- 	case KEY_ECDSA:
- 		return ssh_ecdsa_verify(key, sig, siglen, data, dlen, compat);
+ 		if (impl->funcs->sign == NULL)
+ 			r = SSH_ERR_SIGN_ALG_UNSUPPORTED;
+ 		else {
+ 			r = impl->funcs->sign(key, sigp, lenp, data, datalen,
+ 			    alg, sk_provider, sk_pin, compat);
+-		 }
++		}
 +#if defined(WITH_SK)
- 	case KEY_ECDSA_SK_CERT:
- 	case KEY_ECDSA_SK:
- 		return ssh_ecdsa_sk_verify(key, sig, siglen, data, dlen,
- 		    compat, detailsp);
+ 	}
 +#endif
- # endif /* OPENSSL_HAS_ECC */
- 	case KEY_RSA_CERT:
- 	case KEY_RSA:
-@@ -2847,10 +2851,12 @@ sshkey_verify(const struct sshkey *key,
- 	case KEY_ED25519:
- 	case KEY_ED25519_CERT:
- 		return ssh_ed25519_verify(key, sig, siglen, data, dlen, compat);
-+#if defined(WITH_SK)
- 	case KEY_ED25519_SK:
- 	case KEY_ED25519_SK_CERT:
- 		return ssh_ed25519_sk_verify(key, sig, siglen, data, dlen,
- 		    compat, detailsp);
-+#endif
- #ifdef WITH_XMSS
- 	case KEY_XMSS:
- 	case KEY_XMSS_CERT:
-@@ -4856,3 +4862,388 @@ sshkey_set_filename(struct sshkey *k, const char *filename)
+ 	if (was_shielded && (r2 = sshkey_shield_private(key)) != 0)
+ 		return r2;
+ 	return r;
+@@ -3661,3 +3665,388 @@ sshkey_set_filename(struct sshkey *k, const char *filename)
  	return 0;
  }
  #endif /* WITH_XMSS */
@@ -1005,7 +1052,8 @@ diff --git a/sshkey.c b/sshkey.c
 +	return rc;
 +}
 diff --git a/sshkey.h b/sshkey.h
---- openssh/sshkey.h
+index 771c4bcee..e1a0b6c25 100644
+--- a/sshkey.h
 +++ openssh/sshkey.h
 @@ -26,11 +26,14 @@
  #ifndef SSHKEY_H
@@ -1022,7 +1070,7 @@ diff --git a/sshkey.h b/sshkey.h
  # ifdef OPENSSL_HAS_ECC
  #  include <openssl/ec.h>
  #  include <openssl/ecdsa.h>
-@@ -183,6 +186,9 @@ u_int		 sshkey_size(const struct sshkey *);
+@@ -218,6 +221,9 @@ u_int		 sshkey_size(const struct sshkey *);
  int		 sshkey_generate(int type, u_int bits, struct sshkey **keyp);
  int		 sshkey_from_private(const struct sshkey *, struct sshkey **);
  
@@ -1032,7 +1080,7 @@ diff --git a/sshkey.h b/sshkey.h
  int		 sshkey_is_shielded(struct sshkey *);
  int		 sshkey_shield_private(struct sshkey *);
  int		 sshkey_unshield_private(struct sshkey *);
-@@ -286,6 +292,13 @@ int	 sshkey_private_serialize_maxsign(struct sshkey *key,
+@@ -322,6 +328,13 @@ int	 sshkey_private_serialize_maxsign(struct sshkey *key,
  
  void	 sshkey_sig_details_free(struct sshkey_sig_details *);
  
@@ -1044,8 +1092,8 @@ diff --git a/sshkey.h b/sshkey.h
 +    enum sshdigest_types *dtype, struct sshbuf *asn1sig);
 +
  #ifdef SSHKEY_INTERNAL
- int ssh_rsa_sign(const struct sshkey *key,
-     u_char **sigp, size_t *lenp, const u_char *data, size_t datalen,
+ int	sshkey_sk_fields_equal(const struct sshkey *a, const struct sshkey *b);
+ void	sshkey_sk_cleanup(struct sshkey *k);
 -- 
-2.36.1
+2.39.1
 

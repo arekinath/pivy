@@ -1700,12 +1700,12 @@ cmd_stream_decrypt(int argc, char *argv[])
 			err(EXIT_ERROR, "failed to read input");
 		VERIFY0(sshbuf_put(ibuf, buf, nread));
 
-		poff = ibuf->off;
+		poff = sshbuf_offset(ibuf);
 		error = sshbuf_get_ebox_stream(ibuf, &es);
 		if (errf_caused_by(error, "IncompleteMessageError")) {
 			if (feof(file))
 				errfx(EXIT_ERROR, error, "input too short");
-			ibuf->off = poff;
+			VERIFY0(sshbuf_rewind(ibuf, poff));
 			errf_free(error);
 			continue;
 		} else if (error) {
@@ -1733,12 +1733,12 @@ cmd_stream_decrypt(int argc, char *argv[])
 			break;
 		VERIFY0(sshbuf_put(ibuf, buf, nread));
 
-		poff = ibuf->off;
+		poff = sshbuf_offset(ibuf);
 		error = sshbuf_get_ebox_stream_chunk(ibuf, es, &esc);
 		if (errf_caused_by(error, "IncompleteMessageError")) {
 			if (feof(file))
 				errfx(EXIT_ERROR, error, "input too short");
-			ibuf->off = poff;
+			VERIFY0(sshbuf_rewind(ibuf, poff));
 			errf_free(error);
 			continue;
 		} else if (error) {

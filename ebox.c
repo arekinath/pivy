@@ -21,8 +21,8 @@
 #include "utils.h"
 #include "debug.h"
 
-#include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"
+#include "openssh/sshkey.h"
 #include "openssh/digest.h"
 #include "openssh/digest.h"
 #include "openssh/cipher.h"
@@ -815,7 +815,7 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 				break;
 			}
 			err = errf("UnknownTagError", NULL, "unknown tag %d "
-			    "at +%lx", tag, buf->off);
+			    "at +%zx", tag, sshbuf_offset(buf));
 			goto out;
 		}
 		if ((rc = sshbuf_get_u8(buf, &tag))) {
@@ -828,7 +828,8 @@ sshbuf_get_ebox_tpl_part(struct sshbuf *buf, struct ebox_tpl_part **ppart)
 
 	if (part->etp_pubkey == NULL || !gotguid) {
 		err = errf("IncompletePartError", NULL, "ebox part missing "
-		    "compulsory tags (pubkey or guid) at +%lx", buf->off);
+		    "compulsory tags (pubkey or guid) at +%zx",
+		    sshbuf_offset(buf));
 		goto out;
 	}
 
@@ -1895,8 +1896,8 @@ sshbuf_get_ebox_part(struct sshbuf *buf, const struct ebox *ebox,
 				break;
 			}
 			err = errf("TagError", NULL,
-			    "invalid ebox part tag 0x%02x at +%lx",
-			    tag, buf->off);
+			    "invalid ebox part tag 0x%02x at +%zx",
+			    tag, sshbuf_offset(buf));
 			goto out;
 		}
 		if ((rc = sshbuf_get_u8(buf, &tag))) {

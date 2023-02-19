@@ -1,9 +1,9 @@
 all: pivy-tool pivy-agent pivy-box
 
-LIBRESSL_VER	= 3.5.2
+LIBRESSL_VER	= 3.7.0
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
-OPENSSH_VER	= 8.9p1
+OPENSSH_VER	= 9.2p1
 OPENSSH_URL	= https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-$(OPENSSH_VER).tar.gz
 
 OPENSSH		= $(CURDIR)/openssh
@@ -209,9 +209,6 @@ CONFIG_CFLAGS	+= -DEBOX_SYSTEM_TPL_PATH='$(tpl_system_dir)'
 
 _ED25519_SOURCES=		\
 	ed25519.c		\
-	fe25519.c		\
-	ge25519.c		\
-	sc25519.c		\
 	hash.c
 
 _CHAPOLY_SOURCES=		\
@@ -246,7 +243,6 @@ _LIBSSH_SOURCES=		\
 	match.c			\
 	ssh-sk.c		\
 	log.c			\
-	verify.c		\
 	fatal.c			\
 	xmalloc.c		\
 	addrmatch.c		\
