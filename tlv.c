@@ -16,6 +16,8 @@
 #include "utils.h"
 #include "tlv.h"
 #include "debug.h"
+
+#include "openssh/config.h"
 #include "openssh/sshbuf.h"
 
 #if defined(__sun) || defined(__APPLE__)

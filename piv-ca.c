@@ -43,6 +43,7 @@
 
 #include <json.h>
 
+#include "openssh/config.h"
 #include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"
 #include "openssh/digest.h"

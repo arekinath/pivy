@@ -92,6 +92,7 @@
 #include "utils.h"
 #include "debug.h"
 
+#include "openssh/config.h"
 #include "openssh/ssh2.h"
 #include "openssh/sshbuf.h"
 #include "openssh/sshkey.h"

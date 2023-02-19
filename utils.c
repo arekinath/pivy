@@ -17,6 +17,7 @@
 #include "debug.h"
 #include "errf.h"
 
+#include "openssh/config.h"
 #include "openssh/sshbuf.h"
 #include "openssh/ssherr.h"
 

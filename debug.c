@@ -43,6 +43,7 @@
 #include <string.h>
 #include <errno.h>
 
+#include "openssh/config.h"
 #include "openssh/ssherr.h"
 
 #if !defined(__sun)

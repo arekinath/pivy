@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
+#include "openssh/config.h"
 #include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"
 #include "openssh/digest.h"

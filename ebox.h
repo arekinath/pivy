@@ -29,6 +29,8 @@
 
 #include "errf.h"
 #include "piv.h"
+
+#include "openssh/config.h"
 #include "openssh/digest.h"
 
 /*

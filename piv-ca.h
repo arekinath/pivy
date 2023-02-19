@@ -21,6 +21,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include "openssh/config.h"
 #include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"
 #include "openssh/digest.h"

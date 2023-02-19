@@ -42,6 +42,7 @@
 
 #include <zlib.h>
 
+#include "openssh/config.h"
 #include "openssh/ssherr.h"
 #include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"

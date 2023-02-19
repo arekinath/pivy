@@ -28,6 +28,8 @@
 #include <openssl/cms.h>
 
 #include "errf.h"
+
+#include "openssh/config.h"
 #include "openssh/digest.h"
 
 /*
