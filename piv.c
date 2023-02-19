@@ -7629,20 +7629,6 @@ piv_pinfo_encode(const struct piv_pinfo *pp, uint8_t **out, size_t *outlen)
 	}
 
 	for (kv = pp->pp_kv; kv != NULL; kv = kv->ppk_next) {
-		size_t len = 2 + strlen(kv->ppk_name) + 4;
-		switch (kv->ppk_type) {
-		case PIV_PINFO_KV_UINT:
-			len += 4;
-			break;
-		case PIV_PINFO_KV_STRING:
-			len += strlen(kv->ppk_string);
-			break;
-		case PIV_PINFO_KV_DATA:
-			len += kv->ppk_len;
-			break;
-		default:
-			break;
-		}
 		tlv_push(tlv, 0x90);
 
 		tlv_push(tlv, 0x01);
