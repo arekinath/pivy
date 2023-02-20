@@ -1747,6 +1747,115 @@ process_ext_x509_certs(socket_entry_t *e, struct sshbuf *buf)
 }
 
 static errf_t *
+process_ext_prehash(socket_entry_t *e, struct sshbuf *inbuf)
+{
+	const u_char *data;
+	u_char *signature = NULL;
+	u_char *rawsig = NULL;
+	size_t dlen, rslen = 0;
+	u_int flags;
+	int r;
+	errf_t *err = NULL;
+	struct sshbuf *msg;
+	struct sshkey *key = NULL;
+	struct piv_slot *slot = NULL;
+	int found = 0;
+	boolean_t canskip = B_TRUE;
+	enum piv_slot_auth rauth;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+
+	if ((r = sshkey_froms(inbuf, &key)) != 0 ||
+	    (r = sshbuf_get_string_direct(inbuf, &data, &dlen)) != 0 ||
+	    (r = sshbuf_get_u32(inbuf, &flags)) != 0) {
+		err = parserrf("sshbuf_get_string", r);
+		goto out;
+	}
+
+	if ((err = agent_piv_open()))
+		goto out;
+
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
+		if (sshkey_equal(piv_slot_pubkey(slot), key)) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found || slot == NULL || !is_slot_enabled(slot)) {
+		agent_piv_close(B_FALSE);
+		err = errf("NotFoundError", NULL, "specified key not found");
+		goto out;
+	}
+	bunyan_add_vars(msg_log_frame,
+	    "slotid", BNY_UINT, (uint)piv_slot_id(slot), NULL);
+
+	try_confirm_client(e, piv_slot_id(slot));
+	if (e->se_authz == AUTHZ_DENIED) {
+		err = errf("AuthzError", NULL, "client blocked");
+		goto out;
+	}
+
+	if (piv_slot_id(slot) == PIV_SLOT_KEY_MGMT && !sign_9d) {
+		err = errf("PermissionError", NULL, "key management key (9d) "
+		    "is not allowed to sign data without the -m option");
+		goto out;
+	}
+
+	rauth = piv_slot_get_auth(selk, slot);
+	if (rauth & PIV_SLOT_AUTH_PIN)
+		canskip = B_FALSE;
+	if (rauth & PIV_SLOT_AUTH_TOUCH)
+		send_touch_notify(e, piv_slot_id(slot));
+
+pin_again:
+	if ((err = agent_piv_try_pin(canskip))) {
+		agent_piv_close(B_TRUE);
+		goto out;
+	}
+	err = piv_sign_prehash(selk, slot, data, dlen, &rawsig, &rslen);
+
+	if (errf_caused_by(err, "PermissionError") && pin_len != 0 &&
+	    piv_token_is_ykpiv(selk) && canskip) {
+		/*
+		 * On a Yubikey, slots other than 9C (SIGNATURE) can also be
+		 * set to "PIN Always" mode. We might have one, so try again
+		 * with forced PIN entry.
+		 */
+		canskip = B_FALSE;
+		goto pin_again;
+	} else if (errf_caused_by(err, "PermissionError")) {
+		try_askpass();
+		if (pin_len != 0) {
+			canskip = B_FALSE;
+			goto pin_again;
+		}
+		agent_piv_close(B_TRUE);
+		err = nopinerrf(err);
+		goto out;
+	} else if (err) {
+		agent_piv_close(B_TRUE);
+		goto out;
+	}
+	agent_piv_close(B_FALSE);
+
+	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (r = sshbuf_put_string(msg, rawsig, rslen)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+
+out:
+	sshkey_free(key);
+	sshbuf_free(msg);
+	explicit_bzero(rawsig, rslen);
+	free(rawsig);
+	free(signature);
+	return (err);
+}
+
+static errf_t *
 process_ext_sessbind(socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
@@ -1919,6 +2028,7 @@ struct exthandler exthandlers[] = {
 	{ "x509-certs@joyent.com", B_TRUE, process_ext_x509_certs },
 	{ "ykpiv-attest@joyent.com", B_TRUE, process_ext_attest },
 	{ "session-bind@openssh.com", B_FALSE, process_ext_sessbind },
+	{ "sign-prehash@arekinath.github.io", B_FALSE, process_ext_prehash },
 	{ NULL, B_FALSE, NULL }
 };
 
