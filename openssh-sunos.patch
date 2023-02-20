@@ -1,18 +1,3 @@
-diff -ru openssh.dist/configure openssh/configure
---- openssh.dist/configure	2023-02-20 13:52:59.829564491 +1000
-+++ openssh/configure	2023-02-20 13:53:35.221333591 +1000
-@@ -15446,8 +15446,8 @@
- 
- nocrypto_saved_LIBS="$LIBS"
- if test "x$openssl" = "xyes" ; then
--	LIBS="-lcrypto $LIBS"
--	CHANNELLIBS="-lcrypto $CHANNELLIBS"
-+	LIBS="-Wl,-Bstatic -lcrypto -Wl,-Bdynamic $LIBS"
-+	CHANNELLIBS="-Wl,-Bstatic -lcrypto -Wl,-Bdynamic $CHANNELLIBS"
- 	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
- /* end confdefs.h.  */
- 
-diff -ru openssh.dist/configure.ac openssh/configure.ac
 --- openssh.dist/configure.ac	2023-02-20 13:52:59.759560993 +1000
 +++ openssh/configure.ac	2023-02-20 13:53:12.810213339 +1000
 @@ -2744,8 +2744,8 @@
@@ -26,3 +11,16 @@ diff -ru openssh.dist/configure.ac openssh/configure.ac
  	AC_TRY_LINK_FUNC([RAND_add], ,
  	    [AC_MSG_ERROR([*** working libcrypto not found, check config.log])])
  	AC_CHECK_HEADER([openssl/opensslv.h], ,
+--- openssh.dist/configure	2023-02-20 13:52:59.829564491 +1000
++++ openssh/configure	2023-02-20 13:53:35.221333591 +1000
+@@ -15446,8 +15446,8 @@
+ 
+ nocrypto_saved_LIBS="$LIBS"
+ if test "x$openssl" = "xyes" ; then
+-	LIBS="-lcrypto $LIBS"
+-	CHANNELLIBS="-lcrypto $CHANNELLIBS"
++	LIBS="-Wl,-Bstatic -lcrypto -Wl,-Bdynamic $LIBS"
++	CHANNELLIBS="-Wl,-Bstatic -lcrypto -Wl,-Bdynamic $CHANNELLIBS"
+ 	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+ 
