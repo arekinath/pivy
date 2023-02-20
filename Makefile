@@ -161,6 +161,8 @@ ifeq ($(SYSTEM), SunOS)
 	SYSTEM_CFLAGS	+= -m64 -msave-args
 	SYSTEM_CFLAGS	+= -Du_int8_t=uint8_t -Du_int16_t=uint16_t \
 		-Du_int32_t=uint32_t -Du_int64_t=uint64_t
+	SYSTEM_CFLAGS	+= -D_XOPEN_SOURCE=600
+	SYSTEM_CFLAGS	+= -D__EXTENSIONS__ -D_REENTRANT
 	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib/64 -lssp -lsocket -lnsl
 	SYSTEM_LDFLAGS	= -m64 -L$(PROTO_AREA)/usr/lib/64
 

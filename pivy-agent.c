@@ -118,6 +118,7 @@
 #if defined(__sun)
 #include <ucred.h>
 #include <procfs.h>
+#include <zone.h>
 #endif
 
 #if defined(__APPLE__)
