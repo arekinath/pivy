@@ -72,6 +72,9 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 
+#include <openssl/err.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <openssl/evp.h>
 
 #include <errno.h>
@@ -1740,10 +1743,66 @@ out:
 static errf_t *
 process_ext_x509_certs(socket_entry_t *e, struct sshbuf *buf)
 {
-	/*int r;
-	struct sshbuf *msg;*/
-	return (errf("NotImplementedError", NULL,
-	    "x509 certs ext not implemented yet"));
+	int rc;
+	struct sshbuf *msg;
+	u_int flags;
+	struct sshkey *key = NULL;
+	errf_t *err = ERRF_OK;
+	int found = 0;
+	struct piv_slot *slot = NULL;
+	X509 *x509;
+	uint8_t *cbuf = NULL;
+	size_t clen;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal("%s: sshbuf_new failed", __func__);
+
+	if ((rc = sshkey_froms(buf, &key)) != 0 ||
+	    (rc = sshbuf_get_u32(buf, &flags)) != 0) {
+		err = parserrf("sshbuf_get_string", rc);
+		goto out;
+	}
+
+	if (flags != 0) {
+		err = errf("UnsupportedFlagsError", NULL, "request specified "
+		    "non-zero flags, but none are supported");
+		goto out;
+	}
+
+	while ((slot = piv_slot_next(selk, slot)) != NULL) {
+		if (sshkey_equal(piv_slot_pubkey(slot), key)) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found || slot == NULL || !is_slot_enabled(slot)) {
+		err = errf("NotFoundError", NULL, "specified key not found");
+		goto out;
+	}
+
+	x509 = piv_slot_cert(slot);
+	rc = i2d_X509(x509, &cbuf);
+	if (rc < 0) {
+		make_sslerrf(err, "i2d_X509", "converting X509 cert "
+		    "to DER");
+		err = errf("BadCertError", err, "key in slot %02X cert failed "
+		    "to convert", piv_slot_id(slot));
+		goto out;
+	}
+	clen = rc;
+
+	if ((rc = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
+	    (rc = sshbuf_put_string(msg, cbuf, clen)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(rc));
+
+	if ((rc = sshbuf_put_stringb(e->se_output, msg)) != 0)
+		fatal("%s: buffer error: %s", __func__, ssh_err(rc));
+
+out:
+	sshkey_free(key);
+	sshbuf_free(msg);
+	OPENSSL_free(cbuf);
+	return (err);
 }
 
 static errf_t *
@@ -2022,14 +2081,14 @@ process_ext_query(socket_entry_t *e, struct sshbuf *buf)
 }
 
 struct exthandler exthandlers[] = {
-	{ "query", B_FALSE, process_ext_query },
-	{ "ecdh@joyent.com", B_TRUE, process_ext_ecdh },
-	{ "ecdh-rebox@joyent.com", B_TRUE, process_ext_rebox },
-	{ "x509-certs@joyent.com", B_TRUE, process_ext_x509_certs },
-	{ "ykpiv-attest@joyent.com", B_TRUE, process_ext_attest },
-	{ "session-bind@openssh.com", B_FALSE, process_ext_sessbind },
-	{ "sign-prehash@arekinath.github.io", B_FALSE, process_ext_prehash },
-	{ NULL, B_FALSE, NULL }
+{ "query", 				B_FALSE,	process_ext_query },
+{ "ecdh@joyent.com", 			B_TRUE,		process_ext_ecdh },
+{ "ecdh-rebox@joyent.com", 		B_TRUE,		process_ext_rebox },
+{ "x509-certs@joyent.com", 		B_FALSE,	process_ext_x509_certs },
+{ "ykpiv-attest@joyent.com", 		B_TRUE,		process_ext_attest },
+{ "session-bind@openssh.com", 		B_FALSE,	process_ext_sessbind },
+{ "sign-prehash@arekinath.github.io",	B_FALSE,	process_ext_prehash },
+{ NULL, B_FALSE, NULL }
 };
 
 static errf_t *
