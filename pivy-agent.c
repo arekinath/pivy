@@ -2534,6 +2534,9 @@ check_socket_access(int fd, socket_entry_t *ent)
 	char pathBuf[PROC_PIDPATHINFO_MAXSIZE];
 	int rc;
 	uid_t euid;
+#if defined(LOCAL_PEERPID)
+	pid_t pid;
+#endif
 
 	peer = calloc(1, sizeof (struct xucred));
 	len = sizeof (struct xucred);
