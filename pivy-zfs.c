@@ -48,6 +48,9 @@
 #include <editline/readline.h>
 #endif
 
+/* Need to include this before all the ZFS stuff, because of boolean_t */
+#include "utils.h"
+
 #include <libzfs.h>
 #include <libzfs_core.h>
 #include <sys/spa_impl.h>
