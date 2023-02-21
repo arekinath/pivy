@@ -2430,10 +2430,7 @@ static int
 check_socket_access(int fd, socket_entry_t *ent)
 {
 	uid_t euid;
-	gid_t egid;
 	FILE *f;
-	char *exepath = NULL;
-	char *exeargs = NULL;
 	ucred_t *peer = NULL;
 	struct psinfo *psinfo;
 	zoneid_t zid;
