@@ -83,7 +83,9 @@ char *unparse_lifetime(unsigned long);
     errf("JSONError", NULL, func " returned error: %s", \
     ##__VA_ARGS__, json_tokener_error_desc(jerr))
 
-#ifndef __OpenBSD__
+#if defined(__OpenBSD__)
+#include <readpassphrase.h>
+#else
 
 #define RPP_ECHO_OFF    0x00		/* Turn off echo (default). */
 #define RPP_ECHO_ON     0x01		/* Leave echo on. */
@@ -95,6 +97,6 @@ char *unparse_lifetime(unsigned long);
 
 char * readpassphrase(const char *, char *, size_t, int);
 
-#endif /* __OpenBSD__ */
+#endif /* defined(__OpenBSD__) */
 
 #endif

@@ -121,6 +121,10 @@
 #include <zone.h>
 #endif
 
+#if defined(__OpenBSD__)
+#include <sys/sysctl.h>
+#endif
+
 #if defined(__APPLE__)
 #include <sys/proc_info.h>
 #include <sys/ucred.h>
@@ -182,8 +186,8 @@ static confirm_mode_t confirm_mode = C_NEVER;
 static uint64_t slot_ena_mask = 0x743ffffc;
 
 typedef struct uid_entry {
-	struct uid_entry *ue_next;
-	uid_t ue_uid;
+	struct uid_entry	*ue_next;
+	uid_t			 ue_uid;
 } uid_entry_t;
 #define	UID_MOD		32
 static uid_entry_t *uid_allow[UID_MOD] = { NULL };
@@ -191,8 +195,8 @@ static boolean_t allow_any_uid = B_FALSE;
 
 #if defined(__sun)
 typedef struct zone_entry {
-	struct zone_entry *ze_next;
-	zoneid_t ze_zid;
+	struct zone_entry	*ze_next;
+	zoneid_t		 ze_zid;
 } zone_entry_t;
 #define ZID_MOD		32
 static zone_entry_t *zone_allow[ZID_MOD] = { NULL };
@@ -228,33 +232,34 @@ typedef enum sessbind {
 	SESSBIND_FWD
 } sessbind_t;
 
+typedef struct pid_entry {
+	boolean_t	pe_valid;
+	uint64_t	pe_time;
+	pid_t		pe_pid;
+	uint64_t	pe_start_time;
+	uint		pe_conn_count;
+	uint64_t	pe_last_auth;
+} pid_entry_t;
+
 typedef struct socket_entry {
-	int se_fd;
-	sock_type_t se_type;
-	pid_t se_pid;
-	gid_t se_gid;
-	char *se_exepath;
-	char *se_exeargs;
-	authz_t se_authz;
-	struct sshbuf *se_input;
-	struct sshbuf *se_output;
-	struct sshbuf *se_request;
-	struct pid_entry *se_pid_ent;
-	uint se_pid_idx;
-	sessbind_t se_sbind;
+	int 		 se_fd;
+	sock_type_t	 se_type;
+	pid_t		 se_pid;
+	uid_t		 se_uid;
+	gid_t		 se_gid;
+	char		*se_exepath;
+	char		*se_exeargs;
+	authz_t		 se_authz;
+	struct sshbuf	*se_input;
+	struct sshbuf	*se_output;
+	struct sshbuf	*se_request;
+	pid_entry_t	*se_pid_ent;
+	uint		 se_pid_idx;
+	sessbind_t	 se_sbind;
 } socket_entry_t;
 
 u_int sockets_alloc = 0;
 socket_entry_t *sockets = NULL;
-
-typedef struct pid_entry {
-	boolean_t pe_valid;
-	uint64_t pe_time;
-	pid_t pe_pid;
-	uint64_t pe_start_time;
-	uint pe_conn_count;
-	uint64_t pe_last_auth;
-} pid_entry_t;
 
 pid_entry_t *pids = NULL;
 uint pids_alloc = 0;
@@ -846,8 +851,11 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		if (e->se_sbind == SESSBIND_NONE) {
 			if (len >= 4)
 				ssh = &e->se_exepath[len - 4];
-			if (e->se_pid_idx == 0 || ssh == NULL ||
-			    strcmp(ssh, "/ssh") != 0) {
+			if (ssh != NULL && strcmp(ssh, "/ssh") != 0)
+				ssh = NULL;
+			if (len == 3 && strcmp(e->se_exepath, "ssh") == 0)
+				ssh = e->se_exepath;
+			if (e->se_pid_idx == 0 || ssh == NULL) {
 				e->se_authz = AUTHZ_ALLOWED;
 				return;
 			}
@@ -857,7 +865,8 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		 * recently -- if they have, this connection is ok (and we
 		 * should renew the PID's authorisation).
 		 */
-		if (pid_auth_cache_time > 0 &&
+		if (e->se_pid_ent->pe_pid != 0 &&
+		    pid_auth_cache_time > 0 &&
 		    delta < pid_auth_cache_time) {
 			e->se_pid_ent->pe_last_auth = now;
 			e->se_authz = AUTHZ_ALLOWED;
@@ -962,6 +971,15 @@ get_pid_start_time(pid_t pid)
 	char fn[128];
 #endif
 
+#if defined(__OpenBSD__)
+	struct kinfo_proc kp;
+	int mib[6] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)pid,
+	    sizeof (kp), 1 };
+	size_t sz = sizeof (kp);
+
+	if (sysctl(mib, 6, &kp, &sz, NULL, 0) == 0)
+		val = kp.p_ustart_sec;
+#endif
 #if defined(__sun)
 	struct psinfo *psinfo;
 
@@ -1088,6 +1106,16 @@ newpid:
 }
 
 static void
+init_socket(socket_entry_t *e)
+{
+	bzero(e, sizeof (*e));
+	e->se_fd = -1;
+	e->se_type = AUTH_UNUSED;
+	e->se_authz = AUTHZ_NOT_YET;
+	e->se_sbind = SESSBIND_NONE;
+}
+
+static void
 close_socket(socket_entry_t *e)
 {
 	close(e->se_fd);
@@ -1097,10 +1125,15 @@ close_socket(socket_entry_t *e)
 	e->se_pid_ent = NULL;
 	e->se_sbind = SESSBIND_NONE;
 	sshbuf_free(e->se_input);
+	e->se_input = NULL;
 	sshbuf_free(e->se_output);
+	e->se_output = NULL;
 	sshbuf_free(e->se_request);
+	e->se_request = NULL;
 	free(e->se_exepath);
-	free(e->se_exeargs);;
+	e->se_exepath = NULL;
+	free(e->se_exeargs);
+	e->se_exeargs = NULL;
 }
 
 static int
@@ -2370,7 +2403,7 @@ new_socket(sock_type_t type, int fd)
 	sockets = reallocarray(sockets, new_alloc, sizeof(socket_entry_t));
 	VERIFY(sockets != NULL);
 	for (i = old_alloc; i < new_alloc; i++)
-		sockets[i].se_type = AUTH_UNUSED;
+		init_socket(&sockets[i]);
 	sockets_alloc = new_alloc;
 	sockets[old_alloc].se_fd = fd;
 	if ((sockets[old_alloc].se_input = sshbuf_new()) == NULL)
@@ -2383,66 +2416,46 @@ new_socket(sock_type_t type, int fd)
 	return (&sockets[old_alloc]);
 }
 
+/*
+ * OS-specific check on socket access to the agent. This involves getting
+ * info about the connecting client process like its euid, egid, pid etc.
+ */
+#if defined(__sun)
+/*
+ * Solaris, illumos etc have getpeerucred(), which returns an opaque ucred_t.
+ * We can then use the PID to lookup info in Roger's /proc (which is struct-
+ * based, not textual like Linux's procfs).
+ */
 static int
-handle_socket_read(u_int socknum)
+check_socket_access(int fd, socket_entry_t *ent)
 {
-	struct sockaddr_un sunaddr;
-	socklen_t slen;
 	uid_t euid;
 	gid_t egid;
-	int fd;
-	pid_t pid = 0;
-#if defined(__sun) || (defined(SO_PEERCRED) && !defined(__OpenBSD__))
-	uint i;
 	FILE *f;
-#endif
 	char *exepath = NULL;
 	char *exeargs = NULL;
-	socket_entry_t *ent;
-	uint64_t start_time;
-#if defined(__sun)
 	ucred_t *peer = NULL;
 	struct psinfo *psinfo;
 	zoneid_t zid;
 	char fn[128];
-#elif defined(__OpenBSD__)
-	struct sockpeercred *peer;
-	socklen_t len;
-#elif defined(__APPLE__)
-	struct xucred *peer;
-	socklen_t len;
-	char pathBuf[PROC_PIDPATHINFO_MAXSIZE];
-	int rc;
-#elif defined(SO_PEERCRED)
-	struct ucred *peer;
-	socklen_t len;
-	char fn[128], ln[1024];
-#endif
-	slen = sizeof(sunaddr);
-	fd = accept(sockets[socknum].se_fd, (struct sockaddr *)&sunaddr, &slen);
-	if (fd < 0) {
-		error("accept from AUTH_SOCKET: %s", strerror(errno));
-		return -1;
-	}
-#if defined(__sun)
+
 	if (getpeerucred(fd, &peer) != 0) {
 		error("getpeerucred %d failed: %s", fd, strerror(errno));
-		close(fd);
-		return 0;
+		return (0);
 	}
-	euid = ucred_geteuid(peer);
-	egid = ucred_getegid(peer);
-	pid = ucred_getpid(peer);
+	ent->se_uid = (euid = ucred_geteuid(peer));
+	ent->se_gid = ucred_getegid(peer);
+	ent->se_pid = ucred_getpid(peer);
 	zid = ucred_getzoneid(peer);
 	ucred_free(peer);
 	psinfo = calloc(1, sizeof (struct psinfo));
-	snprintf(fn, sizeof (fn), "/proc/%d/psinfo", (int)pid);
+	snprintf(fn, sizeof (fn), "/proc/%d/psinfo", (int)ent->se_pid);
 	f = fopen(fn, "r");
 	if (f != NULL) {
 		if (fread(psinfo, sizeof (struct psinfo), 1, f) == 1) {
-			exepath = strndup(psinfo->pr_fname,
+			ent->se_exepath = strndup(psinfo->pr_fname,
 			    sizeof (psinfo->pr_fname));
-			exeargs = strndup(psinfo->pr_psargs,
+			ent->se_exeargs = strndup(psinfo->pr_psargs,
 			    sizeof (psinfo->pr_psargs));
 		}
 		fclose(f);
@@ -2451,61 +2464,144 @@ handle_socket_read(u_int socknum)
 	if (!allow_any_zoneid && !check_zid(zid)) {
 		error("zoneid mismatch: peer zoneid %u not on allow list",
 		    (u_int) zid);
-		close(fd);
-		return 0;
+		return (0);
 	}
+	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
+		error("uid mismatch: peer euid %u not on allow list",
+		    (u_int) euid);
+		return (0);
+	}
+
+	return (1);
+}
 #elif defined(__OpenBSD__)
+/*
+ * OpenBSD has SO_PEERCRED, but with a struct sockpeercred (not a struct ucred
+ * like it is on Linux et al). We can get other details via sysctl(2) as well.
+ */
+static int
+check_socket_access(int fd, socket_entry_t *ent)
+{
+	struct sockpeercred *peer;
+	socklen_t len;
+	uid_t euid;
+	struct kinfo_proc kp;
+	int mib[6] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, 0, sizeof (kp), 1 };
+	size_t sz;
+	errf_t *err;
+
 	peer = calloc(1, sizeof (struct sockpeercred));
 	len = sizeof (struct sockpeercred);
 	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, peer, &len)) {
-		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
-		close(fd);
+		error("getsockopts(SO_PEERCRED) %d failed: %s", fd,
+		    strerror(errno));
 		free(peer);
-		return 0;
+		return (0);
 	}
-	euid = peer->uid;
-	egid = peer->gid;
-	pid = peer->pid;
+	ent->se_uid = (euid = peer->uid);
+	ent->se_gid = peer->gid;
+	ent->se_pid = peer->pid;
 	free(peer);
-#elif defined(__APPLE__)
+
+	mib[3] = (int)ent->se_pid;
+	sz = sizeof (kp);
+	if (sysctl(mib, 6, &kp, &sz, NULL, 0)) {
+		err = errfno("sysctl", errno, "reading KERN_PROC");
+		bunyan_log(BNY_DEBUG, "failed to get sysctl info about pid",
+		    "pid", BNY_INT, (int)ent->se_pid,
+		    "error", BNY_ERF, err,
+		    NULL);
+		errf_free(err);
+	} else if (sz >= sizeof (kp)) {
+		ent->se_exepath = strdup(kp.p_comm);
+	}
+
+	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
+		error("uid mismatch: peer euid %u not on allow list",
+		    (u_int) euid);
+		return (0);
+	}
+
+	return (1);
+}
+#elif defined(__APPLE__) || defined(LOCAL_PEERCRED)
+/*
+ * FreeBSD and macOS use the LOCAL_PEERCRED sockopt (and struct xucred).
+ * macOS also has LOCAL_PEERPID, but FreeBSD doesn't seem to have an equivalent.
+ */
+static int
+check_socket_access(int fd, socket_entry_t *ent)
+{
+	struct xucred *peer;
+	socklen_t len;
+	char pathBuf[PROC_PIDPATHINFO_MAXSIZE];
+	int rc;
+	uid_t euid;
+
 	peer = calloc(1, sizeof (struct xucred));
 	len = sizeof (struct xucred);
 	if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, peer, &len)) {
-		error("getsockopts(LOCAL_PEERCRED) %d failed: %s", fd, strerror(errno));
+		error("getsockopts(LOCAL_PEERCRED) %d failed: %s", fd,
+		    strerror(errno));
 		close(fd);
 		free(peer);
 		return 0;
 	}
-	euid = peer->cr_uid;
+	ent->se_uid = (euid = peer->cr_uid);
 	if (peer->cr_ngroups > 0)
-		egid = peer->cr_groups[0];
+		ent->se_gid = peer->cr_groups[0];
 	free(peer);
+#if defined(LOCAL_PEERPID)
 	len = sizeof (pid);
 	if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0) {
+		ent->se_pid = pid;
 		rc = proc_pidpath(pid, pathBuf, sizeof (pathBuf));
 		if (rc > 0) {
-			exepath = strdup(pathBuf);
+			ent->se_exepath = strdup(pathBuf);
 		}
 	}
+#endif
+
+	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
+		error("uid mismatch: peer euid %u not on allow list",
+		    (u_int) euid);
+		return (0);
+	}
+
+	return (1);
+}
 #elif defined(SO_PEERCRED)
+/*
+ * Linux et al have SO_PEERCRED and it's a struct ucred. We can also read the
+ * path to the executable and cmdline out of procfs.
+ */
+static int
+check_socket_access(int fd, socket_entry_t *ent)
+{
+	uint i;
+	FILE *f;
+	uid_t euid;
+	struct ucred *peer;
+	socklen_t len;
+	char fn[128], ln[1024];
+
 	peer = calloc(1, sizeof (struct ucred));
 	len = sizeof (struct ucred);
 	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, peer, &len)) {
 		error("getsockopts(SO_PEERCRED) %d failed: %s", fd, strerror(errno));
-		close(fd);
 		free(peer);
-		return 0;
+		return (0);
 	}
-	euid = peer->uid;
-	egid = peer->gid;
-	pid = peer->pid;
+	ent->se_uid = (euid = peer->uid);
+	ent->se_gid = peer->gid;
+	ent->se_pid = peer->pid;
 	free(peer);
-	snprintf(fn, sizeof (fn), "/proc/%d/exe", (int)pid);
+	snprintf(fn, sizeof (fn), "/proc/%d/exe", (int)ent->se_pid);
 	len = readlink(fn, ln, sizeof (ln));
 	if (len > 0 && len < sizeof (ln)) {
-		exepath = strndup(ln, len);
+		ent->se_exepath = strndup(ln, len);
 	}
-	snprintf(fn, sizeof (fn), "/proc/%d/cmdline", (int)pid);
+	snprintf(fn, sizeof (fn), "/proc/%d/cmdline", (int)ent->se_pid);
 	f = fopen(fn, "r");
 	if (f != NULL) {
 		len = fread(ln, 1, sizeof (ln) - 1, f);
@@ -2514,30 +2610,70 @@ handle_socket_read(u_int socknum)
 			if (ln[i] == '\0')
 				ln[i] = ' ';
 		}
-		exeargs = strndup(ln, len);
+		ent->se_exeargs = strndup(ln, len);
 	}
+
+	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
+		error("uid mismatch: peer euid %u not on allow list",
+		    (u_int) euid);
+		return (0);
+	}
+
+	return (1);
+}
 #else
+static int
+check_socket_access(int fd, socket_entry_t *ent)
+{
+	uid_t euid;
+	gid_t egid;
+
 	if (getpeereid(fd, &euid, &egid) < 0) {
 		error("getpeereid %d failed: %s", fd, strerror(errno));
 		close(fd);
 		return 0;
 	}
-#endif
+	ent->se_uid = euid;
+	ent->se_gid = egid;
+
 	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
 		error("uid mismatch: peer euid %u not on allow list",
 		    (u_int) euid);
-		close(fd);
-		return 0;
+		return (0);
 	}
+
+	return (1);
+}
+#endif
+
+static int
+handle_socket_read(u_int socknum)
+{
+	struct sockaddr_un sunaddr;
+	socklen_t slen;
+	int fd;
+	socket_entry_t *ent;
+	uint64_t start_time;
+
+	slen = sizeof(sunaddr);
+	fd = accept(sockets[socknum].se_fd, (struct sockaddr *)&sunaddr, &slen);
+	if (fd < 0) {
+		error("accept from AUTH_SOCKET: %s", strerror(errno));
+		return (-1);
+	}
+
 	ent = new_socket(AUTH_CONNECTION, fd);
-	ent->se_pid = pid;
-	ent->se_gid = egid;
-	ent->se_exepath = exepath;
-	ent->se_exeargs = exeargs;
-	start_time = get_pid_start_time(pid);
-	ent->se_pid_ent = find_or_make_pid_entry(pid, start_time);
+
+	if (!check_socket_access(fd, ent)) {
+		close_socket(ent);
+		return (0);
+	}
+
+	start_time = get_pid_start_time(ent->se_pid);
+	ent->se_pid_ent = find_or_make_pid_entry(ent->se_pid, start_time);
 	ent->se_pid_idx = ent->se_pid_ent->pe_conn_count++;
-	return 0;
+
+	return (0);
 }
 
 static int
