@@ -28,6 +28,27 @@ typedef unsigned int uint;
 typedef unsigned int u_int;
 #endif
 
+#if defined(__sun)
+/*
+ * This is dumb.
+ *
+ * We build with _XOPEN_SOURCE=600 in order to get the void* version of mmap()
+ * instead of the stupid caddr_t version from sys/mman.h
+ *
+ * But if we build with that, then sys/types.h doesn't give us B_TRUE/B_FALSE
+ * because it ignores __EXTENSIONS__.
+ *
+ * This was all fixed around the r151040 era, so if we ever drop support for
+ * r151038 and earlier, then we can get rid of this.
+ *
+ * Note that we have to #define these _after_ including sys/types.h, or else
+ * the macro definition will mess up the enum definition in there that does
+ * include B_TRUE/B_FALSE on newer versions.
+ */
+#define B_TRUE _B_TRUE
+#define B_FALSE _B_FALSE
+#endif
+
 struct bitbuf;
 struct bitbuf *bitbuf_new(void);
 struct bitbuf *bitbuf_from(const uint8_t *, size_t len);
