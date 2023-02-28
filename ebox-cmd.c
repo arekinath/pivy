@@ -404,6 +404,7 @@ release_context(void)
 	ebox_enum_tokens = NULL;
 	if (ebox_ctx != NULL)
 		piv_close(ebox_ctx);
+	ebox_ctx = NULL;
 }
 
 boolean_t
@@ -542,8 +543,8 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 			err = piv_enumerate(ebox_ctx, &tokens);
 			if (err && agerr) {
 				err = errf("AgentError", agerr, "ssh-agent "
-				"unlock failed, and no PIV tokens were "
-				"detected on the local system");
+				    "unlock failed, and no PIV tokens were "
+				    "detected on the local system");
 			} else {
 				ebox_enum_tokens = tokens;
 			}
@@ -1003,7 +1004,7 @@ interactive_recovery(struct ebox_config *config, const char *what)
 	struct part_state *state;
 	struct question *q;
 	struct answer *a, *adone;
-	struct sshbuf *buf, *b64buf;
+	struct sshbuf *buf = NULL, *b64buf;
 	struct piv_ecdh_box *box;
 	const struct ebox_challenge *chal;
 	struct ans_config *ac;
@@ -1112,7 +1113,7 @@ partagain:
 		error = local_unlock(ebox_part_box(part),
 		    ebox_tpl_part_cak(tpart), ebox_tpl_part_name(tpart));
 		if (error && !errf_caused_by(error, "NotFoundError"))
-			return (error);
+			goto out;
 		if (error) {
 			warnfx(error, "failed to find device");
 			line = readline("Retry? ");
@@ -1142,24 +1143,19 @@ partagain:
 		state->ps_intent = INTENT_CHAL_RESP;
 		error = ebox_gen_challenge(config, part,
 		    "Recovering %s with part %s", what, state->ps_ans->a_text);
-		if (error) {
-			sshbuf_free(buf);
-			return (error);
-		}
+		if (error)
+			goto out;
 		chal = ebox_part_challenge(part);
 		sshbuf_reset(buf);
 		error = sshbuf_put_ebox_challenge(buf, chal);
-		if (error) {
-			sshbuf_free(buf);
-			return (error);
-		}
+		if (error)
+			goto out;
 		b64buf = sshbuf_new();
 		VERIFY(b64buf != NULL);
 		rc = sshbuf_dtob64(buf, b64buf, 0);
 		if (rc != 0) {
 			error = ssherrf("sshbuf_dtob64", rc);
-			sshbuf_free(buf);
-			return (error);
+			goto out;
 		}
 		b64 = sshbuf_dup_string(b64buf);
 		sshbuf_free(b64buf);
@@ -1209,17 +1205,23 @@ partagain:
 		state->ps_intent = INTENT_NONE;
 		++ncur;
 	}
+
+	error = ERRF_OK;
+
+out:
 	sshbuf_free(buf);
 
 	part = NULL;
 	while ((part = ebox_config_next_part(config, part)) != NULL) {
 		state = (struct part_state *)ebox_part_private(part);
-		state->ps_ans->a_priv = NULL;
-		ebox_part_free_private(part);
+		if (state != NULL) {
+			state->ps_ans->a_priv = NULL;
+			ebox_part_free_private(part);
+		}
 	}
 	question_free(q);
 
-	return (NULL);
+	return (error);
 }
 
 struct ebox_tpl_path_ent *ebox_tpl_path = NULL;

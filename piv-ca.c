@@ -4674,36 +4674,56 @@ direct:
 	VERIFY(sd->csd_context != NULL);
 
 	err = piv_establish_context(sd->csd_context, SCARD_SCOPE_SYSTEM);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CASessionError", err, "failed to establish direct"
+		    "session with CA card");
 		goto out;
+	}
 
 	err = piv_find(sd->csd_context, ca->ca_guid, sizeof (ca->ca_guid),
 	    &sd->csd_token);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CASessionError", err, "failed to locate CA card");
 		goto out;
+	}
 
 	err = piv_txn_begin(sd->csd_token);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CASessionError", err, "failed to establish direct"
+		    "session with CA card");
 		goto out;
+	}
 	in_txn = 1;
 
 	err = piv_select(sd->csd_token);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CASessionError", err, "failed to establish direct"
+		    "session with CA card");
 		goto out;
+	}
 
 	err = piv_read_cert(sd->csd_token, PIV_SLOT_CARD_AUTH);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CASessionError", err, "failed to establish direct"
+		    "session with CA card");
 		goto out;
+	}
 
 	sd->csd_cakslot = piv_get_slot(sd->csd_token, PIV_SLOT_CARD_AUTH);
 
 	err = piv_auth_key(sd->csd_token, sd->csd_cakslot, ca->ca_cak);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CASessionError", err, "failed to establish direct"
+		    "session with CA card");
 		goto out;
+	}
 
 	err = piv_read_cert(sd->csd_token, ca->ca_slot);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CASessionError", err, "failed to establish direct"
+		    "session with CA card");
 		goto out;
+	}
 
 	sd->csd_slot = piv_get_slot(sd->csd_token, ca->ca_slot);
 

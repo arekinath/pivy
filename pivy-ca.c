@@ -164,8 +164,10 @@ ensure_authed(struct ca *ca, struct ca_session *sess)
 	box = ca_get_ebox(ca, CA_EBOX_PIN);
 
 	err = interactive_unlock_ebox(box, ca_slug(ca));
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		err = errf("CAPINError", err, "failed to unlock PIN for CA");
 		return (err);
+	}
 
 	k = (uint8_t *)ebox_key(box, &klen);
 	VERIFY(klen < sizeof (pin));
@@ -860,8 +862,11 @@ cmd_shell(const char *ca_path, int is_child)
 
 		unsetenv("SSH_AUTH_SOCK");
 		err = ca_open_session(ca, &sess);
-		if (err != ERRF_OK)
+		if (err != ERRF_OK) {
+			err = errf("PINRotateError", err, "failed to open"
+			    "session with card to rotate PIN");
 			return (err);
+		}
 
 		err = ensure_authed(ca, sess);
 		if (err != ERRF_OK)
