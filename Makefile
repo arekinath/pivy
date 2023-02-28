@@ -63,6 +63,7 @@ ifeq ($(SYSTEM), Linux)
 	ifneq (,$(LIBZFS_VER))
 		HAVE_ZFS	:= $(USE_ZFS)
 		LIBZFS_CFLAGS	= $(shell pkg-config --cflags libzfs)
+		LIBZFS_CFLAGS	+= -DUSING_SPL
 		LIBZFS_LIBS	= $(shell pkg-config --libs libzfs) -lnvpair
 	else
 		HAVE_ZFS	:= no

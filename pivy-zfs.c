@@ -57,8 +57,6 @@
 #include <libnvpair.h>
 #include <sys/dmu.h>
 
-#define USING_SPL
-
 #include "openssh/config.h"
 #include "openssh/sshkey.h"
 #include "openssh/sshbuf.h"
