@@ -1,3 +1,16 @@
+pivy (0.11.0-1) UNRELEASED; urgency=medium
+
+  * pivy-ca: fixes for provisioning new CAs
+  * all tools: switch to getpassphrase() and handle ctrl+C properly
+  * pivy-tool: "setup" command is now much safer
+  * pivy-agent: fix denied connections (due to wrong UID) closing listen sock
+  * pivy-agent: new -u/-z option to whitelist other UIDs/ZIDs for access
+  * pivy-agent: x509-certs extension support
+  * pivy-agent: sign-prehash extension support
+  * pivy-box: fix garbage slot IDs when parsing keywords form of template
+  * pivy-tool: remove invalid algo from help text
+  * piv: parse deprecated "Auth Key Map" element in CHUID
+
 pivy (0.10.0-1) UNRELEASED; urgency=medium
 
   * pivy-agent: support for sessbind extension

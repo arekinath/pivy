@@ -30,7 +30,7 @@ libdir		?= $(prefix)/lib
 binowner	?= root
 bingroup	?= wheel
 
-VERSION		= 0.10.0
+VERSION		= 0.11.0
 
 INSTALL		?= install
 INSTALLBIN	?= $(INSTALL) -o $(binowner) -g $(bingroup) -m 0755
