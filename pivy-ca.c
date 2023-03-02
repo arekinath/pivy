@@ -893,8 +893,8 @@ cmd_shell(const char *ca_path, int is_child)
 		argv[i++] = sshbuf_dup_string(buf);
 		argv[i++] = strdup("--");
 		argv[i++] = strdup("pivy-ca");
-		argv[i++] = strdup("shell");
 		argv[i++] = strdup("-K");
+		argv[i++] = strdup("shell");
 		argv[i++] = NULL;
 
 		rc = execvp("pivy-agent", argv);
