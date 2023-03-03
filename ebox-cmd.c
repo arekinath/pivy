@@ -188,8 +188,8 @@ again:
 		snprintf(prompt, 64, fmt,
 		    pin_type_to_name(auth), guid, partname);
 		do {
-			ebox_pin = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
-			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
+			ebox_pin = readpassphrase(prompt, pinbuf,
+			    sizeof (pinbuf), RPP_ECHO_OFF);
 		} while (ebox_pin == NULL && errno == EINTR);
 		if ((ebox_pin == NULL && errno == ENOTTY) ||
 		    strlen(ebox_pin) < 1) {

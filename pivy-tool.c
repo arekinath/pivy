@@ -335,7 +335,7 @@ assert_pin(struct piv_token *pk, struct piv_slot *slot, boolean_t prompt)
 		    pin_type_to_name(auth), guid);
 		do {
 			pin = readpassphrase(prompt, pinbuf, sizeof (pinbuf),
-			    RPP_ECHO_OFF | RPP_REQUIRE_TTY);
+			    RPP_ECHO_OFF);
 		} while (pin == NULL && errno == EINTR);
 		if ((pin == NULL && errno == ENOTTY) || strlen(pin) < 1) {
 			piv_txn_end(pk);
