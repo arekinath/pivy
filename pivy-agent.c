@@ -2771,6 +2771,8 @@ after_poll(struct pollfd *pfd, size_t npfd)
 
 void *recallocarray(void *ptr, size_t oldnmemb, size_t nmemb, size_t size);
 
+#define ADD_DEADLINE(d, v)	(d) = ((d) == 0) ? (v) : MINIMUM((d), (v))
+
 static int
 prepare_poll(struct pollfd **pfdp, size_t *npfdp, int *timeoutp)
 {
@@ -2816,28 +2818,32 @@ prepare_poll(struct pollfd **pfdp, size_t *npfdp, int *timeoutp)
 	}
 	now = monotime();
 	deadline = 0;
-	if (txnopen && txntimeout <= now)
-		deadline = 1;
-	else if (txnopen)
-		deadline = txntimeout - now;
+
+	if (txnopen)
+		ADD_DEADLINE(deadline, txntimeout);
 	if (parent_alive_interval != 0)
-		deadline = (deadline == 0) ? parent_alive_interval * 1000 :
-		    MINIMUM(deadline, parent_alive_interval * 1000);
-	if (card_probe_interval != 0) {
-		uint64_t remtime = card_probe_next - now;
-		if (now <= card_probe_next)
-			remtime = 1;
-		deadline = (deadline == 0) ? remtime :
-		    MINIMUM(deadline, remtime);
-	}
+		ADD_DEADLINE(deadline, now + parent_alive_interval * 1000);
+	if (card_probe_interval != 0)
+		ADD_DEADLINE(deadline, card_probe_next);
+
 	if (deadline == 0) {
 		*timeoutp = -1; /* INFTIM */
 	} else {
-		if (deadline > INT_MAX)
-			*timeoutp = INT_MAX;
-		else
-			*timeoutp = deadline;
+		if (deadline <= now) {
+			*timeoutp = 1;
+		} else {
+			const uint64_t remtime = deadline - now;
+			if (remtime > INT_MAX)
+				*timeoutp = INT_MAX;
+			else
+				*timeoutp = remtime;
+		}
 	}
+	bunyan_log(BNY_TRACE, "calculated wake-up deadline",
+	    "now", BNY_UINT64, now,
+	    "deadline", BNY_UINT64, deadline,
+	    "poll_timeout", BNY_INT, *timeoutp,
+	    NULL);
 	return (1);
 }
 
