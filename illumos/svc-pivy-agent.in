@@ -70,13 +70,19 @@ fi
 SOCKET_OWNER="`getprop_opt config/socket_owner`"
 SOCKET_MODE="`getprop_opt config/socket_mode`"
 
+rm -f ${SOCKET}
+
 @@prefix@@/bin/pivy-agent -i -g "$GUID" -K "$CAK" -a "$SOCKET" $OPTS &
 
+while [ ! -e ${SOCKET} ]; do
+	sleep 1
+done
+
 if [ -n "${SOCKET_OWNER}" ]; then
-	/usr/bin/chown ${SOCKET_OWNER} ${SOCKET}
+	/usr/bin/chown ${SOCKET_OWNER} ${SOCKET} || true
 fi
 if [ -n "${SOCKET_MODE}" ]; then
-	/usr/bin/chmod ${SOCKET_MODE} ${SOCKET}
+	/usr/bin/chmod ${SOCKET_MODE} ${SOCKET} || true
 fi
 
 exit $SMF_EXIT_OK
