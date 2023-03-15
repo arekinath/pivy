@@ -232,7 +232,8 @@ again:
 			errx(EXIT_PIN_LOCKED, "token is locked due to too "
 			    "many invalid PIN attempts");
 		}
-		errx(EXIT_PIN, "insufficient PIN retries remaining (%d left)",
+		errx(EXIT_PIN, "refusing to attempt PIN: only %d PIN retries "
+		    "remaining. use pivy-tool with -f to clear counter.",
 		    retries);
 	} else if (er) {
 		piv_txn_end(pk);

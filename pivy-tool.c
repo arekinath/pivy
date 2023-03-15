@@ -368,7 +368,8 @@ assert_pin(struct piv_token *pk, struct piv_slot *slot, boolean_t prompt)
 			errx(EXIT_PIN_LOCKED, "token is locked due to too "
 			    "many invalid PIN attempts");
 		}
-		errx(EXIT_PIN, "insufficient PIN retries remaining (%d left)",
+		errx(EXIT_PIN, "operation aborted: only %d PIN retries "
+		    "remaining, cowardly refusing to attempt PIN without -f",
 		    retries);
 	} else if (er) {
 		piv_txn_end(pk);

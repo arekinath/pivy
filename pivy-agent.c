@@ -675,7 +675,7 @@ wrap_pin_error(errf_t *err, int retries)
 		err = errf("TokenLocked", err,
 		    "Refusing to use up the last PIN code attempt: "
 		    "unlock the token with another tool to clear "
-		    "the counter");
+		    "the counter (e.g. pivy-tool with -f)");
 		drop_pin();
 	}
 	return (err);
