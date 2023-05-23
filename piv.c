@@ -342,6 +342,7 @@ struct piv_fascn {
 struct piv_ctx {
 	boolean_t		 pc_scard_init;
 	boolean_t		 pc_scard_owned;
+	DWORD			 pc_scard_scope;
 	SCARDCONTEXT		 pc_scard;
 	struct piv_token	*pc_tokens;
 };
@@ -392,6 +393,8 @@ piv_establish_context(struct piv_ctx *ctx, DWORD scope)
 		ctx->pc_scard_owned = B_TRUE;
 		return (ERRF_OK);
 	case SCARD_E_NO_READERS_AVAILABLE:
+		ctx->pc_scard_owned = B_TRUE;
+		ctx->pc_scard_scope = scope;
 		return (ERRF_OK);
 	case SCARD_E_NO_SERVICE:
 #if defined(SCARD_E_SERVICE_STOPPED)
@@ -1195,6 +1198,13 @@ piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 	struct piv_token *ks = NULL;
 	errf_t *err;
 
+	if (!ctx->pc_scard_init && ctx->pc_scard_owned) {
+		/* Previous attempt got "no readers" error */
+		err = piv_establish_context(ctx, ctx->pc_scard_scope);
+		if (err)
+			errf_free(err);
+	}
+
 	if (!ctx->pc_scard_init) {
 		*tokens = NULL;
 		return (ERRF_OK);
@@ -1338,6 +1348,13 @@ piv_find(struct piv_ctx *ctx, const uint8_t *guid, size_t guidlen,
 	LPTSTR readers, thisrdr;
 	struct piv_token *found = NULL, *key;
 	errf_t *err;
+
+	if (!ctx->pc_scard_init && ctx->pc_scard_owned) {
+		/* Previous attempt got "no readers" error */
+		err = piv_establish_context(ctx, ctx->pc_scard_scope);
+		if (err)
+			errf_free(err);
+	}
 
 	if (!ctx->pc_scard_init) {
 		return (errf("NotFoundError", NULL,
