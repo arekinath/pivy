@@ -302,7 +302,8 @@ errf_t *piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens);
  * Errors:
  *  - PCSCError: a PCSC call failed in a way that is not retryable
  *  - PCSCContextError: a PCSC call failed in a way that indicates the
- *                      SCARDCONTEXT is no longer valid
+ *                      SCARDCONTEXT is no longer valid in the piv_ctx
+ *                      (and you should piv_close() it now)
  *  - DuplicateError: a GUID prefix was given and it is not unique on the system
  *  - NotFoundError: token matching the guid was not found
  */

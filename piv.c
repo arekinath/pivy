@@ -342,6 +342,7 @@ struct piv_fascn {
 struct piv_ctx {
 	boolean_t		 pc_scard_init;
 	boolean_t		 pc_scard_owned;
+	boolean_t		 pc_scard_nordr;
 	DWORD			 pc_scard_scope;
 	SCARDCONTEXT		 pc_scard;
 	struct piv_token	*pc_tokens;
@@ -378,6 +379,7 @@ piv_set_context(struct piv_ctx *ctx, SCARDCONTEXT sctx)
 	VERIFY(!ctx->pc_scard_init);
 	ctx->pc_scard_init = B_TRUE;
 	ctx->pc_scard_owned = B_FALSE;
+	ctx->pc_scard_nordr = B_FALSE;
 	ctx->pc_scard = sctx;
 }
 
@@ -391,10 +393,11 @@ piv_establish_context(struct piv_ctx *ctx, DWORD scope)
 	case SCARD_S_SUCCESS:
 		ctx->pc_scard_init = B_TRUE;
 		ctx->pc_scard_owned = B_TRUE;
+		ctx->pc_scard_nordr = B_FALSE;
 		return (ERRF_OK);
 	case SCARD_E_NO_READERS_AVAILABLE:
-		ctx->pc_scard_owned = B_TRUE;
 		ctx->pc_scard_scope = scope;
+		ctx->pc_scard_nordr = B_TRUE;
 		return (ERRF_OK);
 	case SCARD_E_NO_SERVICE:
 #if defined(SCARD_E_SERVICE_STOPPED)
@@ -1198,16 +1201,23 @@ piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 	struct piv_token *ks = NULL;
 	errf_t *err;
 
-	if (!ctx->pc_scard_init && ctx->pc_scard_owned) {
+	if (!ctx->pc_scard_init && ctx->pc_scard_nordr) {
 		/* Previous attempt got "no readers" error */
 		err = piv_establish_context(ctx, ctx->pc_scard_scope);
-		if (err)
-			errf_free(err);
+		if (err) {
+			err = errf("PCSCContextError", err,
+			    "PCSC context is not functional");
+			return (err);
+		}
+		if (!ctx->pc_scard_init) {
+			*tokens = NULL;
+			return (ERRF_OK);
+		}
 	}
 
 	if (!ctx->pc_scard_init) {
-		*tokens = NULL;
-		return (ERRF_OK);
+		return (errf("PCSCContextError", NULL,
+		    "PCSC context has not been initialised"));
 	}
 
 	rv = SCardListReaders(ctx->pc_scard, NULL, NULL, &readersLen);
@@ -1349,16 +1359,23 @@ piv_find(struct piv_ctx *ctx, const uint8_t *guid, size_t guidlen,
 	struct piv_token *found = NULL, *key;
 	errf_t *err;
 
-	if (!ctx->pc_scard_init && ctx->pc_scard_owned) {
+	if (!ctx->pc_scard_init && ctx->pc_scard_nordr) {
 		/* Previous attempt got "no readers" error */
 		err = piv_establish_context(ctx, ctx->pc_scard_scope);
-		if (err)
-			errf_free(err);
+		if (err) {
+			err = errf("PCSCContextError", err,
+			    "PCSC context is not functional");
+			return (err);
+		}
+		if (!ctx->pc_scard_init) {
+			return (errf("NotFoundError", NULL,
+			    "No PIV token found matching GUID"));
+		}
 	}
 
 	if (!ctx->pc_scard_init) {
-		return (errf("NotFoundError", NULL,
-		    "No PIV token found matching GUID"));
+		return (errf("PCSCContextError", NULL,
+		    "PCSC context has not been initialised"));
 	}
 
 	rv = SCardListReaders(ctx->pc_scard, NULL, NULL, &readersLen);
