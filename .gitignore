@@ -10,6 +10,8 @@
 /pivy-luks
 /pivy-ca
 /pam_pivy.so
+/libpivy.so
+/libpivy.so.*
 /macosx/*.pkg
 /macosx/root
 /docs/*.svg

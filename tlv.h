@@ -47,22 +47,9 @@
  * the remaining space in our parent buffer after the tag+length, to make sure
  * we don't overflow the parent context's buffer in tlv_pop().
  */
-struct tlv_context {
-	struct tlv_context 	*tc_next;
-	size_t		 tc_begin;	/* R: beginning index in tc_buf */
-	size_t		 tc_end;	/* RW: final index in tc_buf */
-	int		 tc_depth;	/* RW: root = 0, tag = 1, child = 2 */
-	uint8_t		*tc_buf;	/* RW: data buffer */
-	size_t	 	 tc_pos;	/* RW: pos in tc_buf */
-	boolean_t	 tc_freebuf;	/* W: we should free tc_buf */
+struct tlv_context;
 
-};
-
-struct tlv_state {
-	struct tlv_context	*ts_root; /* top-level ctx spanning whole buf */
-	struct tlv_context	*ts_now;  /* current tag ctx */
-	boolean_t		 ts_debug;
-};
+struct tlv_state;
 
 /*
  * Begins a "read" mode TLV parser, over the data in "buf" from index "offset"
@@ -136,42 +123,12 @@ errf_t *tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
 MUST_CHECK
 errf_t *tlv_read_string(struct tlv_state *ts, char **dest);
 
-static inline boolean_t
-tlv_at_root_end(const struct tlv_state *ts)
-{
-	return (ts->ts_now->tc_pos >= ts->ts_root->tc_end);
-}
-
-static inline boolean_t
-tlv_at_end(const struct tlv_state *ts)
-{
-	return (tlv_at_root_end(ts) || ts->ts_now->tc_pos >= ts->ts_now->tc_end);
-}
-
-static inline size_t
-tlv_root_rem(const struct tlv_state *ts)
-{
-	return (ts->ts_root->tc_end - ts->ts_now->tc_pos);
-}
-
-static inline size_t
-tlv_rem(const struct tlv_state *ts)
-{
-	return (ts->ts_now->tc_end - ts->ts_now->tc_pos);
-}
-
-static inline uint8_t *
-tlv_buf(const struct tlv_state *ts)
-{
-	return (ts->ts_root->tc_buf);
-}
-
-static inline uint8_t *
-tlv_ptr(const struct tlv_state *ts)
-{
-	const struct tlv_context *tc = ts->ts_now;
-	return (&tc->tc_buf[tc->tc_pos]);
-}
+boolean_t tlv_at_root_end(const struct tlv_state *ts);
+boolean_t tlv_at_end(const struct tlv_state *ts);
+size_t tlv_root_rem(const struct tlv_state *ts);
+size_t tlv_rem(const struct tlv_state *ts);
+uint8_t *tlv_buf(const struct tlv_state *ts);
+uint8_t *tlv_ptr(const struct tlv_state *ts);
 
 /* Begins a write-mode BER-TLV generator with an internal buffer. */
 struct tlv_state *tlv_init_write(void);
@@ -184,11 +141,6 @@ void tlv_write_u16(struct tlv_state *ts, uint16_t val);
 void tlv_write_u8to32(struct tlv_state *ts, uint32_t val);
 void tlv_write_byte(struct tlv_state *ts, uint8_t val);
 
-static inline size_t
-tlv_len(const struct tlv_state *ts)
-{
-	return (ts->ts_root->tc_pos);
-}
-
+size_t tlv_len(const struct tlv_state *ts);
 
 #endif

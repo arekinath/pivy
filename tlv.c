@@ -27,6 +27,23 @@
 #include <endian.h>
 #endif
 
+struct tlv_context {
+	struct tlv_context 	*tc_next;
+	size_t		 tc_begin;	/* R: beginning index in tc_buf */
+	size_t		 tc_end;	/* RW: final index in tc_buf */
+	int		 tc_depth;	/* RW: root = 0, tag = 1, child = 2 */
+	uint8_t		*tc_buf;	/* RW: data buffer */
+	size_t	 	 tc_pos;	/* RW: pos in tc_buf */
+	boolean_t	 tc_freebuf;	/* W: we should free tc_buf */
+
+};
+
+struct tlv_state {
+	struct tlv_context	*ts_root; /* top-level ctx spanning whole buf */
+	struct tlv_context	*ts_now;  /* current tag ctx */
+	boolean_t		 ts_debug;
+};
+
 enum tlv_tag_bits {
 	TLV_TYPE_MASK = (1 << 7 | 1 << 6 | 1 << 5),
 	TLV_TAG_MASK = ~(TLV_TYPE_MASK),
@@ -520,4 +537,47 @@ tlv_write_byte(struct tlv_state *ts, uint8_t val)
 	struct tlv_context *tc = ts->ts_now;
 	VERIFY(!tlv_at_end(ts));
 	tc->tc_buf[tc->tc_pos++] = val;
+}
+
+boolean_t
+tlv_at_root_end(const struct tlv_state *ts)
+{
+	return (ts->ts_now->tc_pos >= ts->ts_root->tc_end);
+}
+
+boolean_t
+tlv_at_end(const struct tlv_state *ts)
+{
+	return (tlv_at_root_end(ts) || ts->ts_now->tc_pos >= ts->ts_now->tc_end);
+}
+
+size_t
+tlv_root_rem(const struct tlv_state *ts)
+{
+	return (ts->ts_root->tc_end - ts->ts_now->tc_pos);
+}
+
+size_t
+tlv_rem(const struct tlv_state *ts)
+{
+	return (ts->ts_now->tc_end - ts->ts_now->tc_pos);
+}
+
+uint8_t *
+tlv_buf(const struct tlv_state *ts)
+{
+	return (ts->ts_root->tc_buf);
+}
+
+uint8_t *
+tlv_ptr(const struct tlv_state *ts)
+{
+	const struct tlv_context *tc = ts->ts_now;
+	return (&tc->tc_buf[tc->tc_pos]);
+}
+
+size_t
+tlv_len(const struct tlv_state *ts)
+{
+	return (ts->ts_root->tc_pos);
 }

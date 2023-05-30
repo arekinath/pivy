@@ -355,6 +355,50 @@ pivy-tool :		HEADERS=	$(PIVTOOL_HEADERS)
 pivy-tool: $(PIVTOOL_OBJS) $(LIBSSH) $(LIBCRYPTO)
 	$(CC) $(LDFLAGS) -o $@ $(PIVTOOL_OBJS) $(LIBSSH) $(LIBS)
 
+LIBPIVY_SOURCES=		\
+	$(PIV_COMMON_SOURCES)	\
+	$(PIV_CERT_SOURCES)
+LIBPIVY_HEADERS=		\
+	$(PIV_COMMON_HEADERS)	\
+	$(PIV_CERT_HEADERS)
+ifeq (yes, $(HAVE_JSONC))
+	LIBPIVY_SOURCES+=	piv-ca.c
+	LIBPIVY_HEADERS+=	$(PIV_CA_HEADERS)
+endif
+LIBPIVY_OBJS=		$(LIBPIVY_SOURCES:%.c=%.o)
+LIBPIVY_CFLAGS=		$(PCSC_CFLAGS) \
+			$(CRYPTO_CFLAGS) \
+			$(ZLIB_CFLAGS) \
+			$(SYSTEM_CFLAGS) \
+			$(SECURITY_CFLAGS) \
+			$(CONFIG_CFLAGS) \
+			$(OPTIM_CFLAGS) \
+			-O2 -g -D_GNU_SOURCE \
+			-fPIC \
+			-DPIVY_VERSION='"$(VERSION)"'
+LIBPIVY_LDFLAGS=	$(SYSTEM_LDFLAGS) \
+			$(OPTIM_LDFLAGS) \
+			-Wl,--version-script=libpivy.version
+LIBPIVY_LIBS=		$(CRYPTO_LIBS) \
+			$(PCSC_LIBS) \
+			$(ZLIB_LIBS) \
+			$(SYSTEM_LIBS)
+ifeq (yes, $(HAVE_JSONC))
+	LIBPIVY_CFLAGS+= $(JSONC_CFLAGS)
+	LIBPIVY_LIBS+=	$(JSONC_LIBS)
+endif
+
+libpivy.so.1 :		CFLAGS=		$(LIBPIVY_CFLAGS)
+libpivy.so.1 :		LIBS+=		$(LIBPIVY_LIBS)
+libpivy.so.1 :		LDFLAGS+=	$(LIBPIVY_LDFLAGS)
+libpivy.so.1 :		HEADERS=	$(LIBPIVY_HEADERS)
+
+libpivy.so.1: $(PIVTOOL_OBJS) $(LIBSSH) $(LIBCRYPTO) libpivy.version
+	$(CC) $(LDFLAGS) -shared -o $@ $(LIBPIVY_OBJS) $(LIBSSH) $(LIBS)
+
+libpivy.so: libpivy.so.1
+	ln -sf libpivy.so.1 libpivy.so
+
 ifeq (yes, $(HAVE_JSONC))
 
 PIVYCA_SOURCES=			\
@@ -637,6 +681,7 @@ clean:
 	rm -f pivy-luks $(PIVYLUKS_OBJS)
 	rm -f pivy-ca $(PIVYCA_OBJS)
 	rm -f pam_pivy.so $(PAMPIVY_OBJS)
+	rm -f libpivy.so libpivy.so.1 $(LIBPIVY_OBJS)
 	rm -fr .dist
 	rm -fr macosx/root macosx/*.pkg
 
