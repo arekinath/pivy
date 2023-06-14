@@ -357,7 +357,8 @@ pivy-tool: $(PIVTOOL_OBJS) $(LIBSSH) $(LIBCRYPTO)
 
 LIBPIVY_SOURCES=		\
 	$(PIV_COMMON_SOURCES)	\
-	$(PIV_CERT_SOURCES)
+	$(PIV_CERT_SOURCES)	\
+	cleanup-exit.c
 LIBPIVY_HEADERS=		\
 	$(PIV_COMMON_HEADERS)	\
 	$(PIV_CERT_HEADERS)
@@ -393,7 +394,7 @@ libpivy.so.1 :		LIBS+=		$(LIBPIVY_LIBS)
 libpivy.so.1 :		LDFLAGS+=	$(LIBPIVY_LDFLAGS)
 libpivy.so.1 :		HEADERS=	$(LIBPIVY_HEADERS)
 
-libpivy.so.1: $(PIVTOOL_OBJS) $(LIBSSH) $(LIBCRYPTO) libpivy.version
+libpivy.so.1: $(LIBPIVY_OBJS) $(LIBSSH) $(LIBCRYPTO) libpivy.version
 	$(CC) $(LDFLAGS) -shared -o $@ $(LIBPIVY_OBJS) $(LIBSSH) $(LIBS)
 
 libpivy.so: libpivy.so.1
