@@ -1037,6 +1037,8 @@ MUST_CHECK
 errf_t *piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len);
 MUST_CHECK
 errf_t *piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **buf);
+MUST_CHECK
+errf_t *piv_box_open_agent(int fd, struct piv_ecdh_box *box);
 
 /*
  * Errors:
