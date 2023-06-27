@@ -61,6 +61,22 @@ CODEABI_1.0 {
         piv_box_take_datab;
         piv_box_to_binary;
         piv_box_version;
+        piv_cardcap_data_model;
+        piv_cardcap_decode;
+        piv_cardcap_encode;
+        piv_cardcap_free;
+        piv_cardcap_has_pkcs15;
+        piv_cardcap_id;
+        piv_cardcap_id_hex;
+        piv_cardcap_manufacturer;
+        piv_cardcap_new;
+        piv_cardcap_set_data_model;
+        piv_cardcap_set_id;
+        piv_cardcap_set_manufacturer;
+        piv_cardcap_set_pkcs15;
+        piv_cardcap_set_random_id;
+        piv_cardcap_set_type;
+        piv_cardcap_type;
         piv_change_pin;
         piv_chuid_clone;
         piv_chuid_decode;
@@ -151,6 +167,7 @@ CODEABI_1.0 {
         piv_pinfo_set_serial;
         piv_pinfo_unset_kv;
         piv_read_all_certs;
+        piv_read_cardcap;
         piv_read_cert;
         piv_read_file;
         piv_read_pinfo;
@@ -194,6 +211,7 @@ CODEABI_1.0 {
         piv_txn_begin;
         piv_txn_end;
         piv_verify_pin;
+        piv_write_cardcap;
         piv_write_cert;
         piv_write_chuid;
         piv_write_file;

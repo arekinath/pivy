@@ -439,6 +439,7 @@ cmd_list(void)
 	boolean_t first;
 	const struct piv_chuid *chuid;
 	const struct piv_fascn *fascn;
+	struct piv_cardcap *cardcap;
 
 	for (pk = ks; pk != NULL; pk = piv_token_next(pk)) {
 		const uint8_t *tguid = piv_token_guid(pk);
@@ -450,6 +451,11 @@ cmd_list(void)
 		if ((err = piv_txn_begin(pk)))
 			return (err);
 		assert_select(pk);
+		if ((err = piv_read_cardcap(pk, &cardcap))) {
+			warnfx(err, "failed to read cardcap");
+			cardcap = NULL;
+			errf_free(err);
+		}
 		if ((err = piv_read_all_certs(pk))) {
 			piv_txn_end(pk);
 			return (err);
@@ -668,6 +674,41 @@ cmd_list(void)
 		}
 		if (piv_token_app_uri(pk) != NULL) {
 			printf("%10s: %s\n", "uri", piv_token_app_uri(pk));
+		}
+		if (cardcap != NULL) {
+			printf("%10s:", "cardcap");
+			switch (piv_cardcap_data_model(cardcap)) {
+			case PIV_CARDCAP_MODEL_PIV:
+				printf(" PIV data model");
+				break;
+			default:
+				printf(" ??? data model (%02X)",
+				    piv_cardcap_data_model(cardcap));
+				break;
+			}
+			switch (piv_cardcap_type(cardcap)) {
+			case PIV_CARDCAP_FS:
+				printf(", FS");
+				break;
+			case PIV_CARDCAP_JAVACARD:
+				printf(", JavaCard");
+				break;
+			case PIV_CARDCAP_MULTOS:
+				printf(", MultOS");
+				break;
+			case PIV_CARDCAP_JAVACARD_FS:
+				printf(", JavaCard+FS");
+				break;
+			default:
+				printf(", Unknown OS (%02X)",
+				    piv_cardcap_type(cardcap));
+				break;
+			}
+			printf(", Manuf %02X", piv_cardcap_manufacturer(cardcap));
+			printf(", ID: %s", piv_cardcap_id_hex(cardcap));
+			if (piv_cardcap_has_pkcs15(cardcap))
+				printf(", PKCS#15 support");
+			printf("\n");
 		}
 		printf("%10s:", "auth");
 		defauth = piv_token_default_auth(pk);
@@ -899,65 +940,16 @@ static errf_t *
 cmd_init(void)
 {
 	errf_t *err;
-	struct tlv_state *ccc;
 	struct piv_chuid *chuid;
 	struct piv_fascn *fascn;
 	struct piv_pinfo *pinfo;
+	struct piv_cardcap *cardcap;
 	char *tmp, *p;
 	unsigned long lifetime_secs;
 	char serial[32] = {0};
-	uint8_t cardId[21] = {
-		/* GSC-RID: GSC-IS data model */
-		0xa0, 0x00, 0x00, 0x01, 0x16,
-		/* Manufacturer: ff (unknown) */
-		0xff,
-		/* Card type: JavaCard */
-		0x02,
-		0x00
-	};
 
-	arc4random_buf(&cardId[6], sizeof (cardId) - 6);
-
-	/* First, the CCC */
-	ccc = tlv_init_write();
-
-	/* Our card ID */
-	tlv_push(ccc, 0xF0);
-	tlv_write(ccc, cardId, sizeof (cardId));
-	tlv_pop(ccc);
-
-	/* Container version numbers */
-	tlv_push(ccc, 0xF1);
-	tlv_write_byte(ccc, 0x21);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xF2);
-	tlv_write_byte(ccc, 0x21);
-	tlv_pop(ccc);
-
-	tlv_push(ccc, 0xF3);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xF4);
-	tlv_pop(ccc);
-
-	/* Data Model number */
-	tlv_push(ccc, 0xF5);
-	tlv_write_byte(ccc, 0x10);
-	tlv_pop(ccc);
-
-	tlv_push(ccc, 0xF6);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xF7);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xFA);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xFB);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xFC);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xFD);
-	tlv_pop(ccc);
-	tlv_push(ccc, 0xFE);
-	tlv_pop(ccc);
+	cardcap = piv_cardcap_new();
+	piv_cardcap_set_random_id(cardcap);
 
 	/* Now, set up the CHUID file */
 	chuid = piv_chuid_new();
@@ -1083,8 +1075,7 @@ admin_again:
 			goto admin_again;
 	}
 	if (err == ERRF_OK) {
-		err = piv_write_file(selk, PIV_TAG_CARDCAP,
-		    tlv_buf(ccc), tlv_len(ccc));
+		err = piv_write_cardcap(selk, cardcap);
 	}
 	if (err == ERRF_OK) {
 		err = piv_write_chuid(selk, chuid);
@@ -1093,8 +1084,6 @@ admin_again:
 		err = piv_write_pinfo(selk, pinfo);
 	}
 	piv_txn_end(selk);
-
-	tlv_free(ccc);
 
 	if (errf_caused_by(err, "DeviceOutOfMemoryError")) {
 		err = funcerrf(err, "out of EEPROM to write CHUID "

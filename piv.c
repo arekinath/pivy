@@ -322,6 +322,36 @@ struct piv_pinfo {
 	struct piv_pinfo_kv	*pp_kv;
 };
 
+enum piv_cardcap_flags {
+	PIV_CARDCAP_HAS_APDUS	= (1<<0),
+	PIV_CARDCAP_HAS_LRC	= (1<<1)
+};
+
+struct piv_cardcap {
+	enum piv_cardcap_flags	 pcc_flags;
+	uint8_t			 pcc_card_id[21];
+	size_t			 pcc_card_id_len;
+	uint8_t			 pcc_container_ver;
+	uint8_t			 pcc_grammar_ver;
+	uint8_t			*pcc_app_cardurl;
+	size_t			 pcc_app_cardurl_len;
+	uint8_t			 pcc_pkcs15;
+	uint8_t			 pcc_data_model;
+	uint8_t			*pcc_acl_rules;
+	size_t			 pcc_acl_rules_len;
+	uint8_t			 pcc_card_apdus[6];
+	uint8_t			*pcc_redir;
+	size_t			 pcc_redir_len;
+	uint8_t			*pcc_cts;
+	size_t			 pcc_cts_len;
+	uint8_t			*pcc_sts;
+	size_t			 pcc_sts_len;
+	uint8_t			*pcc_next_ccc;
+	size_t			 pcc_next_ccc_len;
+	uint8_t			 pcc_lrc;
+	char			*pcc_id_hex;
+};
+
 enum piv_fascn_flags {
 	PIV_FASCN_ALL_ZERO	= (1<<0)
 };
@@ -1073,6 +1103,83 @@ invdata:
 		tlv_abort(tlv);
 	rv = invderrf(rv, pk->pt_rdrname);
 	debug_dump(rv, apdu);
+	goto out;
+}
+
+errf_t *
+piv_read_cardcap(struct piv_token *pk, struct piv_cardcap **outp)
+{
+	errf_t *err;
+	struct apdu *apdu;
+	struct tlv_state *tlv;
+	uint tag;
+
+	VERIFY(pk->pt_intxn == B_TRUE);
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0x5C);
+	tlv_write_u8to32(tlv, PIV_TAG_CARDCAP);
+	tlv_pop(tlv);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_GET_DATA, 0x3F, 0xFF);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	err = piv_apdu_transceive_chain(pk, apdu);
+	if (err) {
+		err = ioerrf(err, pk->pt_rdrname);
+		bunyan_log(BNY_WARN, "transceive_apdu failed",
+		    "error", BNY_ERF, err, NULL);
+		goto out;
+	}
+
+	tlv_free(tlv);
+	tlv = NULL;
+
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
+		    apdu->a_reply.b_len);
+		if ((err = tlv_read_tag(tlv, &tag)))
+			goto invdata;
+		if (tag != 0x53) {
+			err = tagerrf("INS_GET_DATA(PINFO)", tag);
+			goto invdata;
+		}
+		err = piv_cardcap_decode(tlv_ptr(tlv), tlv_rem(tlv), outp);
+		if (err != ERRF_OK)
+			goto invdata;
+		tlv_skip(tlv);
+
+		err = ERRF_OK;
+
+	} else if (apdu->a_sw == SW_FILE_NOT_FOUND ||
+	    apdu->a_sw == SW_WRONG_DATA) {
+		err = errf("NotFoundError", swerrf("INS_GET_DATA", apdu->a_sw),
+		    "PIV CARDCAP object was not found on device '%s'",
+		    pk->pt_rdrname);
+
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = permerrf(swerrf("INS_GET_DATA", apdu->a_sw),
+		    pk->pt_rdrname, "reading PIV CARDCAP object");
+
+	} else {
+		err = swerrf("INS_GET_DATA(CARDCAP)", apdu->a_sw);
+		bunyan_log(BNY_DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pk->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
+	}
+
+out:
+	tlv_free(tlv);
+	piv_apdu_free(apdu);
+	return (err);
+
+invdata:
+	tlv_abort(tlv);
+	err = invderrf(err, pk->pt_rdrname);
+	debug_dump(err, apdu);
 	goto out;
 }
 
@@ -2418,6 +2525,67 @@ invdata:
 	debug_dump(err, apdu);
 	tlv_abort(tlv);
 	goto out;
+}
+
+errf_t *
+piv_write_cardcap(struct piv_token *pt, const struct piv_cardcap *pinfo)
+{
+	errf_t *err;
+	struct apdu *apdu;
+	struct tlv_state *tlv;
+	uint8_t *data;
+	size_t len;
+
+	VERIFY(pt->pt_intxn == B_TRUE);
+
+	err = piv_cardcap_encode(pinfo, &data, &len);
+	if (err)
+		return (err);
+
+	tlv = tlv_init_write();
+	tlv_push(tlv, 0x5C);
+	tlv_write_u8to32(tlv, PIV_TAG_CARDCAP);
+	tlv_pop(tlv);
+	tlv_push(tlv, 0x53);
+	tlv_write(tlv, (uint8_t *)data, len);
+	tlv_pop(tlv);
+
+	apdu = piv_apdu_make(CLA_ISO, INS_PUT_DATA, 0x3F, 0xFF);
+	apdu->a_cmd.b_data = tlv_buf(tlv);
+	apdu->a_cmd.b_len = tlv_len(tlv);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		bunyan_log(BNY_WARN, "piv_write_cardcap.transceive_chain failed",
+		    "error", BNY_ERF, err, NULL);
+		tlv_free(tlv);
+		piv_apdu_free(apdu);
+		return (err);
+	}
+
+	tlv_free(tlv);
+	tlv = NULL;
+
+	if (apdu->a_sw == SW_NO_ERROR) {
+		err = ERRF_OK;
+	} else if (apdu->a_sw == SW_OUT_OF_MEMORY) {
+		err = errf("DeviceOutOfMemoryError", swerrf("INS_PUT_DATA(CARDCAP)",
+		    apdu->a_sw), "Out of memory to store file object on "
+		    "PIV device '%s'", pt->pt_rdrname);
+	} else if (apdu->a_sw == SW_SECURITY_STATUS_NOT_SATISFIED) {
+		err = permerrf(swerrf("INS_PUT_DATA(CARDCAP)", apdu->a_sw),
+		    pt->pt_rdrname, "writing CARDCAP object");
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("INS_PUT_DATA(CARDCAP)", apdu->a_sw),
+		    pt->pt_rdrname, "CARDCAP object");
+	} else {
+		err = swerrf("INS_PUT_DATA(CARDCAP)", apdu->a_sw);
+	}
+
+	piv_apdu_free(apdu);
+
+	return (err);
 }
 
 errf_t *
@@ -5977,6 +6145,16 @@ piv_alg_from_string(const char *str, enum piv_alg *out)
 		*out = PIV_ALG_ECCP384;
 		return (ERRF_OK);
 	}
+	if (strcasecmp(str, "sm-eccp256") == 0 ||
+	    strcasecmp(str, "sm-cs2-eccp256") == 0) {
+		*out = PIV_ALG_SM_ECCP256;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "sm-eccp384") == 0 ||
+	    strcasecmp(str, "sm-cs7-eccp384") == 0) {
+		*out = PIV_ALG_SM_ECCP384;
+		return (ERRF_OK);
+	}
 	return (errf("InvalidAlgorithm", NULL, "Invalid/unknown algorithm "
 	    "name: '%s'", str));
 }
@@ -6011,6 +6189,10 @@ piv_alg_to_string(enum piv_alg alg)
 		return ("ECCP384-SHA256");
 	case PIV_ALG_ECCP384_SHA384:
 		return ("ECCP384-SHA384");
+	case PIV_ALG_SM_ECCP256:
+		return ("SM-CS2-ECCP256");
+	case PIV_ALG_SM_ECCP384:
+		return ("SM-CS7-ECCP384");
 	default:
 		return (NULL);
 	}
@@ -8362,5 +8544,395 @@ out:
 
 	ssh_free_identitylist(idl);
 	piv_box_free(rebox);
+	return (err);
+}
+
+struct piv_cardcap *
+piv_cardcap_new(void)
+{
+	struct piv_cardcap *cc;
+	uint8_t default_id[] = {
+		/* GSC-RID: GSC-IS data model */
+		0xa0, 0x00, 0x00, 0x01, 0x16,
+		0xFF,			/* Manufacturer */
+		PIV_CARDCAP_JAVACARD,	/* Card Type */
+	};
+	cc = calloc(1, sizeof (*cc));
+	cc->pcc_card_id_len = sizeof (default_id);
+	bcopy(default_id, cc->pcc_card_id, sizeof (default_id));
+	cc->pcc_data_model = PIV_CARDCAP_MODEL_PIV;
+	cc->pcc_container_ver = 0x21;
+	cc->pcc_grammar_ver = 0x21;
+	return (cc);
+}
+
+void
+piv_cardcap_free(struct piv_cardcap *cc)
+{
+	if (cc == NULL)
+		return;
+	free(cc->pcc_app_cardurl);
+	free(cc->pcc_acl_rules);
+	free(cc->pcc_redir);
+	free(cc->pcc_cts);
+	free(cc->pcc_sts);
+	free(cc->pcc_next_ccc);
+	free(cc->pcc_id_hex);
+	free(cc);
+}
+
+enum cardcap_type
+piv_cardcap_type(const struct piv_cardcap *cc)
+{
+	return (cc->pcc_card_id[6]);
+}
+
+void
+piv_cardcap_set_type(struct piv_cardcap *cc, enum cardcap_type type)
+{
+	cc->pcc_card_id[6] = type;
+}
+
+uint
+piv_cardcap_manufacturer(const struct piv_cardcap *cc)
+{
+	return (cc->pcc_card_id[5]);
+}
+
+void
+piv_cardcap_set_manufacturer(struct piv_cardcap *cc, uint id)
+{
+	cc->pcc_card_id[5] = id;
+}
+
+/* should be at most 15 bytes */
+const uint8_t *
+piv_cardcap_id(const struct piv_cardcap *cc, size_t *plen)
+{
+	if (cc->pcc_card_id_len < 7) {
+		*plen = 0;
+		return (NULL);
+	}
+	*plen = cc->pcc_card_id_len - 7;
+	return (&cc->pcc_card_id[7]);
+}
+
+const char *
+piv_cardcap_id_hex(const struct piv_cardcap *cc)
+{
+	if (cc->pcc_card_id_len < 7)
+		return (NULL);
+	if (cc->pcc_id_hex == NULL) {
+		struct piv_cardcap *ccwrite = (struct piv_cardcap *)cc;
+		ccwrite->pcc_id_hex = buf_to_hex(&cc->pcc_card_id[7],
+		    cc->pcc_card_id_len - 7, B_FALSE);
+	}
+	return (cc->pcc_id_hex);
+}
+
+void
+piv_cardcap_set_id(struct piv_cardcap *cc, const uint8_t *id, size_t len)
+{
+	VERIFY(len + 7 <= sizeof (cc->pcc_card_id));
+	cc->pcc_card_id_len = len + 7;
+	bcopy(id, &cc->pcc_card_id[7], len);
+	free(cc->pcc_id_hex);
+	cc->pcc_id_hex = NULL;
+}
+
+void
+piv_cardcap_set_random_id(struct piv_cardcap *cc)
+{
+	cc->pcc_card_id_len = sizeof (cc->pcc_card_id);
+	arc4random_buf(&cc->pcc_card_id[7], cc->pcc_card_id_len - 7);
+	free(cc->pcc_id_hex);
+	cc->pcc_id_hex = NULL;
+}
+
+boolean_t
+piv_cardcap_has_pkcs15(const struct piv_cardcap *cc)
+{
+	return (cc->pcc_pkcs15 == 1);
+}
+
+void
+piv_cardcap_set_pkcs15(struct piv_cardcap *cc, boolean_t ena)
+{
+	if (ena)
+		cc->pcc_pkcs15 = 1;
+	else
+		cc->pcc_pkcs15 = 0;
+}
+
+enum cardcap_data_model
+piv_cardcap_data_model(const struct piv_cardcap *cc)
+{
+	return (cc->pcc_data_model);
+}
+
+void
+piv_cardcap_set_data_model(struct piv_cardcap *cc, enum cardcap_data_model dmid)
+{
+	cc->pcc_data_model = dmid;
+}
+
+errf_t *
+piv_cardcap_encode(const struct piv_cardcap *cc, uint8_t **out, size_t *len)
+{
+	struct tlv_state *tlv = NULL;
+	uint8_t *buf = NULL;
+	errf_t *err;
+
+	tlv = tlv_init_write();
+	if (tlv == NULL) {
+		err = errfno("tlv_init_write", errno, NULL);
+		goto out;
+	}
+
+	tlv_push(tlv, 0xF0);	/* Card ID */
+	tlv_write(tlv, cc->pcc_card_id, cc->pcc_card_id_len);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xF1); 	/* Container version */
+	tlv_write_byte(tlv, cc->pcc_container_ver);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xF2);	/* Grammar version */
+	tlv_write_byte(tlv, cc->pcc_grammar_ver);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xF3);	/* Applications CardURL */
+	tlv_write(tlv, cc->pcc_app_cardurl, cc->pcc_app_cardurl_len);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xF4);	/* PKCS#15 */
+	tlv_write_byte(tlv, cc->pcc_pkcs15);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xF5);	/* Registered Data Model number */
+	tlv_write_byte(tlv, cc->pcc_data_model);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xF6); 	/* Access Control Rule Table */
+	tlv_write(tlv, cc->pcc_acl_rules, cc->pcc_acl_rules_len);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xF7);	/* CARD APDUs */
+	if (cc->pcc_flags & PIV_CARDCAP_HAS_APDUS)
+		tlv_write(tlv, cc->pcc_card_apdus, sizeof (cc->pcc_card_apdus));
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xFA);	/* Redirection Tag */
+	tlv_write(tlv, cc->pcc_redir, cc->pcc_redir_len);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xFB);	/* Capability Tuples (CTs) */
+	tlv_write(tlv, cc->pcc_cts, cc->pcc_cts_len);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xFC);	/* Status Tuples (STs) */
+	tlv_write(tlv, cc->pcc_sts, cc->pcc_sts_len);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xFD);	/* Next CCC */
+	tlv_write(tlv, cc->pcc_next_ccc, cc->pcc_next_ccc_len);
+	tlv_pop(tlv);
+
+	tlv_push(tlv, 0xFE);	/* LRC */
+	if (cc->pcc_flags & PIV_CARDCAP_HAS_LRC)
+		tlv_write_byte(tlv, cc->pcc_lrc);
+	tlv_pop(tlv);
+
+	*len = tlv_len(tlv);
+	*out = malloc(*len);
+	if (*out == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+	bcopy(tlv_buf(tlv), *out, *len);
+
+out:
+	tlv_free(tlv);
+	free(buf);
+	return (err);
+}
+
+errf_t *
+piv_cardcap_decode(const uint8_t *data, size_t len, struct piv_cardcap **out)
+{
+	struct tlv_state *tlv = NULL;
+	uint tag;
+	errf_t *err;
+	struct piv_cardcap *cc;
+	uint8_t v;
+
+	cc = calloc(1, sizeof (*cc));
+	if (cc == NULL) {
+		err = errfno("calloc", errno, NULL);
+		goto out;
+	}
+
+	tlv = tlv_init(data, 0, len);
+	if (tlv == NULL) {
+		err = errfno("tlv_init", errno, NULL);
+		goto out;
+	}
+
+	while (!tlv_at_end(tlv)) {
+		if ((err = tlv_read_tag(tlv, &tag)))
+			goto out;
+		switch (tag) {
+		case 0xF0:	/* Card ID */
+			if (tlv_at_end(tlv)) {
+				tlv_skip(tlv);
+				break;
+			}
+			err = tlv_read_upto(tlv, cc->pcc_card_id,
+			    sizeof (cc->pcc_card_id), &cc->pcc_card_id_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xF1:	/* Container version */
+			if (tlv_at_end(tlv)) {
+				tlv_skip(tlv);
+				break;
+			}
+			if ((err = tlv_read_u8(tlv, &cc->pcc_container_ver)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xF2:	/* Grammar version */
+			if (tlv_at_end(tlv)) {
+				tlv_skip(tlv);
+				break;
+			}
+			if ((err = tlv_read_u8(tlv, &cc->pcc_grammar_ver)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xF3:	/* Applications CardURL */
+			err = tlv_read_alloc(tlv, &cc->pcc_app_cardurl,
+			    &cc->pcc_app_cardurl_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xF4:	/* PKCS#15 */
+			if (tlv_at_end(tlv)) {
+				tlv_skip(tlv);
+				break;
+			}
+			if ((err = tlv_read_u8(tlv, &cc->pcc_pkcs15)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xF5:	/* Registered Data Model number */
+			if ((err = tlv_read_u8(tlv, &cc->pcc_data_model)))
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xF6:	/* Access Control Rule Table */
+			err = tlv_read_alloc(tlv, &cc->pcc_acl_rules,
+			    &cc->pcc_acl_rules_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xF7:	/* CARD APDUs */
+			if (tlv_at_end(tlv)) {
+				tlv_skip(tlv);
+				break;
+			}
+			err = tlv_read(tlv, cc->pcc_card_apdus,
+			    sizeof (cc->pcc_card_apdus));
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			cc->pcc_flags |= PIV_CARDCAP_HAS_APDUS;
+			break;
+		case 0xFA:	/* Redirection Tag */
+			err = tlv_read_alloc(tlv, &cc->pcc_redir,
+			    &cc->pcc_redir_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xFB:	/* Capability Tuples (CTs) */
+			err = tlv_read_alloc(tlv, &cc->pcc_cts,
+			    &cc->pcc_cts_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xFC:	/* Status Tuples (STs) */
+			err = tlv_read_alloc(tlv, &cc->pcc_sts,
+			    &cc->pcc_sts_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xFD:	/* Next CCC */
+			err = tlv_read_alloc(tlv, &cc->pcc_next_ccc,
+			    &cc->pcc_next_ccc_len);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			break;
+		case 0xFE:	/* LRC */
+			if (tlv_at_end(tlv)) {
+				tlv_skip(tlv);
+				break;
+			}
+			err = tlv_read_u8(tlv, &cc->pcc_lrc);
+			if (err)
+				goto out;
+			if ((err = tlv_end(tlv)))
+				goto out;
+			cc->pcc_flags |= PIV_CARDCAP_HAS_LRC;
+			break;
+		default:
+			err = tagerrf("CARDCAP", tag);
+			goto out;
+		}
+	}
+
+	v = (cc->pcc_container_ver >> 4) & 0xF;
+	if (v > 2) {
+		err = errf("NotSupportedError", NULL, "CARDCAP "
+		    "object has wrong major container version (%u)",
+		    v);
+		goto out;
+	}
+	v = (cc->pcc_grammar_ver >> 4) & 0xF;
+	if (v > 2) {
+		err = errf("NotSupportedError", NULL, "CARDCAP "
+		    "object has wrong major grammar version (%u)",
+		    v);
+		goto out;
+	}
+
+	*out = cc;
+	cc = NULL;
+	err = ERRF_OK;
+
+out:
+	if (err != ERRF_OK)
+		tlv_abort(tlv);
+	else
+		tlv_free(tlv);
+	piv_cardcap_free(cc);
 	return (err);
 }

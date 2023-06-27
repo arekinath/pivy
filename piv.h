@@ -187,6 +187,9 @@ enum piv_alg {
 	PIV_ALG_ECCP256 = 0x11,
 	PIV_ALG_ECCP384 = 0x14,
 
+	PIV_ALG_SM_ECCP256 = 0x27,
+	PIV_ALG_SM_ECCP384 = 0x2E,
+
 	/*
 	 * Proprietary hack for Javacards running PivApplet -- they don't
 	 * support bare ECDSA so instead we have to give them the full input
@@ -248,6 +251,7 @@ struct piv_token;
 struct piv_fascn;
 struct piv_chuid;
 struct piv_pinfo;
+struct piv_cardcap;
 
 /* Opens a PIV library context. */
 struct piv_ctx *piv_open(void);
@@ -714,6 +718,30 @@ errf_t *piv_read_file(struct piv_token *pt, uint tag, uint8_t **data,
  */
 MUST_CHECK
 errf_t *piv_read_pinfo(struct piv_token *pt, struct piv_pinfo **out);
+
+/*
+ * Reads and parses the PIV/GSC-IS Card Capability object.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - NotFoundError: no card cap object on this card
+ *  - InvalidDataError: the tag structure returned by the card made no sense
+ */
+MUST_CHECK
+errf_t *piv_read_cardcap(struct piv_token *pt, struct piv_cardcap **out);
+
+/*
+ * Writes the PIV/GSC-IS Card Capability object.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - PermissionError: card didn't allow this object to be written (requires
+ *                     admin auth)
+ *  - NotFoundError: no card cap object on this card
+ *  - InvalidDataError: the tag structure returned by the card made no sense
+ */
+MUST_CHECK
+errf_t *piv_write_cardcap(struct piv_token *pt, const struct piv_cardcap *out);
 
 /*
  * Writes the PIV Printed Information object.
@@ -1289,5 +1317,41 @@ void piv_pinfo_set_kv_string(struct piv_pinfo *pp, const char *key, const char *
 
 errf_t *piv_pinfo_encode(const struct piv_pinfo *, uint8_t **out, size_t *outlen);
 errf_t *piv_pinfo_decode(const uint8_t *data, size_t len, struct piv_pinfo **out);
+
+enum cardcap_type {
+	PIV_CARDCAP_FS = 0x01,
+	PIV_CARDCAP_JAVACARD = 0x02,
+	PIV_CARDCAP_MULTOS = 0x03,
+	PIV_CARDCAP_JAVACARD_FS = 0x04
+};
+
+enum cardcap_data_model {
+	PIV_CARDCAP_MODEL_PIV = 0x10
+};
+
+struct piv_cardcap *piv_cardcap_new(void);
+void piv_cardcap_free(struct piv_cardcap *cc);
+
+enum cardcap_type piv_cardcap_type(const struct piv_cardcap *cc);
+void piv_cardcap_set_type(struct piv_cardcap *cc, enum cardcap_type type);
+
+uint piv_cardcap_manufacturer(const struct piv_cardcap *cc);
+void piv_cardcap_set_manufacturer(struct piv_cardcap *cc, uint id);
+
+/* should be at most 14 bytes */
+const uint8_t *piv_cardcap_id(const struct piv_cardcap *cc, size_t *plen);
+const char *piv_cardcap_id_hex(const struct piv_cardcap *cc);
+void piv_cardcap_set_id(struct piv_cardcap *cc, const uint8_t *id, size_t len);
+void piv_cardcap_set_random_id(struct piv_cardcap *cc);
+
+boolean_t piv_cardcap_has_pkcs15(const struct piv_cardcap *cc);
+void piv_cardcap_set_pkcs15(struct piv_cardcap *cc, boolean_t ena);
+
+enum cardcap_data_model piv_cardcap_data_model(const struct piv_cardcap *cc);
+void piv_cardcap_set_data_model(struct piv_cardcap *cc, enum cardcap_data_model dmid);
+
+errf_t *piv_cardcap_encode(const struct piv_cardcap *, uint8_t **out, size_t *outlen);
+errf_t *piv_cardcap_decode(const uint8_t *data, size_t len, struct piv_cardcap **out);
+
 
 #endif

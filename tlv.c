@@ -437,6 +437,11 @@ tlv_read_alloc(struct tlv_state *ts, uint8_t **pdata, size_t *plen)
 {
 	struct tlv_context *tc = ts->ts_now;
 	size_t len = tlv_rem(ts);
+	if (len == 0) {
+		*pdata = NULL;
+		*plen = 0;
+		return (NULL);
+	}
 	uint8_t *data;
 	data = calloc(1, len);
 	if (data == NULL)
