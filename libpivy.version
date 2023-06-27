@@ -46,6 +46,7 @@ CODEABI_1.0 {
         piv_box_new;
         piv_box_nonce_size;
         piv_box_open;
+        piv_box_open_agent;
         piv_box_open_offline;
         piv_box_pubkey;
         piv_box_seal;
@@ -471,6 +472,7 @@ CODEABI_1.0 {
         bunyan_pop;
         bunyan_set_level;
         bunyan_set_name;
+        bunyan_set_printer;
         bunyan_unshare;
 
         /*
@@ -689,5 +691,23 @@ CODEABI_1.0 {
         tlv_write_byte;
         tlv_write_u16;
         tlv_write_u8to32;
+
+        /*
+         * selected LibreSSL bits
+         */
+        X509_CRL_free;
+        X509_CRL_from_der;
+        X509_CRL_new;
+        X509_CRL_to_der;
+        X509_free;
+        X509_from_der;
+        X509_new;
+        X509_REQ_free;
+        X509_REQ_from_der;
+        X509_REQ_new;
+        X509_REQ_to_der;
+        X509_to_der;
+
+
     local: *;
 };

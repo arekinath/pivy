@@ -1519,6 +1519,40 @@ write_uri_array(json_object *array, struct ca_uri *head)
 	return (ERRF_OK);
 }
 
+const char *
+ca_get_ebox_tpl(struct ca *ca, enum ca_ebox_type type)
+{
+	struct ca_ebox_tpl **ptr;
+	switch (type) {
+	case CA_EBOX_PIN:
+	case CA_EBOX_OLD_PIN:
+		ptr = &ca->ca_pin_tpl;
+		break;
+	case CA_EBOX_PUK:
+		ptr = &ca->ca_puk_tpl;
+		break;
+	case CA_EBOX_KEY_BACKUP:
+		ptr = &ca->ca_backup_tpl;
+		break;
+	case CA_EBOX_ADMIN_KEY:
+		ptr = &ca->ca_admin_tpl;
+		break;
+	}
+	if (*ptr == NULL)
+		return (NULL);
+	return ((*ptr)->cet_name);
+}
+
+struct ebox_tpl *
+ca_get_ebox_tpl_name(struct ca *ca, const char *name)
+{
+	struct ca_ebox_tpl *cet;
+	cet = get_ebox_tpl(&ca->ca_ebox_tpls, name, 0);
+	if (cet == NULL)
+		return (NULL);
+	return (cet->cet_tpl);
+}
+
 errf_t *
 ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type, const char *tplname)
 {

@@ -35,6 +35,8 @@ enum bunyan_arg_type {
 void bunyan_init(void);
 void bunyan_unshare(void);
 void bunyan_set_name(const char *name);
+typedef void (*bunyan_printer_t)(enum bunyan_log_level, const char *);
+void bunyan_set_printer(bunyan_printer_t printer, boolean_t omit_timestamp);
 void bunyan_set_level(enum bunyan_log_level level);
 enum bunyan_log_level bunyan_get_level(void);
 void bunyan_log(enum bunyan_log_level level, const char *msg, ...);

@@ -248,15 +248,11 @@ again:
 errf_t *
 local_unlock_agent(struct piv_ecdh_box *box)
 {
-	struct piv_ecdh_box *rebox = NULL;
-	struct sshkey *pubkey, *temp = NULL, *temppub = NULL;
+	struct sshkey *pubkey;
 	errf_t *err;
 	int rc;
 	uint i;
-	uint8_t code;
 	struct ssh_identitylist *idl = NULL;
-	struct sshbuf *req = NULL, *buf = NULL, *boxbuf = NULL, *reply = NULL;
-	struct sshbuf *datab = NULL;
 	boolean_t found = B_FALSE;
 
 	if (ebox_authfd == -1 &&
@@ -285,115 +281,17 @@ local_unlock_agent(struct piv_ecdh_box *box)
 		goto out;
 	}
 
-	rc = sshkey_generate(KEY_ECDSA, sshkey_size(pubkey), &temp);
-	if (rc) {
-		err = ssherrf("sshkey_generate", rc);
-		goto out;
-	}
-	if ((rc = sshkey_demote(temp, &temppub))) {
-		err = ssherrf("sshkey_demote", rc);
-		goto out;
-	}
-
-	req = sshbuf_new();
-	reply = sshbuf_new();
-	buf = sshbuf_new();
-	boxbuf = sshbuf_new();
-	if (req == NULL || reply == NULL || buf == NULL || boxbuf == NULL) {
-		err = ERRF_NOMEM;
-		goto out;
-	}
-
-	if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
-		err = ssherrf("sshbuf_put_u8", rc);
-		goto out;
-	}
-	if ((rc = sshbuf_put_cstring(req, "ecdh-rebox@joyent.com"))) {
-		err = ssherrf("sshbuf_put_cstring", rc);
-		goto out;
-	}
-
-	if ((err = sshbuf_put_piv_box(boxbuf, box)))
-		goto out;
-	if ((rc = sshbuf_put_stringb(buf, boxbuf))) {
-		err = ssherrf("sshbuf_put_stringb", rc);
-		goto out;
-	}
-	if ((rc = sshbuf_put_u32(buf, 0)) ||
-	    (rc = sshbuf_put_u8(buf, 0))) {
-		err = ssherrf("sshbuf_put_u32", rc);
-		goto out;
-	}
-	sshbuf_reset(boxbuf);
-	if ((rc = sshkey_putb(temppub, boxbuf))) {
-		err = ssherrf("sshkey_putb", rc);
-		goto out;
-	}
-	if ((rc = sshbuf_put_stringb(buf, boxbuf))) {
-		err = ssherrf("sshbuf_put_stringb", rc);
-		goto out;
-	}
-	if ((rc = sshbuf_put_u32(buf, 0))) {
-		err = ssherrf("sshbuf_put_u32", rc);
-		goto out;
-	}
-
-	if ((rc = sshbuf_put_stringb(req, buf))) {
-		err = ssherrf("sshbuf_put_stringb", rc);
-		goto out;
-	}
-
 	if (!ebox_batch) {
 		fprintf(stderr, "Using key '%s' in ssh-agent...\n",
 		    idl->comments[i]);
 	}
-	rc = ssh_request_reply(ebox_authfd, req, reply);
-	if (rc) {
-		err = ssherrf("ssh_request_reply", rc);
-		goto out;
-	}
 
-	if ((rc = sshbuf_get_u8(reply, &code))) {
-		err = ssherrf("sshbuf_get_u8", rc);
-		goto out;
-	}
-	if (code != SSH_AGENT_SUCCESS) {
-		err = errf("SSHAgentError", NULL, "SSH agent returned "
-		    "message code %d to rebox request", (int)code);
-		goto out;
-	}
-	sshbuf_reset(boxbuf);
-	if ((rc = sshbuf_get_stringb(reply, boxbuf))) {
-		err = ssherrf("sshbuf_get_stringb", rc);
-		goto out;
-	}
-
-	if ((err = sshbuf_get_piv_box(boxbuf, &rebox)))
-		goto out;
-
-	if ((err = piv_box_open_offline(temp, rebox)))
-		goto out;
-
-	if ((err = piv_box_take_datab(rebox, &datab)))
-		goto out;
-
-	if ((err = piv_box_set_datab(box, datab)))
-		goto out;
-
-	err = ERRF_OK;
+	err = piv_box_open_agent(ebox_authfd, box);
+	if (err)
+		warnfx(err, "Failed to use key from ssh-agent");
 
 out:
-	sshbuf_free(req);
-	sshbuf_free(reply);
-	sshbuf_free(buf);
-	sshbuf_free(boxbuf);
-	sshbuf_free(datab);
-
-	sshkey_free(temp);
-	sshkey_free(temppub);
-
 	ssh_free_identitylist(idl);
-	piv_box_free(rebox);
 	return (err);
 }
 

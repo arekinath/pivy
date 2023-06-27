@@ -1010,6 +1010,15 @@ errf_t *piv_box_take_data(struct piv_ecdh_box *box, uint8_t **data, size_t *len)
 MUST_CHECK
 errf_t *piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **buf);
 
+/*
+ * Errors:
+ *  - KeyNotFound
+ *  - NotSupported
+ *  - SSHAgentError
+ */
+MUST_CHECK
+errf_t *piv_box_open_agent(int fd, struct piv_ecdh_box *box);
+
 MUST_CHECK
 errf_t *sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box);
 MUST_CHECK

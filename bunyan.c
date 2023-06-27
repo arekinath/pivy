@@ -49,6 +49,13 @@ static const char *bunyan_name = NULL;
  * portable to lots of other operating systems.
  */
 
+static void
+bunyan_default_printer(enum bunyan_log_level lvl, const char *msg)
+{
+	fprintf(stderr, "%s", msg);
+}
+
+static bunyan_printer_t bunyan_printer = bunyan_default_printer;
 static char *bunyan_buf = NULL;
 static size_t bunyan_buf_sz = 0;
 
@@ -90,6 +97,13 @@ void
 bunyan_set_level(enum bunyan_log_level level)
 {
 	bunyan_min_level = level;
+}
+
+void
+bunyan_set_printer(bunyan_printer_t printer, boolean_t omit_timestamp)
+{
+	bunyan_printer = printer;
+	bunyan_omit_timestamp = omit_timestamp;
 }
 
 enum bunyan_log_level
@@ -414,25 +428,27 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 		printf_buf("[%s] ", time);
 	}
 
-	switch (level) {
-	case BNY_TRACE:
-		printf_buf("TRACE: ");
-		break;
-	case BNY_DEBUG:
-		printf_buf("DEBUG: ");
-		break;
-	case BNY_INFO:
-		printf_buf("INFO: ");
-		break;
-	case BNY_WARN:
-		printf_buf("WARN: ");
-		break;
-	case BNY_ERROR:
-		printf_buf("ERROR: ");
-		break;
-	case BNY_FATAL:
-		printf_buf("FATAL: ");
-		break;
+	if (bunyan_printer == bunyan_default_printer) {
+		switch (level) {
+		case BNY_TRACE:
+			printf_buf("TRACE: ");
+			break;
+		case BNY_DEBUG:
+			printf_buf("DEBUG: ");
+			break;
+		case BNY_INFO:
+			printf_buf("INFO: ");
+			break;
+		case BNY_WARN:
+			printf_buf("WARN: ");
+			break;
+		case BNY_ERROR:
+			printf_buf("ERROR: ");
+			break;
+		case BNY_FATAL:
+			printf_buf("FATAL: ");
+			break;
+		}
 	}
 
 	printf_buf("%s", msg);
@@ -531,5 +547,5 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 	if (level < bunyan_min_level) {
 		return;
 	}
-	fprintf(stderr, "%s", bunyan_buf);
+	(*bunyan_printer)(level, bunyan_buf);
 }

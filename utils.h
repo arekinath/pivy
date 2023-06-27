@@ -14,8 +14,17 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
+#include <openssl/x509.h>
+
 /* Can't use errf_t here (errf.h #includes this first) */
 struct errf;
+
+struct errf *X509_to_der(X509 *, uint8_t **, size_t *);
+struct errf *X509_REQ_to_der(X509_REQ *, uint8_t **, size_t *);
+struct errf *X509_CRL_to_der(X509_CRL *, uint8_t **, size_t *);
+struct errf *X509_from_der(const uint8_t *, size_t, X509 **);
+struct errf *X509_REQ_from_der(const uint8_t *, size_t, X509_REQ **);
+struct errf *X509_CRL_from_der(const uint8_t *, size_t, X509_CRL **);
 
 #if !defined(__APPLE__) && !defined(__sun)
 typedef uint64_t uintmax_t;

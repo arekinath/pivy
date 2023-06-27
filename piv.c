@@ -48,6 +48,7 @@
 #include "openssh/sshbuf.h"
 #include "openssh/digest.h"
 #include "openssh/cipher.h"
+#include "openssh/authfd.h"
 
 #include <openssl/err.h>
 #include <openssl/x509.h>
@@ -4992,22 +4993,25 @@ piv_box_take_datab(struct piv_ecdh_box *box, struct sshbuf **pbuf)
 	return (ERRF_OK);
 }
 
-errf_t *
-piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
+static errf_t *
+piv_box_open_common(uint8_t *sec, size_t seclen, struct piv_ecdh_box *box)
 {
 	const struct sshcipher *cipher;
 	int dgalg;
 	struct sshcipher_ctx *cctx;
 	struct ssh_digest_ctx *dgctx;
-	uint8_t *iv, *key, *sec, *enc, *plain;
-	size_t ivlen, authlen, blocksz, keylen, dglen, seclen;
-	size_t fieldsz, plainlen, enclen;
+	uint8_t *iv, *key, *enc, *plain;
+	size_t ivlen, authlen, blocksz, keylen, dglen;
+	size_t plainlen, enclen;
 	size_t reallen, padding, i;
 	errf_t *err;
 	int rv;
 
 	VERIFY3P(box->pdb_cipher, !=, NULL);
 	VERIFY3P(box->pdb_kdf, !=, NULL);
+
+	VERIFY3P(sec, !=, NULL);
+	VERIFY3U(seclen, >=, 0);
 
 	cipher = cipher_by_name(box->pdb_cipher);
 	if (cipher == NULL) {
@@ -5035,21 +5039,6 @@ piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 		    "key with cipher '%s'", box->pdb_kdf, box->pdb_cipher));
 		return (err);
 	}
-
-	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(privkey->ecdsa));
-	seclen = (fieldsz + 7) / 8;
-	sec = calloc_conceal(1, seclen);
-	VERIFY(sec != NULL);
-	rv = ECDH_compute_key(sec, seclen,
-	    EC_KEY_get0_public_key(box->pdb_ephem_pub->ecdsa), privkey->ecdsa,
-	    NULL);
-	if (rv <= 0) {
-		free(sec);
-		make_sslerrf(err, "ECDH_compute_key", "performing ECDH");
-		err = boxderrf(err);
-		return (err);
-	}
-	seclen = (size_t)rv;
 
 	dgctx = ssh_digest_start(dgalg);
 	VERIFY3P(dgctx, !=, NULL);
@@ -5138,51 +5127,40 @@ paderr:
 }
 
 errf_t *
+piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
+{
+	uint8_t *sec;
+	size_t seclen;
+	size_t fieldsz;
+	errf_t *err;
+	int rv;
+
+	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(privkey->ecdsa));
+	seclen = (fieldsz + 7) / 8;
+	sec = calloc_conceal(1, seclen);
+	VERIFY(sec != NULL);
+	rv = ECDH_compute_key(sec, seclen,
+	    EC_KEY_get0_public_key(box->pdb_ephem_pub->ecdsa), privkey->ecdsa,
+	    NULL);
+	if (rv <= 0) {
+		free(sec);
+		make_sslerrf(err, "ECDH_compute_key", "performing ECDH");
+		err = boxderrf(err);
+		return (err);
+	}
+	seclen = (size_t)rv;
+
+	return (piv_box_open_common(sec, seclen, box));
+}
+
+errf_t *
 piv_box_open(struct piv_token *tk, struct piv_slot *slot,
     struct piv_ecdh_box *box)
 {
-	const struct sshcipher *cipher;
-	int rv;
 	errf_t *err;
-	int dgalg;
-	struct sshcipher_ctx *cctx;
-	struct ssh_digest_ctx *dgctx;
-	uint8_t *iv, *key, *sec, *enc, *plain;
-	size_t ivlen, authlen, blocksz, keylen, dglen, seclen;
-	size_t plainlen, enclen;
-	size_t reallen, padding, i;
+	uint8_t *sec = NULL;
+	size_t seclen;
 
-	VERIFY3P(box->pdb_cipher, !=, NULL);
-	VERIFY3P(box->pdb_kdf, !=, NULL);
-
-	cipher = cipher_by_name(box->pdb_cipher);
-	if (cipher == NULL) {
-		err = boxverrf(errf("BadAlgorithmError", NULL,
-		    "Cipher '%s' is not supported", box->pdb_cipher));
-		return (err);
-	}
-	ivlen = cipher_ivlen(cipher);
-	authlen = cipher_authlen(cipher);
-	blocksz = cipher_blocksize(cipher);
-	keylen = cipher_keylen(cipher);
-	/* TODO: support non-authenticated ciphers by adding an HMAC */
-	VERIFY3U(authlen, >, 0);
-
-	dgalg = ssh_digest_alg_by_name(box->pdb_kdf);
-	if (dgalg == -1) {
-		err = boxverrf(errf("BadAlgorithmError", NULL,
-		    "KDF digest '%s' is not supported", box->pdb_kdf));
-		return (err);
-	}
-	dglen = ssh_digest_bytes(dgalg);
-	if (dglen < keylen) {
-		err = boxderrf(errf("BadAlgorithmError", NULL,
-		    "KDF digest '%s' produces output too short for use as "
-		    "key with cipher '%s'", box->pdb_kdf, box->pdb_cipher));
-		return (err);
-	}
-
-	sec = NULL;
 	VERIFY3P(box->pdb_ephem_pub, !=, NULL);
 	err = piv_ecdh(tk, slot, box->pdb_ephem_pub, &sec, &seclen);
 	if (err) {
@@ -5190,83 +5168,8 @@ piv_box_open(struct piv_token *tk, struct piv_slot *slot,
 		    "operation needed to decrypt PIVBox");
 		return (err);
 	}
-	VERIFY3P(sec, !=, NULL);
-	VERIFY3U(seclen, >=, 0);
 
-	dgctx = ssh_digest_start(dgalg);
-	VERIFY3P(dgctx, !=, NULL);
-	VERIFY0(ssh_digest_update(dgctx, sec, seclen));
-	if (box->pdb_nonce.b_len > 0) {
-		/* See comment in piv_box_open_offline */
-		VERIFY0(ssh_digest_update(dgctx, box->pdb_nonce.b_data +
-		    box->pdb_nonce.b_offset, box->pdb_nonce.b_len));
-	}
-	key = calloc_conceal(1, dglen);
-	VERIFY3P(key, !=, NULL);
-	VERIFY0(ssh_digest_final(dgctx, key, dglen));
-	ssh_digest_free(dgctx);
-
-	freezero(sec, seclen);
-
-	VERIFYB(box->pdb_iv);
-	iv = box->pdb_iv.b_data + box->pdb_iv.b_offset;
-	if (box->pdb_iv.b_len != ivlen) {
-		err = boxderrf(errf("LengthError", NULL, "IV length (%d) is not "
-		    "appropriate for cipher '%s'", ivlen, box->pdb_cipher));
-		return (err);
-	}
-
-	VERIFYB(box->pdb_enc);
-	enc = box->pdb_enc.b_data + box->pdb_enc.b_offset;
-	enclen = box->pdb_enc.b_len;
-	if (enclen < authlen + blocksz) {
-		err = boxderrf(errf("LengthError", NULL, "Ciphertext length (%d) "
-		    "is smaller than minimum length (auth tag + 1 block = %d)",
-		    enclen, authlen + blocksz));
-		return (err);
-	}
-
-	plainlen = enclen - authlen;
-	plain = calloc_conceal(1, plainlen);
-	VERIFY3P(plain, !=, NULL);
-
-	VERIFY0(cipher_init(&cctx, cipher, key, keylen, iv, ivlen, 0));
-	rv = cipher_crypt(cctx, 0, plain, enc, enclen - authlen, 0,
-	    authlen);
-	cipher_free(cctx);
-
-	freezero(key, dglen);
-
-	if (rv != 0) {
-		err = boxderrf(ssherrf("cipher_crypt", rv));
-		return (err);
-	}
-
-	/* Strip off the pkcs#7 padding and verify it. */
-	padding = plain[plainlen - 1];
-	if (padding < 1 || padding > blocksz)
-		goto paderr;
-	reallen = plainlen - padding;
-	for (i = reallen; i < plainlen; ++i) {
-		if (plain[i] != padding) {
-			goto paderr;
-		}
-	}
-
-	if (box->pdb_plain.b_data != NULL) {
-		freezero(box->pdb_plain.b_data, box->pdb_plain.b_size);
-	}
-	box->pdb_plain.b_data = plain;
-	box->pdb_plain.b_offset = 0;
-	box->pdb_plain.b_size = plainlen;
-	box->pdb_plain.b_len = reallen;
-
-	return (ERRF_OK);
-
-paderr:
-	err = boxderrf(errf("PaddingError", NULL, "Padding failed validation"));
-	freezero(plain, plainlen);
-	return (err);
+	return (piv_box_open_common(sec, seclen, box));
 }
 
 errf_t *
@@ -8195,4 +8098,269 @@ piv_pinfo_get_kv(const struct piv_pinfo *pp, const char *key, size_t *len)
 	}
 	*len = kv->ppk_len;
 	return (kv->ppk_data);
+}
+
+errf_t *
+piv_box_open_agent(int fd, struct piv_ecdh_box *box)
+{
+	struct piv_ecdh_box *rebox = NULL;
+	struct sshkey *pubkey, *temp = NULL, *temppub = NULL;
+	errf_t *err;
+	int rc;
+	uint i;
+	size_t len;
+	uint8_t code;
+	uint32_t nexts;
+	char *extname;
+	int has_rebox = 0, has_ecdh = 0;
+	struct ssh_identitylist *idl = NULL;
+	struct sshbuf *req = NULL, *buf = NULL, *boxbuf = NULL, *reply = NULL;
+	struct sshbuf *datab = NULL;
+	uint8_t *sec = NULL;
+	size_t seclen;
+	boolean_t found = B_FALSE;
+
+	pubkey = piv_box_pubkey(box);
+
+	rc = ssh_fetch_identitylist(fd, &idl);
+	if (rc) {
+		err = ssherrf("ssh_fetch_identitylist", rc);
+		goto out;
+	}
+
+	for (i = 0; i < idl->nkeys; ++i) {
+		if (sshkey_equal_public(idl->keys[i], pubkey)) {
+			found = B_TRUE;
+			break;
+		}
+	}
+	if (!found) {
+		err = errf("KeyNotFound", NULL, "No matching key found in "
+		    "SSH agent");
+		goto out;
+	}
+
+	req = sshbuf_new();
+	reply = sshbuf_new();
+	if (req == NULL || reply == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
+		err = ssherrf("sshbuf_put_u8", rc);
+		goto out;
+	}
+	if ((rc = sshbuf_put_cstring(req, "query"))) {
+		err = ssherrf("sshbuf_put_cstring", rc);
+		goto out;
+	}
+	if ((rc = sshbuf_put_u32(req, 0))) {
+		err = ssherrf("sshbuf_put_u32", rc);
+		goto out;
+	}
+	rc = ssh_request_reply(fd, req, reply);
+	if (rc) {
+		err = ssherrf("ssh_request_reply", rc);
+		goto out;
+	}
+
+	if ((rc = sshbuf_get_u8(reply, &code))) {
+		err = ssherrf("sshbuf_get_u8", rc);
+		goto out;
+	}
+	if (code != SSH_AGENT_SUCCESS) {
+		err = errf("NotSupportedError", NULL, "SSH agent does not "
+		    "support 'query' extension (returned code %d)", (int)code);
+		goto out;
+	}
+	if ((rc = sshbuf_get_u32(reply, &nexts))) {
+		err = ssherrf("sshbuf_get_u32", rc);
+		goto out;
+	}
+	for (i = 0; i < nexts; ++i) {
+		if ((rc = sshbuf_get_cstring(reply, &extname, &len))) {
+			err = ssherrf("sshbuf_get_cstring", rc);
+			goto out;
+		}
+		if (strcmp("ecdh-rebox@joyent.com", extname) == 0)
+			has_rebox = 1;
+		else if (strcmp("ecdh@joyent.com", extname) == 0)
+			has_ecdh = 1;
+		free(extname);
+		extname = NULL;
+	}
+
+	sshbuf_reset(req);
+	sshbuf_reset(reply);
+	buf = sshbuf_new();
+	boxbuf = sshbuf_new();
+	if (buf == NULL || boxbuf == NULL) {
+		err = ERRF_NOMEM;
+		goto out;
+	}
+
+	if (has_rebox) {
+		rc = sshkey_generate(KEY_ECDSA, sshkey_size(pubkey), &temp);
+		if (rc) {
+			err = ssherrf("sshkey_generate", rc);
+			goto out;
+		}
+		if ((rc = sshkey_demote(temp, &temppub))) {
+			err = ssherrf("sshkey_demote", rc);
+			goto out;
+		}
+
+		if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
+			err = ssherrf("sshbuf_put_u8", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_cstring(req, "ecdh-rebox@joyent.com"))) {
+			err = ssherrf("sshbuf_put_cstring", rc);
+			goto out;
+		}
+
+		if ((err = sshbuf_put_piv_box(boxbuf, box)))
+			goto out;
+		if ((rc = sshbuf_put_stringb(buf, boxbuf))) {
+			err = ssherrf("sshbuf_put_stringb", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_u32(buf, 0)) ||
+		    (rc = sshbuf_put_u8(buf, 0))) {
+			err = ssherrf("sshbuf_put_u32", rc);
+			goto out;
+		}
+		sshbuf_reset(boxbuf);
+		if ((rc = sshkey_putb(temppub, boxbuf))) {
+			err = ssherrf("sshkey_putb", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_stringb(buf, boxbuf))) {
+			err = ssherrf("sshbuf_put_stringb", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_u32(buf, 0))) {
+			err = ssherrf("sshbuf_put_u32", rc);
+			goto out;
+		}
+
+		if ((rc = sshbuf_put_stringb(req, buf))) {
+			err = ssherrf("sshbuf_put_stringb", rc);
+			goto out;
+		}
+
+		rc = ssh_request_reply(fd, req, reply);
+		if (rc) {
+			err = ssherrf("ssh_request_reply", rc);
+			goto out;
+		}
+
+		if ((rc = sshbuf_get_u8(reply, &code))) {
+			err = ssherrf("sshbuf_get_u8", rc);
+			goto out;
+		}
+		if (code != SSH_AGENT_SUCCESS) {
+			err = errf("SSHAgentError", NULL, "SSH agent returned "
+			    "message code %d to rebox request", (int)code);
+			goto out;
+		}
+		sshbuf_reset(boxbuf);
+		if ((rc = sshbuf_get_stringb(reply, boxbuf))) {
+			err = ssherrf("sshbuf_get_stringb", rc);
+			goto out;
+		}
+
+		if ((err = sshbuf_get_piv_box(boxbuf, &rebox)))
+			goto out;
+
+		if ((err = piv_box_open_offline(temp, rebox)))
+			goto out;
+
+		if ((err = piv_box_take_datab(rebox, &datab)))
+			goto out;
+
+		if ((err = piv_box_set_datab(box, datab)))
+			goto out;
+
+		err = ERRF_OK;
+		goto out;
+	}
+
+	if (has_ecdh) {
+		if ((rc = sshkey_putb(pubkey, boxbuf))) {
+			err = ssherrf("sshkey_putb", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_stringb(buf, boxbuf))) {
+			err = ssherrf("sshbuf_put_stringb", rc);
+			goto out;
+		}
+		sshbuf_reset(boxbuf);
+		if ((rc = sshkey_putb(box->pdb_ephem_pub, boxbuf))) {
+			err = ssherrf("sshkey_putb", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_stringb(buf, boxbuf))) {
+			err = ssherrf("sshbuf_put_stringb", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_u32(buf, 0))) {
+			err = ssherrf("sshbuf_put_u32", rc);
+			goto out;
+		}
+
+		if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
+			err = ssherrf("sshbuf_put_u8", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_cstring(req, "ecdh@joyent.com"))) {
+			err = ssherrf("sshbuf_put_cstring", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_stringb(req, buf))) {
+			err = ssherrf("sshbuf_put_stringb", rc);
+			goto out;
+		}
+
+		rc = ssh_request_reply(fd, req, reply);
+		if (rc) {
+			err = ssherrf("ssh_request_reply", rc);
+			goto out;
+		}
+
+		if ((rc = sshbuf_get_u8(reply, &code))) {
+			err = ssherrf("sshbuf_get_u8", rc);
+			goto out;
+		}
+		if (code != SSH_AGENT_SUCCESS) {
+			err = errf("SSHAgentError", NULL, "SSH agent returned "
+			    "message code %d to ECDH request", (int)code);
+			goto out;
+		}
+		if ((rc = sshbuf_get_string(reply, &sec, &seclen))) {
+			err = ssherrf("sshbuf_get_string", rc);
+			goto out;
+		}
+
+		err = piv_box_open_common(sec, seclen, box);
+		goto out;
+	}
+
+	err = errf("NotSupportedError", NULL, "SSH agent does not support "
+	    "ECDH extensions");
+
+out:
+	sshbuf_free(req);
+	sshbuf_free(reply);
+	sshbuf_free(buf);
+	sshbuf_free(boxbuf);
+	sshbuf_free(datab);
+
+	sshkey_free(temp);
+	sshkey_free(temppub);
+
+	ssh_free_identitylist(idl);
+	piv_box_free(rebox);
+	return (err);
 }

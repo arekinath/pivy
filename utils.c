@@ -17,6 +17,10 @@
 #include "debug.h"
 #include "errf.h"
 
+#include <openssl/err.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+
 #include "openssh/config.h"
 #include "openssh/sshbuf.h"
 #include "openssh/ssherr.h"
@@ -390,4 +394,100 @@ unparse_lifetime(unsigned long secs)
 	sshbuf_free(buf);
 
 	return (ret);
+}
+
+struct errf *
+X509_to_der(X509 *cert, uint8_t **pbuf, size_t *plen)
+{
+	int rc;
+	uint8_t *cbuf = NULL;
+	errf_t *err;
+	rc = i2d_X509(cert, &cbuf);
+	if (rc < 0) {
+		make_sslerrf(err, "i2d_X509", "converting X509 cert to DER");
+		return (err);
+	}
+	*plen = rc;
+	*pbuf = cbuf;
+	return (ERRF_OK);
+}
+
+struct errf *
+X509_REQ_to_der(X509_REQ *req, uint8_t **pbuf, size_t *plen)
+{
+	int rc;
+	uint8_t *cbuf = NULL;
+	errf_t *err;
+	rc = i2d_X509_REQ(req, &cbuf);
+	if (rc < 0) {
+		make_sslerrf(err, "i2d_X509_REQ", "converting X509 req to DER");
+		return (err);
+	}
+	*plen = rc;
+	*pbuf = cbuf;
+	return (ERRF_OK);
+}
+
+struct errf *
+X509_CRL_to_der(X509_CRL *crl, uint8_t **pbuf, size_t *plen)
+{
+	int rc;
+	uint8_t *cbuf = NULL;
+	errf_t *err;
+	rc = i2d_X509_CRL(crl, &cbuf);
+	if (rc < 0) {
+		make_sslerrf(err, "i2d_X509_CRL", "converting X509 CRL to DER");
+		return (err);
+	}
+	*plen = rc;
+	*pbuf = cbuf;
+	return (ERRF_OK);
+}
+
+struct errf *
+X509_from_der(const uint8_t *buf, size_t len, X509 **pcert)
+{
+	const unsigned char *p;
+	X509 *x;
+	errf_t *err;
+	p = buf;
+	x = d2i_X509(NULL, &p, len);
+	if (x == NULL) {
+		make_sslerrf(err, "d2i_X509", "parsing X509 certificate");
+		return (err);
+	}
+	*pcert = x;
+	return (ERRF_OK);
+}
+
+struct errf *
+X509_REQ_from_der(const uint8_t *buf, size_t len, X509_REQ **preq)
+{
+	const unsigned char *p;
+	X509_REQ *x;
+	errf_t *err;
+	p = buf;
+	x = d2i_X509_REQ(NULL, &p, len);
+	if (x == NULL) {
+		make_sslerrf(err, "d2i_X509_REQ", "parsing X509 cert req");
+		return (err);
+	}
+	*preq = x;
+	return (ERRF_OK);
+}
+
+struct errf *
+X509_CRL_from_der(const uint8_t *buf, size_t len, X509_CRL **pcrl)
+{
+	const unsigned char *p;
+	X509_CRL *x;
+	errf_t *err;
+	p = buf;
+	x = d2i_X509_CRL(NULL, &p, len);
+	if (x == NULL) {
+		make_sslerrf(err, "d2i_X509_CRL", "parsing X509 CRL");
+		return (err);
+	}
+	*pcrl = x;
+	return (ERRF_OK);
 }
