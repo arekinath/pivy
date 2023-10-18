@@ -21,8 +21,9 @@ HAVE_JSONC	:= no
 USE_JSONC	?= no
 HAVE_CTF	:= no
 
-TAR		= tar
-CURL		= curl
+TAR		?= tar
+CURL		?= curl
+RAGEL		?= ragel
 
 prefix		?= /opt/pivy
 bindir		?= $(prefix)/bin
@@ -294,7 +295,9 @@ PIV_COMMON_SOURCES=		\
 	debug.c			\
 	bunyan.c		\
 	errf.c			\
-	utils.c
+	utils.c			\
+	slot-spec.c		\
+	card-db.c
 PIV_COMMON_HEADERS=		\
 	piv.h			\
 	tlv.h			\
@@ -303,10 +306,16 @@ PIV_COMMON_HEADERS=		\
 	piv-internal.h		\
 	debug.h			\
 	utils.h			\
+	slot-spec.h
 
 ifneq ($(SYSTEM), OpenBSD)
 PIV_COMMON_SOURCES+= 	readpassphrase.c
 endif
+
+%.c: %.rl
+	$(RAGEL) -o $@ $<
+%.png: %.rl
+	$(RAGEL) -Vp $< | dot -Tpng > $@
 
 PIV_CERT_SOURCES=			\
 	piv-certs.c		\

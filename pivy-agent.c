@@ -106,6 +106,7 @@
 #include "tlv.h"
 #include "piv.h"
 #include "errf.h"
+#include "slot-spec.h"
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -182,8 +183,7 @@ static uint8_t *guid = NULL;
 static size_t guid_len = 0;
 static boolean_t sign_9d = B_FALSE;
 static confirm_mode_t confirm_mode = C_NEVER;
-/* One bit per slot, bit# = slot# & 0x7f */
-static uint64_t slot_ena_mask = 0x743ffffc;
+static struct slotspec *slot_ena;
 
 typedef struct uid_entry {
 	struct uid_entry	*ue_next;
@@ -356,6 +356,12 @@ monotime(void)
 	msec = tv.tv_sec * 1000;
 	msec += tv.tv_usec / 1000;
 	return (msec);
+}
+
+static inline boolean_t
+is_slot_enabled(struct piv_slot *slot)
+{
+	return (slotspec_test(slot_ena, piv_slot_id(slot)));
 }
 
 static void
@@ -1202,74 +1208,6 @@ send_extfail(socket_entry_t *e)
 	if ((r = sshbuf_put_u32(e->se_output, 1)) != 0 ||
 	    (r = sshbuf_put_u8(e->se_output, SSH_AGENT_EXT_FAILURE)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
-}
-
-static boolean_t
-is_slot_enabled(const struct piv_slot *slot)
-{
-	const uint64_t mask = (1ull << (piv_slot_id(slot) & 0x7F));
-	if ((slot_ena_mask & mask) == 0)
-		return (B_FALSE);
-	return (B_TRUE);
-}
-
-static errf_t *
-parse_slot_spec(const char *instr)
-{
-	char *str;
-	char *tmp, *token;
-	char *saveptr = NULL;
-	errf_t *err;
-
-	str = strdup(instr);
-	tmp = str;
-	token = NULL;
-
-	while (1) {
-		boolean_t invert = B_FALSE;
-		uint64_t mask = 0;
-		unsigned long int parsed;
-		enum piv_slotid slotid;
-
-		token = strtok_r(tmp, ",", &saveptr);
-		if (token == NULL)
-			break;
-		tmp = NULL;
-
-		if (token[0] == '!') {
-			invert = B_TRUE;
-			++token;
-		}
-
-		if (strcasecmp(token, "all") == 0) {
-			mask = 0x743ffffc;
-			goto maskout;
-		}
-
-		err = piv_slotid_from_string(token, &slotid);
-		if (err != ERRF_OK) {
-			free(str);
-			return (errf("ParseError", err,
-			    "Failed to parse slot id: '%s'", token));
-		}
-
-		parsed = slotid;
-		parsed &= 0x7f;
-		if (parsed > 63) {
-			free(str);
-			return (errf("InvalidSlot", NULL,
-			    "Invalid slot id: '%s'", token));
-		}
-		mask = (1ull << parsed);
-maskout:
-		if (invert)
-			slot_ena_mask &= ~mask;
-		else
-			slot_ena_mask |= mask;
-	}
-
-	free(str);
-	return (ERRF_OK);
 }
 
 /* send list of supported public keys to 'client' */
@@ -3098,6 +3036,8 @@ main(int ac, char **av)
 
 	__progname = "pivy-agent";
 
+	slot_ena = slotspec_alloc();
+
 	while ((ch = getopt(ac, av, "cCDdkisE:a:P:g:K:mZUS:u:z:")) != -1) {
 		switch (ch) {
 		case 'g':
@@ -3142,7 +3082,7 @@ main(int ac, char **av)
 				fatal("Invalid CAK key given: %ld", r);
 			break;
 		case 'S':
-			err = parse_slot_spec(optarg);
+			err = slotspec_parse(slot_ena, optarg);
 			if (err) {
 				errfx(1, err, "Invalid slot spec (-S): %s",
 				    optarg);
