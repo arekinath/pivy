@@ -3,8 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * Copyright (c) 2019, Joyent Inc
- * Author: Alex Wilson <alex.wilson@joyent.com>
+ * Copyright 2023 The University of Queensland
+ * Author: Alex Wilson <alex@uq.edu.au>
  */
 
 #include <stdint.h>
