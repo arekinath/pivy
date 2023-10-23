@@ -1,6 +1,7 @@
 /*
  * Newly written portions Copyright 2018 Joyent, Inc.
- * Author: Alex Wilson <alex.wilson@joyent.com>
+ * Copyright 2023 The University of Queensland
+ * Author: Alex Wilson <alex.wilson@joyent.com>, <alex@uq.edu.au>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -827,8 +828,11 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 	int status;
 	pid_t kid, ret;
 	boolean_t add_zenity_args = B_FALSE;
-	char prompt[1024];
+	boolean_t add_notify_send_args = B_FALSE;
+	char prompt[1024], buf[64];
+	size_t len;
 	char *guid;
+	int p[2];
 
 	if (confirm_mode == C_NEVER) {
 		e->se_authz = AUTHZ_ALLOWED;
@@ -895,6 +899,8 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		char *tmp = strdup(confirm);
 		if (strcmp(basename(tmp), "zenity") == 0)
 			add_zenity_args = B_TRUE;
+		if (strcmp(basename(tmp), "notify-send") == 0)
+			add_notify_send_args = B_TRUE;
 		free(tmp);
 	}
 
@@ -911,17 +917,32 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 	free(guid);
 	guid = NULL;
 
+	if (pipe(p) == -1)
+		return;
 	if ((kid = fork()) == -1)
 		return;
 	if (kid == 0) {
 		close(STDOUT_FILENO);
 		close(STDIN_FILENO);
+		close(p[0]);
+		if (dup2(p[1], STDOUT_FILENO) == -1)
+			exit(1);
 		if (confirm && add_zenity_args) {
 			execlp(confirm, confirm,
 			    "--question", "--ok-label=Allow",
 			    "--cancel-label=Block", "--width=300",
 			    "--title=pivy-agent",
 			    "--icon-name=application-certificate-symbolic",
+			    prompt,
+			    (char *)NULL);
+		} else if (confirm && add_notify_send_args) {
+			execlp(confirm, confirm,
+			    "--urgency=critical",
+			    "--expire-time=0",
+			    "--wait",
+			    "--action=allow=Allow",
+			    "--action=deny=Deny",
+			    "pivy-agent confirmation",
 			    prompt,
 			    (char *)NULL);
 		} else if (confirm) {
@@ -932,6 +953,7 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		}
 		exit(128);
 	}
+	close(p[1]);
 	while ((ret = waitpid(kid, &status, 0)) == -1)
 		if (errno != EINTR)
 			break;
@@ -943,7 +965,22 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		return;
 	}
 
-	if (WEXITSTATUS(status) == 0) {
+	len = 0;
+	do {
+		ssize_t r = read(p[0], buf + len, sizeof(buf) - 1 - len);
+
+		if (r == -1 && errno == EINTR)
+			continue;
+		if (r <= 0)
+			break;
+		len += r;
+	} while (sizeof(buf) - 1 - len > 0);
+	buf[len] = '\0';
+
+	close(p[0]);
+
+	if (WEXITSTATUS(status) == 0 && (!add_notify_send_args ||
+	    strcmp(buf, "allow\n") == 0)) {
 		e->se_authz = AUTHZ_ALLOWED;
 		e->se_pid_ent->pe_last_auth = monotime();
 	} else {
