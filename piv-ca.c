@@ -3981,7 +3981,6 @@ ca_log_crl_gen(struct ca *ca, struct ca_session *sess, X509_CRL *crl, uint seq)
 	const ASN1_TIME *asn1time;
 	struct tm tmv;
 	time_t t;
-	int rc;
 	STACK_OF(X509_REVOKED) *revoked;
 
 	err = ca_log_verify(ca, &prev_hash, NULL, NULL);
@@ -4041,14 +4040,8 @@ ca_log_crl_gen(struct ca *ca, struct ca_session *sess, X509_CRL *crl, uint seq)
 
 	bzero(&tmv, sizeof (tmv));
 	asn1time = X509_CRL_get0_lastUpdate(crl);
-	/*
-	 * This is LibreSSL-specific, if we ever change to OpenSSL we probably
-	 * want ASN1_TIME_to_tm() here.
-	 */
-	rc = ASN1_time_parse((const char *)ASN1_STRING_get0_data(asn1time),
-	    ASN1_STRING_length(asn1time), &tmv, 0);
-	if (rc == -1) {
-		make_sslerrf(err, "ASN1_time_parse", "parsing lastUpdate "
+	if (!ASN1_TIME_to_tm(asn1time, &tmv)) {
+		make_sslerrf(err, "ASN1_TIME_to_tm", "parsing lastUpdate "
 		    "timestamp in CRL");
 		goto out;
 	}
@@ -4060,10 +4053,8 @@ ca_log_crl_gen(struct ca *ca, struct ca_session *sess, X509_CRL *crl, uint seq)
 
 	bzero(&tmv, sizeof (tmv));
 	asn1time = X509_CRL_get0_nextUpdate(crl);
-	rc = ASN1_time_parse((const char *)ASN1_STRING_get0_data(asn1time),
-	    ASN1_STRING_length(asn1time), &tmv, 0);
-	if (rc == -1) {
-		make_sslerrf(err, "ASN1_time_parse", "parsing nextUpdate "
+	if (!ASN1_TIME_to_tm(asn1time, &tmv)) {
+		make_sslerrf(err, "ASN1_TIME_to_tm", "parsing nextUpdate "
 		    "timestamp in CRL");
 		goto out;
 	}
