@@ -15,6 +15,8 @@ set -o xtrace
 privhdrs="https://stluc.manta.uqcloud.net/xlex/public/zfs-privhdrs-r151038.tar.gz"
 jsonc_ver="0.16"
 jsonc="https://s3.amazonaws.com/json-c_releases/releases/json-c-${jsonc_ver}.tar.gz"
+ragel_ver="6.10"
+ragel="http://www.colm.net/files/ragel/ragel-${ragel_ver}.tar.gz"
 
 mkdir -p /work/dist
 
@@ -36,6 +38,18 @@ banner zfs headers
 mkdir -p /work/zfs-priv
 pushd /work/zfs-priv
 curl ${privhdrs} | gtar -zxvf -
+popd
+
+#
+banner ragel
+#
+mkdir -p /work/ragel
+pushd /work/ragel
+curl ${ragel} | gtar -zxf -
+cd ragel-${ragel_ver}
+./configure --prefix=/opt/ragel-${ragel_ver}
+gmake -j2
+pfexec gmake -j2 install
 popd
 
 #
@@ -70,7 +84,7 @@ popd
 #
 banner build
 #
-export PATH=$PATH:/opt/onbld/bin/i386
+export PATH=$PATH:/opt/onbld/bin/i386:/opt/ragel-${ragel_ver}/bin
 export MAKE=gmake
 export PKG_CONFIG_PATH=/opt/pivy/lib/pkgconfig:$PKG_CONFIG_PATH
 gmake -j2 \
