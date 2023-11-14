@@ -296,8 +296,7 @@ PIV_COMMON_SOURCES=		\
 	bunyan.c		\
 	errf.c			\
 	utils.c			\
-	slot-spec.c		\
-	card-db.c
+	slot-spec.c
 PIV_COMMON_HEADERS=		\
 	piv.h			\
 	tlv.h			\

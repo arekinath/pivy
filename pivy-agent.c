@@ -3074,6 +3074,7 @@ main(int ac, char **av)
 	__progname = "pivy-agent";
 
 	slot_ena = slotspec_alloc();
+	slotspec_set_default(slot_ena);
 
 	while ((ch = getopt(ac, av, "cCDdkisE:a:P:g:K:mZUS:u:z:")) != -1) {
 		switch (ch) {
