@@ -78,6 +78,7 @@ slotspec_alloc(void)
 {
 	struct slotspec *spec;
 	spec = calloc(1, sizeof (*spec));
+	spec->ss_mask = 0x743ffffc;
 	return (spec);
 }
 
@@ -117,12 +118,23 @@ slotspec_test(const struct slotspec *spec, enum piv_slotid slotid)
 	return ((spec->ss_mask & (1ull << parsed)) != 0);
 }
 
+void
+slotspec_set_default(struct slotspec *spec)
+{
+	spec->ss_mask = 0x743ffffc;
+}
+
+void
+slotspec_clear_all(struct slotspec *spec)
+{
+	spec->ss_mask = 0;
+}
+
 %% write data;
 
 errf_t *
-slotspec_parse(struct slotspec *spec, const char *p)
+slotspec_parse_pe(struct slotspec *spec, const char *p, const char *pe)
 {
-	const char *pe = p + strlen(p);
 	const char *eof = pe;
 	boolean_t invert = B_FALSE;
 	enum piv_slotid slotid;
@@ -132,8 +144,6 @@ slotspec_parse(struct slotspec *spec, const char *p)
 	errf_t *err = ERRF_OK;
 	unsigned long int parsed;
 	int cs;
-
-	spec->ss_mask = 0x743ffffc;
 
 	%% write init;
 	%% write exec;
@@ -147,4 +157,11 @@ slotspec_parse(struct slotspec *spec, const char *p)
 	(void)slotspec_en_main;
 
 	return (err);
+}
+
+errf_t *
+slotspec_parse(struct slotspec *spec, const char *p)
+{
+	const char *pe = p + strlen(p);
+	return (slotspec_parse_pe(spec, p, pe));
 }

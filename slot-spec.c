@@ -5,8 +5,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
- * Copyright (c) 2019, Joyent Inc
- * Author: Alex Wilson <alex.wilson@joyent.com>
+ * Copyright 2023 The University of Queensland
+ * Author: Alex Wilson <alex@uq.edu.au>
  */
 
 #include <stdint.h>
@@ -30,6 +30,7 @@ slotspec_alloc(void)
 {
 	struct slotspec *spec;
 	spec = calloc(1, sizeof (*spec));
+	spec->ss_mask = 0x743ffffc;
 	return (spec);
 }
 
@@ -69,8 +70,20 @@ slotspec_test(const struct slotspec *spec, enum piv_slotid slotid)
 	return ((spec->ss_mask & (1ull << parsed)) != 0);
 }
 
+void
+slotspec_set_default(struct slotspec *spec)
+{
+	spec->ss_mask = 0x743ffffc;
+}
 
-#line 74 "slot-spec.c"
+void
+slotspec_clear_all(struct slotspec *spec)
+{
+	spec->ss_mask = 0;
+}
+
+
+#line 87 "slot-spec.c"
 static const char _slotspec_actions[] = {
 	0, 1, 3, 1, 6, 2, 0, 3, 
 	2, 2, 5, 2, 4, 5, 2, 6, 
@@ -149,12 +162,11 @@ static const int slotspec_error = 0;
 static const int slotspec_en_main = 1;
 
 
-#line 121 "slot-spec.rl"
+#line 134 "slot-spec.rl"
 
 errf_t *
-slotspec_parse(struct slotspec *spec, const char *p)
+slotspec_parse_pe(struct slotspec *spec, const char *p, const char *pe)
 {
-	const char *pe = p + strlen(p);
 	const char *eof = pe;
 	boolean_t invert = B_FALSE;
 	enum piv_slotid slotid;
@@ -165,17 +177,15 @@ slotspec_parse(struct slotspec *spec, const char *p)
 	unsigned long int parsed;
 	int cs;
 
-	spec->ss_mask = 0x743ffffc;
-
 	
-#line 172 "slot-spec.c"
+#line 182 "slot-spec.c"
 	{
 	cs = slotspec_start;
 	}
 
-#line 139 "slot-spec.rl"
+#line 149 "slot-spec.rl"
 	
-#line 179 "slot-spec.c"
+#line 189 "slot-spec.c"
 	{
 	int _klen;
 	unsigned int _trans;
@@ -314,7 +324,7 @@ _match:
 	    "(expected '!' and then a slot)", p - 1));
 }
 	break;
-#line 318 "slot-spec.c"
+#line 328 "slot-spec.c"
 		}
 	}
 
@@ -387,7 +397,7 @@ _again:
 	    "(expected '!' and then a slot)", p - 1));
 }
 	break;
-#line 391 "slot-spec.c"
+#line 401 "slot-spec.c"
 		}
 	}
 	}
@@ -395,7 +405,7 @@ _again:
 	_out: {}
 	}
 
-#line 140 "slot-spec.rl"
+#line 150 "slot-spec.rl"
 
 	if (cs == slotspec_error) {
 		err = errf("InvalidSlotSpec", NULL, "Unexpected '%c'",
@@ -406,4 +416,11 @@ _again:
 	(void)slotspec_en_main;
 
 	return (err);
+}
+
+errf_t *
+slotspec_parse(struct slotspec *spec, const char *p)
+{
+	const char *pe = p + strlen(p);
+	return (slotspec_parse_pe(spec, p, pe));
 }
