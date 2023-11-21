@@ -897,9 +897,10 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 
 	if (confirm != NULL) {
 		char *tmp = strdup(confirm);
-		if (strcmp(basename(tmp), "zenity") == 0)
+		const char *execname = basename(tmp);
+		if (strcmp(execname, "zenity") == 0)
 			add_zenity_args = B_TRUE;
-		if (strcmp(basename(tmp), "notify-send") == 0)
+		if (strcmp(execname, "notify-send") == 0)
 			add_notify_send_args = B_TRUE;
 		free(tmp);
 	}
