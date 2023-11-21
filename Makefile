@@ -228,6 +228,7 @@ _OBSD_COMPAT=			\
 	base64.c		\
 	bsd-setres_id.c		\
 	vis.c			\
+	bsd-poll.c
 
 _LIBSSH_SOURCES=		\
 	sshbuf.c		\
