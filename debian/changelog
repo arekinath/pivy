@@ -1,3 +1,11 @@
+pivy (0.11.2-1) UNRELEASED; urgency=medium
+
+  * piv: better error messages on invalid PIN cowardice
+  * piv: handle "no readers" errors better, stops agent from getting lost
+  * pivy-agent: slot spec parser error message improvements
+  * pivy-agent: support for using notify-send as SSH_CONFIRM
+  * update bundled libressl to 3.8.2, openssh to 9.5p1
+
 pivy (0.11.1-1) UNRELEASED; urgency=medium
 
   * pivy-ca/luks/zfs: fix possible use-after-free segfault in recovery mode
