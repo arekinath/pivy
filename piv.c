@@ -1308,6 +1308,9 @@ piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 	LPTSTR readers, thisrdr;
 	struct piv_token *ks = NULL;
 	errf_t *err;
+	struct piv_token *key;
+	SCARDHANDLE card;
+	DWORD activeProtocol;
 
 	if (!ctx->pc_scard_init && ctx->pc_scard_nordr) {
 		/* Previous attempt got "no readers" error */
@@ -1326,6 +1329,16 @@ piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 	if (!ctx->pc_scard_init) {
 		return (errf("PCSCContextError", NULL,
 		    "PCSC context has not been initialised"));
+	}
+
+	for (key = ctx->pc_tokens; key != NULL; key = key->pt_lib_next) {
+		if (key->pt_intxn) {
+			return (errf("TransactionError", NULL,
+			    "Another token belonging to this context is "
+			    "currently in a transaction, can't use "
+			    "piv_enumerate"));
+		}
+		(void) SCardDisconnect(key->pt_cardhdl, SCARD_RESET_CARD);
 	}
 
 	rv = SCardListReaders(ctx->pc_scard, NULL, NULL, &readersLen);
@@ -1355,10 +1368,6 @@ piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 	}
 
 	for (thisrdr = readers; *thisrdr != 0; thisrdr += strlen(thisrdr) + 1) {
-		SCARDHANDLE card;
-		struct piv_token *key;
-		DWORD activeProtocol;
-
 		rv = SCardConnect(ctx->pc_scard, thisrdr, SCARD_SHARE_SHARED,
 		    SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1, &card,
 		    &activeProtocol);
@@ -1395,6 +1404,7 @@ piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 			bunyan_log(BNY_DEBUG, "piv_txn_begin failed",
 			    "error", BNY_ERF, err, NULL);
 			errf_free(err);
+			(void) SCardDisconnect(card, SCARD_RESET_CARD);
 			continue;
 		}
 		err = piv_select(key);
