@@ -1,4 +1,4 @@
-From bcabb1ad8766f4bf49d1b63c85635f371c77aea3 Mon Sep 17 00:00:00 2001
+From c38b0c56bb8c2388eb96f62a4c14a4e1a1ddc9af Mon Sep 17 00:00:00 2001
 From: Alex Wilson <alex@cooperi.net>
 Date: Wed, 9 Mar 2022 14:38:30 +1000
 Subject: [PATCH] xxx: pivy changes
@@ -23,10 +23,10 @@ Subject: [PATCH] xxx: pivy changes
  16 files changed, 764 insertions(+), 16 deletions(-)
 
 diff --git a/authfd.c b/authfd.c
-index b633e35ea..da34bdaa6 100644
+index 25a363664..5c30d8f83 100644
 --- a/authfd.c
 +++ openssh/authfd.c
-@@ -135,7 +135,7 @@ ssh_get_authentication_socket(int *fdp)
+@@ -134,7 +134,7 @@ ssh_get_authentication_socket(int *fdp)
  }
  
  /* Communicate with agent: send request and read reply */
@@ -120,10 +120,10 @@ index 274574d0e..4b569962f 100644
  struct sshbuf;
  struct ssh_digest_ctx;
 diff --git a/misc.c b/misc.c
-index c098dc610..d4742bc36 100644
+index 42582c618..f3d01fef4 100644
 --- a/misc.c
 +++ openssh/misc.c
-@@ -2741,7 +2741,9 @@ subprocess(const char *tag, const char *command,
+@@ -2769,7 +2769,9 @@ subprocess(const char *tag, const char *command,
  			error("%s: dup2: %s", tag, strerror(errno));
  			_exit(1);
  		}
@@ -165,10 +165,10 @@ index 5a22ba3b4..f006b14cc 100644
  	/* generate key, sizeof(out) at a time */
  	for (count = 1; keylen > 0; count++) {
 diff --git a/openbsd-compat/openbsd-compat.h b/openbsd-compat/openbsd-compat.h
-index 895ecf9ea..0e83b55c6 100644
+index 78faea962..cecec752d 100644
 --- a/openbsd-compat/openbsd-compat.h
 +++ openssh/openbsd-compat/openbsd-compat.h
-@@ -222,8 +222,8 @@ uint32_t arc4random(void);
+@@ -225,8 +225,8 @@ uint32_t arc4random(void);
  void arc4random_buf(void *, size_t);
  #endif
  
@@ -636,10 +636,10 @@ index 085e75274..e97c45771 100644
 +
  #endif /* _SSHERR_H */
 diff --git a/sshkey.c b/sshkey.c
-index 43712253d..7c1ac7f2b 100644
+index 2d3906ad8..4bbe5853a 100644
 --- a/sshkey.c
 +++ openssh/sshkey.c
-@@ -2096,17 +2096,21 @@ sshkey_sign(struct sshkey *key,
+@@ -2100,17 +2100,21 @@ sshkey_sign(struct sshkey *key,
  		return SSH_ERR_KEY_TYPE_UNKNOWN;
  	if ((r = sshkey_unshield_private(key)) != 0)
  		return r;
@@ -662,7 +662,7 @@ index 43712253d..7c1ac7f2b 100644
  	if (was_shielded && (r2 = sshkey_shield_private(key)) != 0)
  		return r2;
  	return r;
-@@ -3661,3 +3665,388 @@ sshkey_set_filename(struct sshkey *k, const char *filename)
+@@ -3668,3 +3672,388 @@ sshkey_set_filename(struct sshkey *k, const char *filename)
  	return 0;
  }
  #endif /* WITH_XMSS */
@@ -1052,7 +1052,7 @@ index 43712253d..7c1ac7f2b 100644
 +	return rc;
 +}
 diff --git a/sshkey.h b/sshkey.h
-index 771c4bcee..e1a0b6c25 100644
+index 708f2da86..80b21e4e5 100644
 --- a/sshkey.h
 +++ openssh/sshkey.h
 @@ -26,11 +26,14 @@
@@ -1095,5 +1095,5 @@ index 771c4bcee..e1a0b6c25 100644
  int	sshkey_sk_fields_equal(const struct sshkey *a, const struct sshkey *b);
  void	sshkey_sk_cleanup(struct sshkey *k);
 -- 
-2.39.1
+2.42.0
 

@@ -1,9 +1,9 @@
 all: pivy-tool pivy-agent pivy-box
 
-LIBRESSL_VER	= 3.7.0
+LIBRESSL_VER	= 3.8.2
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
-OPENSSH_VER	= 9.2p1
+OPENSSH_VER	= 9.5p1
 OPENSSH_URL	= https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-$(OPENSSH_VER).tar.gz
 
 OPENSSH		= $(CURDIR)/openssh
@@ -741,12 +741,10 @@ ifeq ($(SYSTEM), Darwin)
 	cp libressl/crypto/Makefile.in{,.bak} && \
 	    grep -v HOST_CPU_IS_INTEL libressl/crypto/Makefile.in.bak \
 	    > libressl/crypto/Makefile.in && \
-	    patch -p0 <libressl.patch && \
 	    touch $(CURDIR)/$@
 else
 .libressl.patch: .libressl.extract
-	patch -p0 <libressl.patch && \
-	    touch $(CURDIR)/$@
+	touch $(CURDIR)/$@
 endif
 
 LIBRESSL_CONFIG_ARGS=	\
