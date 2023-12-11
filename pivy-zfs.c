@@ -717,6 +717,8 @@ main(int argc, char *argv[])
 		case 't':
 			tpl = optarg;
 			break;
+		default:
+			usage();
 		}
 	}
 
