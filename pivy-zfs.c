@@ -206,7 +206,9 @@ cmd_unlock(const char *fsname)
 {
 	zfs_handle_t *ds;
 	nvlist_t *props, *prop;
-	char *b64, *description;
+	char *description;
+	const char *b64;
+	char *nb64;
 	struct sshbuf *buf;
 	struct ebox *ebox, *nebox;
 	struct ebox_tpl *ntpl;
@@ -363,16 +365,16 @@ newprimary:
 		if (error)
 			errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-		b64 = sshbuf_dtob64_string(buf, 0);
+		nb64 = sshbuf_dtob64_string(buf, 0);
 
-		rc = zfs_prop_set(ds, "rfd77:ebox", b64);
+		rc = zfs_prop_set(ds, "rfd77:ebox", nb64);
 		if (rc != 0) {
 			errno = rc;
 			err(EXIT_ERROR, "failed to set ZFS property rfd77:ebox "
 			    "on dataset %s", fsname);
 		}
 
-		free(b64);
+		free(nb64);
 		ebox_tpl_free(ntpl);
 	}
 
@@ -387,7 +389,9 @@ cmd_rekey(const char *fsname)
 {
 	zfs_handle_t *ds;
 	nvlist_t *props, *prop;
-	char *b64, *description;
+	char *description;
+	const char *b64;
+	char *nb64;
 	struct sshbuf *buf;
 	struct ebox *ebox = NULL, *nebox;
 	size_t desclen;
@@ -513,7 +517,7 @@ cmd_rekey(const char *fsname)
 	if (error)
 		errfx(EXIT_ERROR, error, "sshbuf_put_ebox failed");
 
-	b64 = sshbuf_dtob64_string(buf, 0);
+	nb64 = sshbuf_dtob64_string(buf, 0);
 
 	/*
 	 * To change the wrapping key in a way that's safe against us dying or
@@ -527,7 +531,7 @@ cmd_rekey(const char *fsname)
 	 * PROP_RFD77 and delete PROP_RFD77_TEMP.
 	 */
 #if defined(DMU_OT_ENCRYPTED)
-	rc = zfs_prop_set(ds, PROP_RFD77_TEMP, b64);
+	rc = zfs_prop_set(ds, PROP_RFD77_TEMP, nb64);
 	if (rc != 0) {
 		errno = rc;
 		err(EXIT_ERROR, "failed to set temporary ZFS property "
@@ -543,7 +547,7 @@ cmd_rekey(const char *fsname)
 	nvlist_free(nprops);
 #endif
 
-	rc = zfs_prop_set(ds, propname, b64);
+	rc = zfs_prop_set(ds, propname, nb64);
 	if (rc != 0) {
 		errno = rc;
 		err(EXIT_ERROR, "failed to set ZFS property %s on dataset %s",
@@ -559,7 +563,7 @@ cmd_rekey(const char *fsname)
 	}
 #endif
 
-	free(b64);
+	free(nb64);
 
 	sshbuf_free(buf);
 	ebox_free(ebox);

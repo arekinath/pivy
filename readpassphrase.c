@@ -134,8 +134,10 @@ restart:
 	(void)sigaction(SIGTTIN, &sa, &savettin);
 	(void)sigaction(SIGTTOU, &sa, &savettou);
 
-	if (!(flags & RPP_STDIN))
-		(void)write(output, prompt, strlen(prompt));
+	if (!(flags & RPP_STDIN)) {
+		ssize_t nw = write(output, prompt, strlen(prompt));
+		(void)nw;
+	}
 	end = buf + bufsiz - 1;
 	p = buf;
 	while ((nr = read(input, &ch, 1)) == 1 && ch != '\n' && ch != '\r') {
@@ -153,8 +155,10 @@ restart:
 	}
 	*p = '\0';
 	save_errno = errno;
-	if (!(term.c_lflag & ECHO))
-		(void)write(output, "\n", 1);
+	if (!(term.c_lflag & ECHO)) {
+		ssize_t nw = write(output, "\n", 1);
+		(void)nw;
+	}
 
 	/* Restore old terminal settings and signals. */
 	if (memcmp(&term, &oterm, sizeof(term)) != 0) {

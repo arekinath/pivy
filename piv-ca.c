@@ -69,6 +69,14 @@
 /* We need the piv_cert_comp enum */
 #include "piv-internal.h"
 
+#if !defined(JSONC_14)
+size_t
+json_tokener_get_parse_end(struct json_tokener *tok)
+{
+	return ((size_t)tok->char_offset);
+}
+#endif
+
 struct ca_uri {
 	struct ca_uri		*cu_next;
 	char			*cu_uri;
@@ -1414,21 +1422,6 @@ calc_cert_slug_X509(X509 *cert)
 	ret = calc_cert_slug(subj, exts, serial);
 
 	BN_free(serial);
-	return (ret);
-}
-
-static char *
-calc_cert_slug_X509_REQ(X509_REQ *req, BIGNUM *serial)
-{
-	X509_NAME *subj;
-	STACK_OF(X509_EXTENSION) *exts;
-	char *ret;
-
-	exts = X509_REQ_get_extensions(req);
-	subj = X509_REQ_get_subject_name(req);
-
-	ret = calc_cert_slug(subj, exts, serial);
-
 	return (ret);
 }
 
@@ -5442,10 +5435,3 @@ ca_aia_uri_add(struct ca *ca, const char *uri)
 	return (errf("NotImplemented", NULL, "Not implemented"));
 }
 
-#if !defined(JSONC_14)
-size_t
-json_tokener_get_parse_end(struct json_tokener *tok)
-{
-	return ((size_t)tok->char_offset);
-}
-#endif

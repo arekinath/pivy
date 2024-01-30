@@ -38,7 +38,7 @@ INSTALLBIN	?= $(INSTALL) -o $(binowner) -g $(bingroup) -m 0755
 
 SECURITY_CFLAGS	= \
 	-fstack-protector-all -fwrapv -fPIC \
-	-D_FORTIFY_SOURCE=2 -Wall -g -O2 -gdwarf-2
+	-D_FORTIFY_SOURCE=2 -Wall -g -O2 -gdwarf-2 -Werror
 
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
@@ -64,7 +64,7 @@ ifeq ($(SYSTEM), Linux)
 	ifneq (,$(LIBZFS_VER))
 		HAVE_ZFS	:= $(USE_ZFS)
 		LIBZFS_CFLAGS	= $(shell pkg-config --cflags libzfs)
-		LIBZFS_CFLAGS	+= -DUSING_SPL
+		LIBZFS_CFLAGS	+= -DUSING_SPL -Wno-macro-redefined
 		LIBZFS_LIBS	= $(shell pkg-config --libs libzfs) -lnvpair
 	else
 		HAVE_ZFS	:= no
@@ -437,7 +437,7 @@ PIVYCA_CFLAGS=		$(PCSC_CFLAGS) \
 			$(OPTIM_CFLAGS) \
 			$(SECURITY_CFLAGS) \
 			$(CONFIG_CFLAGS) \
-			-O0 -g -gdwarf-2 -D_GNU_SOURCE \
+			-g -gdwarf-2 -D_GNU_SOURCE \
 			-DPIVY_VERSION='"$(VERSION)"'
 PIVYCA_LDFLAGS=		$(SYSTEM_LDFLAGS) \
 			$(OPTIM_LDFLAGS)
