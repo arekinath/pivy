@@ -709,6 +709,7 @@ cmd_list(void)
 			if (piv_cardcap_has_pkcs15(cardcap))
 				printf(", PKCS#15 support");
 			printf("\n");
+			piv_cardcap_free(cardcap);
 		}
 		printf("%10s:", "auth");
 		defauth = piv_token_default_auth(pk);
@@ -852,6 +853,7 @@ cmd_pinfo(void)
 again:
 	err = piv_read_pinfo(selk, &pinfo);
 	if (errf_caused_by(err, "PermissionError")) {
+		errf_free(err);
 		assert_pin(selk, NULL, B_TRUE);
 		goto again;
 	}
@@ -876,6 +878,8 @@ again:
 
 	if (ykpiv_pinfo_get_admin_key(pinfo, &len) != NULL && len > 0)
 		printf("%12s: contains admin key\n", "yubico");
+
+	piv_pinfo_free(pinfo);
 
 	return (ERRF_OK);
 }
@@ -1915,10 +1919,11 @@ cmd_req_cert(uint slotid)
 	struct sshkey *pub;
 	struct cert_var_scope *scope;
 	const struct cert_tpl *tpl;
-	const char *guidhex;
+	char *guidhex;
 
 	guidhex = piv_token_shortid(selk);
 	(void) scope_set(cvroot, "guid", guidhex);
+	free(guidhex);
 
 	err = set_default_slot_cert_vars(slotid);
 	if (err != ERRF_OK)
@@ -1958,12 +1963,15 @@ cmd_req_cert(uint slotid)
 
 	err = cert_tpl_populate_req(tpl, scope, req);
 	if (err != ERRF_OK) {
+		X509_REQ_free(req);
 		return (funcerrf(err, "Error populating certificate "
 		    "attributes"));
 	}
 
-	if ((err = piv_txn_begin(selk)))
+	if ((err = piv_txn_begin(selk))) {
+		X509_REQ_free(req);
 		return (err);
+	}
 
 	assert_select(selk);
 	assert_pin(selk, slot, B_FALSE);
@@ -1984,6 +1992,7 @@ signagain:
 	}
 
 	PEM_write_X509_REQ(stdout, req);
+	X509_REQ_free(req);
 
 	return (NULL);
 }
@@ -2404,9 +2413,11 @@ cmd_auth(uint slotid)
 	VERIFY(pubkey != NULL);
 	ptr = (char *)buf;
 	rv = sshkey_read(pubkey, &ptr);
+	free(buf);
 	if (rv != 0) {
 		err = funcerrf(ssherrf("sshkey_read", rv),
 		    "failed to parse public key input");
+		sshkey_free(pubkey);
 		return (err);
 	}
 
@@ -2425,7 +2436,7 @@ again:
 		err = funcerrf(err, "key authentication failed");
 		return (err);
 	}
-
+	sshkey_free(pubkey);
 	return (ERRF_OK);
 }
 
@@ -3430,6 +3441,9 @@ main(int argc, char *argv[])
 		warnx("invalid operation '%s'", op);
 		usage();
 	}
+
+	scope_free_root(cvroot);
+	piv_close(piv_ctx);
 
 	if (err)
 		errfx(1, err, "error occurred while executing '%s'", op);

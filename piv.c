@@ -8943,8 +8943,7 @@ piv_cardcap_decode(const uint8_t *data, size_t len, struct piv_cardcap **out)
 out:
 	if (err != ERRF_OK)
 		tlv_abort(tlv);
-	else
-		tlv_free(tlv);
+	tlv_free(tlv);
 	piv_cardcap_free(cc);
 	return (err);
 }

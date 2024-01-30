@@ -384,6 +384,7 @@ cert_var_free(struct cert_var *cv)
 	free(cv->cv_name);
 	free(cv->cv_help);
 	varval_free(cv->cv_value);
+	free(cv);
 }
 
 static void
@@ -515,6 +516,7 @@ cert_var_set(struct cert_var *var, const char *value)
 		if (vv->vv_type == VV_VAR) {
 			cv = get_or_define_empty_var(var->cv_scope,
 			    vv->vv_string, NULL, var->cv_flags);
+			free(vv->vv_string);
 			vv->vv_var = cv;
 		}
 	}
@@ -545,6 +547,7 @@ scope_set(struct cert_var_scope *cvs, const char *name, const char *value)
 		if (vv->vv_type == VV_VAR) {
 			cv = get_or_define_empty_var(cvs, vv->vv_string,
 			    NULL, var->cv_flags);
+			free(vv->vv_string);
 			vv->vv_var = cv;
 		}
 	}
@@ -1188,18 +1191,21 @@ populate_common(struct cert_var_scope *cs, X509 *cert, char *basic, char *ku,
 
 	err = scope_eval(cs, "dn", &dnstr);
 	if (err != ERRF_OK) {
+		X509_NAME_free(subj);
 		return (errf("MissingParameter", err, "certificate 'dn' "
 		    "is required"));
 	}
 
 	err = parse_dn(dnstr, subj);
 	if (err != ERRF_OK) {
+		X509_NAME_free(subj);
 		return (errf("InvalidDN", err, "failed to parse certificate "
 		    "'dn' value: '%s'", dnstr));
 	}
 	free(dnstr);
 
 	VERIFY(X509_set_subject_name(cert, subj) == 1);
+	X509_NAME_free(subj);
 
 	X509V3_set_ctx_nodb(&x509ctx);
 	X509V3_set_ctx(&x509ctx, cert, cert, NULL, NULL, 0);
@@ -1273,6 +1279,7 @@ add_common_princs(struct cert_var_scope *cs, STACK_OF(GENERAL_NAME) *gns)
 		VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
 		VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
 	}
+	free(upn);
 
 	if (krbpn != NULL) {
 		obj = OBJ_txt2obj("1.3.6.1.5.2.2", 1);
@@ -1282,7 +1289,6 @@ add_common_princs(struct cert_var_scope *cs, STACK_OF(GENERAL_NAME) *gns)
 		if (princ == NULL) {
 			err = errf("SyntaxError", NULL, "failed to "
 			    "parse krb5 principal name '%s'", krbpn);
-			free(upn);
 			free(krbpn);
 			sk_GENERAL_NAME_pop_free(gns,
 			    GENERAL_NAME_free);
@@ -1298,9 +1304,10 @@ add_common_princs(struct cert_var_scope *cs, STACK_OF(GENERAL_NAME) *gns)
 
 		gn = GENERAL_NAME_new();
 		VERIFY(gn != NULL);
-		GENERAL_NAME_set0_othername(gn, obj, typ);
+		VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
 		VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
 	}
+	free(krbpn);
 
 	return (ERRF_OK);
 }
@@ -2046,18 +2053,21 @@ rpopulate_common(struct cert_var_scope *cs, X509_REQ *req,
 
 	err = scope_eval(cs, "dn", &dnstr);
 	if (err != ERRF_OK) {
+		X509_NAME_free(subj);
 		return (errf("MissingParameter", err, "certificate 'dn' "
 		    "is required"));
 	}
 
 	err = parse_dn(dnstr, subj);
 	if (err != ERRF_OK) {
+		X509_NAME_free(subj);
 		return (errf("InvalidDN", err, "failed to parse certificate "
 		    "'dn' value: '%s'", dnstr));
 	}
 	free(dnstr);
 
 	VERIFY(X509_REQ_set_subject_name(req, subj) == 1);
+	X509_NAME_free(subj);
 
 	X509V3_set_ctx_nodb(&x509ctx);
 	X509V3_set_ctx(&x509ctx, NULL, NULL, req, NULL, 0);
@@ -2335,8 +2345,10 @@ rpopulate_computer_auth(struct cert_var_scope *cs, X509_REQ *req)
 	VERIFY(exts != NULL);
 
 	err = scope_eval(cs, "dns_name", &dns_name);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
 		return (err);
+	}
 
 	err = scope_eval(cs, "ad_upn", &upn);
 	if (err != ERRF_OK) {
@@ -2361,8 +2373,10 @@ rpopulate_computer_auth(struct cert_var_scope *cs, X509_REQ *req)
 	err = rpopulate_common(cs, req, exts, "critical,CA:FALSE",
 	    "critical,digitalSignature,nonRepudiation",
 	    (char *)eku);
-	if (err != ERRF_OK)
+	if (err != ERRF_OK) {
+		sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
 		return (err);
+	}
 
 	gns = sk_GENERAL_NAME_new_null();
 	VERIFY(gns != NULL);
@@ -2370,11 +2384,14 @@ rpopulate_computer_auth(struct cert_var_scope *cs, X509_REQ *req)
 	err = add_common_princs(cs, gns);
 	if (err != ERRF_OK) {
 		sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
+		sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
 		return (err);
 	}
 
 	tkn = strtok_r(dns_name, "; ", &saveptr);
 	if (tkn == NULL) {
+		sk_GENERAL_NAME_pop_free(gns, GENERAL_NAME_free);
+		sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
 		return (errf("SyntaxError", NULL, "Failed to parse dns_name: "
 		    "%s", dns_name));
 	}
