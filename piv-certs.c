@@ -23,6 +23,7 @@
 #include <limits.h>
 #include <err.h>
 #include <ctype.h>
+#include <inttypes.h>
 
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
@@ -1383,7 +1384,7 @@ gen_sid_ext(struct cert_var_scope *cs, X509_EXTENSION **out)
 		}
 		idauth = v64 & ((1ULL << 48) - 1);
 
-		rc = sshbuf_putf(sbuf, "S-1-%lu", idauth);
+		rc = sshbuf_putf(sbuf, "S-1-%" PRIu64, idauth);
 		if (rc != 0) {
 			err = ssherrf("sshbuf_putf", rc);
 			goto out;

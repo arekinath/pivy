@@ -70,6 +70,8 @@
 #include "piv-internal.h"
 
 #if !defined(JSONC_14)
+size_t json_tokener_get_parse_end(struct json_tokener *);
+
 size_t
 json_tokener_get_parse_end(struct json_tokener *tok)
 {

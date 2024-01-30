@@ -3118,7 +3118,7 @@ main(int ac, char **av)
 			ptr = optarg;
 			r = sshkey_read(cak, &ptr);
 			if (r != 0)
-				fatal("Invalid CAK key given: %ld", r);
+				fatal("Invalid CAK key given: %d", r);
 			break;
 		case 'S':
 			err = slotspec_parse(slot_ena, optarg);
@@ -3224,8 +3224,8 @@ main(int ac, char **av)
 			perror("mkdtemp: private socket dir");
 			exit(1);
 		}
-		snprintf(socket_name, sizeof socket_name, "%s/agent.%ld", socket_dir,
-		    (long)parent_pid);
+		snprintf(socket_name, sizeof socket_name, "%s/agent.%ld",
+		    socket_dir, (long)parent_pid);
 	} else {
 		/* Try to use specified agent socket */
 		socket_dir[0] = '\0';
