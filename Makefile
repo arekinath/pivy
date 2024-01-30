@@ -167,6 +167,7 @@ ifeq ($(SYSTEM), SunOS)
 	# feature tests, who likes 'em
 	SYSTEM_CFLAGS	+= -D_XOPEN_SOURCE=600
 	SYSTEM_CFLAGS	+= -D__EXTENSIONS__ -D_REENTRANT
+	SYSTEM_CFLAGS	+= -Wno-error=attributes
 
 	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib/64 -lssp -lsocket -lnsl
 	SYSTEM_LDFLAGS	= -m64 -L$(PROTO_AREA)/usr/lib/64
