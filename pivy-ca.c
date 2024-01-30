@@ -73,6 +73,11 @@ int PEM_write_X509(FILE *fp, X509 *x);
 #include <endian.h>
 #endif
 
+#if !defined(JSONC_14)
+size_t json_tokener_get_parse_end(struct json_tokener *);
+/* compat version will be defined by piv-ca.c on <=0.14 */
+#endif
+
 boolean_t debug = B_FALSE;
 static struct cert_var_scope *root_scope = NULL;
 static struct piv_ctx *ctx;
