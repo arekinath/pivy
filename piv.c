@@ -8761,6 +8761,8 @@ piv_cardcap_encode(const struct piv_cardcap *cc, uint8_t **out, size_t *len)
 	}
 	bcopy(tlv_buf(tlv), *out, *len);
 
+	err = ERRF_OK;
+
 out:
 	tlv_free(tlv);
 	free(buf);
