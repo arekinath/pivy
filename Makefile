@@ -271,7 +271,8 @@ LIBSSH_CFLAGS=		$(PCSC_CFLAGS) \
 			$(CONFIG_CFLAGS) \
 			-O2 -g -D_GNU_SOURCE \
 			-I$(OPENSSH) \
-			-DPIVY_VERSION='"$(VERSION)"'
+			-DPIVY_VERSION='"$(VERSION)"' \
+			-Wno-error
 LIBSSH_LDFLAGS=		$(SYSTEM_LDFLAGS) \
 			$(CRYPTO_LDFLAGS)
 LIBSSH_HEADERS=
@@ -760,7 +761,7 @@ OPENSSH_CONFIG_ARGS+=	\
 
 .libressl.configure: .libressl.patch
 	cd libressl && \
-	    CFLAGS="-fPIC $(SYSTEM_CFLAGS)" LDFLAGS="$(SYSTEM_LDFLAGS)" \
+	    CFLAGS="-fPIC $(SYSTEM_CFLAGS) -Wno-error" LDFLAGS="$(SYSTEM_LDFLAGS)" \
 	    ./configure $(LIBRESSL_CONFIG_ARGS) && \
 	    touch $(CURDIR)/$@
 
