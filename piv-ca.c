@@ -1321,7 +1321,7 @@ calc_cert_slug(X509_NAME *subj, const STACK_OF(X509_EXTENSION) *exts,
 {
 	struct sshbuf *buf;
 	X509_NAME_ENTRY *ent;
-	ASN1_STRING *val;
+	ASN1_STRING *val = NULL;
 	int nid;
 	uint i, j, max, gmax;
 	const unsigned char *p;
@@ -1377,6 +1377,7 @@ calc_cert_slug(X509_NAME *subj, const STACK_OF(X509_EXTENSION) *exts,
 	}
 
 done:
+	VERIFY(val != NULL);
 	p = ASN1_STRING_get0_data(val);
 	for (j = 0; j < ASN1_STRING_length(val); ++j) {
 		char c = p[j];
@@ -1532,6 +1533,9 @@ ca_get_ebox_tpl(struct ca *ca, enum ca_ebox_type type)
 	case CA_EBOX_ADMIN_KEY:
 		ptr = &ca->ca_admin_tpl;
 		break;
+	default:
+		assert(0);
+		return (NULL);
 	}
 	if (*ptr == NULL)
 		return (NULL);
@@ -1574,6 +1578,9 @@ ca_set_ebox_tpl(struct ca *ca, enum ca_ebox_type type, const char *tplname)
 	case CA_EBOX_ADMIN_KEY:
 		ptr = &ca->ca_admin_tpl;
 		break;
+	default:
+		return (errf("InvalidEboxType", NULL, "Invalid ebox type: %d",
+		    type));
 	}
 	set_ca_ebox_ptr(ptr, cet);
 
@@ -2722,6 +2729,9 @@ ca_get_ebox(struct ca *ca, enum ca_ebox_type type)
 		typeslug = "admin";
 		break;
 	case CA_EBOX_KEY_BACKUP:
+		VERIFY(0);
+		return (NULL);
+	default:
 		VERIFY(0);
 		return (NULL);
 	}

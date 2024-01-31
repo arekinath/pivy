@@ -348,6 +348,8 @@ again:
 		goto prompt;
 	}
 
+	err = ERRF_OK;
+
 	for (var = all; var != NULL; var = cert_var_next(var)) {
 		cert_var_free_private(var);
 	}
