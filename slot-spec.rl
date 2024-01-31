@@ -140,7 +140,7 @@ slotspec_parse_pe(struct slotspec *spec, const char *p, const char *pe)
 	enum piv_slotid slotid;
 	const char *slotp = NULL, *slotpe = NULL;
 	char *slot;
-	uint64_t mask;
+	uint64_t mask = 0;
 	errf_t *err = ERRF_OK;
 	unsigned long int parsed;
 	int cs;
