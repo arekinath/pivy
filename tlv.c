@@ -108,6 +108,7 @@ const uint8_t TLV_CONT = (1 << 7);
 static void
 tlv_ctx_push(struct tlv_state *ts, struct tlv_context *tc)
 {
+	assert(ts->ts_now != NULL);
 	tc->tc_next = ts->ts_now;
 	tc->tc_depth = ts->ts_now->tc_depth + 1;
 	ts->ts_now = tc;
@@ -117,6 +118,7 @@ static struct tlv_context *
 tlv_ctx_pop(struct tlv_state *ts)
 {
 	struct tlv_context *tc = ts->ts_now;
+	VERIFY(tc != NULL);
 	VERIFY(tc != ts->ts_root);
 	ts->ts_now = tc->tc_next;
 	return (tc);
@@ -127,9 +129,10 @@ tlv_push(struct tlv_state *ts, uint tag)
 {
 	struct tlv_context *tc;
 	struct tlv_context *p = ts->ts_now;
+	assert(p != NULL);
 
 	tc = calloc(1, sizeof (struct tlv_context));
-	VERIFY(tc != NULL);
+	VERIFYN(tc);
 
 	/* Write the tag into our parent buffer now */
 	tlv_write_u8to32(ts, tag);
@@ -141,7 +144,7 @@ tlv_push(struct tlv_state *ts, uint tag)
 	tc->tc_end = p->tc_end - p->tc_pos - 4;
 
 	tc->tc_buf = malloc(tc->tc_end);
-	VERIFY(tc->tc_buf != NULL);
+	VERIFYN(tc->tc_buf);
 	tc->tc_freebuf = B_TRUE;
 
 	tlv_ctx_push(ts, tc);
@@ -211,6 +214,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 	if (tlv_at_end(ts)) {
 		error = errf("LengthError", NULL, "tlv_read_tag called "
 		    "past end of context");
+		__CPROVER_assume(error != NULL);
 		free(tc);
 		return (error);
 	}
@@ -222,6 +226,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 			if (tlv_at_end(ts)) {
 				error = errf("LengthError", NULL, "TLV tag "
 				    "continued past end of context");
+				__CPROVER_assume(error != NULL);
 				free(tc);
 				return (error);
 			}
@@ -234,6 +239,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 	if (tlv_at_end(ts)) {
 		error = errf("LengthError", NULL, "TLV tag length continued "
 		    "past end of context");
+		__CPROVER_assume(error != NULL);
 		free(tc);
 		return (error);
 	}
@@ -243,6 +249,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 		if (octs < 1 || octs > 4) {
 			error = errf("LengthError", NULL, "TLV tag had invalid "
 			    "length indicator: %d octets", octs);
+			__CPROVER_assume(error != NULL);
 			free(tc);
 			return (error);
 		}
@@ -250,6 +257,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 		if (tlv_rem(ts) < octs) {
 			error = errf("LengthError", NULL, "TLV tag length "
 			    "bytes continued past end of context");
+			__CPROVER_assume(error != NULL);
 			free(tc);
 			return (error);
 		}
@@ -264,12 +272,14 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 	if (tlv_root_rem(ts) < len) {
 		error = errf("LengthError", NULL, "TLV tag length is too "
 		    "long for buffer: %zu", len);
+		__CPROVER_assume(error != NULL);
 		free(tc);
 		return (error);
 	}
 	if (tlv_rem(ts) < len) {
 		error = errf("LengthError", NULL, "TLV tag length is too "
 		    "long for enclosing tag: %zu", len);
+		__CPROVER_assume(error != NULL);
 		free(tc);
 		return (error);
 	}
@@ -288,7 +298,7 @@ tlv_read_tag(struct tlv_state *ts, uint *ptag)
 	}
 
 	*ptag = tag;
-	return (NULL);
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -506,11 +516,16 @@ tlv_write_u16(struct tlv_state *ts, uint16_t val)
 void
 tlv_write_u8to32(struct tlv_state *ts, uint32_t val)
 {
-	struct tlv_context *tc = ts->ts_now;
-	uint8_t *buf = tc->tc_buf;
-	uint32_t mask = 0xFF << 24;
+	struct tlv_context *tc;
+	uint8_t *buf;
+	uint32_t mask = 0xFFUL << 24;
 	int shift = 24;
 	uint32_t part;
+
+	tc = ts->ts_now;
+	assert(tc != NULL);
+	buf = tc->tc_buf;
+	assert(buf != NULL);
 
 	if (val == 0) {
 		VERIFY(!tlv_at_end(ts));
@@ -586,3 +601,84 @@ tlv_len(const struct tlv_state *ts)
 {
 	return (ts->ts_root->tc_pos);
 }
+
+#if defined(__CPROVER)
+int
+main(int argc, char *argv[])
+{
+	struct tlv_state *tlv;
+	errf_t *err;
+	uint tag;
+	char *str;
+
+	__CPROVER_assume(ERRF_NOMEM != NULL);
+
+	tlv = tlv_init_write();
+	VERIFYN(tlv);
+	tlv_push(tlv, 0xabcd);
+	tlv_push(tlv, 0xa2);
+	tlv_write_u8to32(tlv, 0x12345678);
+	tlv_pop(tlv);
+	tlv_push(tlv, 0xa1);
+	tlv_write_byte(tlv, 0x00);
+	tlv_pop(tlv);
+	tlv_pop(tlv);
+	tlv_free(tlv);
+
+	const uint8_t buf[] = { 0x01, 0x07, 0xa1, 0x01, 0x00, 0xa2, 0x02, 0xab,
+	    0xcd };
+	tlv = tlv_init(buf, 0, sizeof (buf));
+	VERIFYN(tlv);
+
+	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
+		errfx(1, err, "reading tag");
+		return (1);
+	}
+	assert(tag == 0x01);
+
+	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
+		errfx(1, err, "reading tag");
+		return (1);
+	}
+	assert(tag == 0xa1);
+	tlv_skip(tlv);
+
+	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
+		errfx(1, err, "reading tag");
+		return (1);
+	}
+	assert(tag == 0xa2);
+	tlv_skip(tlv);
+
+	tlv_end(tlv);
+	tlv_free(tlv);
+
+	const uint8_t buf2[] = { 0x01, 0x08, 0xa1, 0xff, 0x00, 0xa2, 0x02, 0xab,
+	    0xcd };
+	tlv = tlv_init(buf2, 0, sizeof (buf2));
+	VERIFYN(tlv);
+
+	err = tlv_read_tag(tlv, &tag);
+	assert(err != NULL);
+
+	tlv_abort(tlv);
+	tlv_free(tlv);
+
+	const uint8_t buf3[] = { 0x01, 0x05, 'h', 'e', 'l', 'l', 'o' };
+	tlv = tlv_init(buf3, 0, sizeof (buf3));
+	VERIFYN(tlv);
+	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
+		errfx(1, err, "reading tag");
+		return (1);
+	}
+	assert(tag == 0x01);
+	if ((err = tlv_read_string(tlv, &str)) != NULL) {
+		errfx(1, err, "reading string");
+		return (1);
+	}
+	assert(strlen(str) == 5);
+	assert(strcmp(str, "hello") == 0);
+
+	return (0);
+}
+#endif

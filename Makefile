@@ -33,6 +33,8 @@ bingroup	?= wheel
 
 VERSION		= 0.11.2
 
+CBMC		?= cbmc
+
 INSTALL		?= install
 INSTALLBIN	?= $(INSTALL) -o $(binowner) -g $(bingroup) -m 0755
 
@@ -899,3 +901,18 @@ install: install_common $(SMF_BITS)
 	$(INSTALLBIN) illumos/fs-pivy $(DESTDIR)$(SMF_METHODS)
 	$(INSTALLBIN) illumos/svc-pivy-agent $(DESTDIR)$(SMF_METHODS)
 endif
+
+CBMC_BASE_OPTS=	-D__CPROVER \
+		--bounds-check \
+		--pointer-check \
+		--unwind 20 \
+		--trace
+
+_CBMC_TARGETS=	tlv.c
+CBMC_TARGETS=$(_CBMC_TARGETS:%=.%.cbmc)
+
+.%.cbmc: %
+	$(CBMC) $(CBMC_BASE_OPTS) $< && \
+	    touch $@
+
+cbmc: $(CBMC_TARGETS)

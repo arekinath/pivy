@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <assert.h>
 
 #include "utils.h"
 
@@ -24,9 +25,13 @@ extern "C" {
  */
 
 extern boolean_t assfail(const char *, const char *, int);
-#define VERIFY(EX) ((void)((EX) || assfail(#EX, __FILE__, __LINE__)))
+#define VERIFY(EX) do {\
+	((void)((EX) || assfail(#EX, __FILE__, __LINE__))); \
+	assert((EX)); } while (0)
 #if DEBUG
-#define ASSERT(EX) ((void)((EX) || assfail(#EX, __FILE__, __LINE__)))
+#define ASSERT(EX) do { \
+	((void)((EX) || assfail(#EX, __FILE__, __LINE__))); \
+	assert((EX)); } while (0)
 #else
 #define ASSERT(x)  ((void)0)
 #endif
@@ -40,6 +45,17 @@ extern boolean_t assfail(const char *, const char *, int);
 #else
 #define ASSERT64(x)
 #define ASSERT32(x)     ASSERT(x)
+#endif
+
+#undef VERIFYN
+
+#if defined(__CPROVER)
+#define	VERIFYN(EX) do { \
+	__CPROVER_assume((EX) != NULL); \
+	((void)(((EX) != NULL) || assfail(#EX " non-NULL", __FILE__, __LINE__))); \
+	} while (0)
+#else
+#define	VERIFYN(EX)	((void)(((EX) != NULL) || assfail(#EX " non-NULL", __FILE__, __LINE__)))
 #endif
 
 #undef IMPLY
@@ -147,6 +163,10 @@ extern void debug_enter(char *);
 
 #ifdef  __cplusplus
 }
+#endif
+
+#if !defined(__CPROVER)
+#define __CPROVER_assume(X)
 #endif
 
 #endif
