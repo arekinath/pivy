@@ -603,6 +603,9 @@ tlv_len(const struct tlv_state *ts)
 }
 
 #if defined(__CPROVER)
+
+uint8_t nondet_uchar(void);
+
 int
 main(int argc, char *argv[])
 {
@@ -678,6 +681,62 @@ main(int argc, char *argv[])
 	}
 	assert(strlen(str) == 5);
 	assert(strcmp(str, "hello") == 0);
+	tlv_abort(tlv);
+	tlv_free(tlv);
+
+	const uint8_t buf4[] = { nondet_uchar(), nondet_uchar(), nondet_uchar(),
+	    nondet_uchar() };
+	tlv = tlv_init(buf4, 0, sizeof (buf4));
+	VERIFYN(tlv);
+	err = tlv_read_tag(tlv, &tag);
+	if (err == ERRF_OK) {
+		assert(tlv_rem(tlv) <= 2);
+		assert(tlv_ptr(tlv) >= &buf4[2]);
+		assert(tlv_ptr(tlv) <= &buf4[3] ||
+		    (tlv_ptr(tlv) == &buf4[4] && tlv_rem(tlv) == 0));
+
+		err = tlv_read_tag(tlv, &tag);
+		if (err == ERRF_OK) {
+			/*
+			 * only 4 bytes of data, it could be 2 zero-length tags
+			 * but no more
+			 */
+			assert(tlv_rem(tlv) == 0);
+			tlv_end(tlv);
+		} else {
+			errf_free(err);
+		}
+	} else {
+		errf_free(err);
+	}
+	tlv_abort(tlv);
+	tlv_free(tlv);
+
+	const uint8_t buf5[] = { nondet_uchar(), nondet_uchar(), nondet_uchar(),
+	    nondet_uchar(), nondet_uchar(), nondet_uchar(), nondet_uchar() };
+	tlv = tlv_init(buf5, 0, sizeof (buf5));
+	VERIFYN(tlv);
+	err = tlv_read_tag(tlv, &tag);
+	if (err == ERRF_OK) {
+		err = tlv_read_tag(tlv, &tag);
+		if (err == ERRF_OK) {
+			err = tlv_read_tag(tlv, &tag);
+			if (err == ERRF_OK) {
+				assert(tlv_rem(tlv) <= 1);
+				tlv_skip(tlv);
+			}
+			assert(tlv_rem(tlv) <= 3);
+			tlv_skip(tlv);
+		} else {
+			errf_free(err);
+		}
+		assert(tlv_rem(tlv) <= 5);
+		tlv_skip(tlv);
+	} else {
+		errf_free(err);
+	}
+	tlv_abort(tlv);
+	tlv_free(tlv);
 
 	return (0);
 }
