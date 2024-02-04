@@ -47,17 +47,6 @@ extern boolean_t assfail(const char *, const char *, int);
 #define ASSERT32(x)     ASSERT(x)
 #endif
 
-#undef VERIFYN
-
-#if defined(__CPROVER)
-#define	VERIFYN(EX) do { \
-	__CPROVER_assume((EX) != NULL); \
-	((void)(((EX) != NULL) || assfail(#EX " non-NULL", __FILE__, __LINE__))); \
-	} while (0)
-#else
-#define	VERIFYN(EX)	((void)(((EX) != NULL) || assfail(#EX " non-NULL", __FILE__, __LINE__)))
-#endif
-
 #undef IMPLY
 #undef EQUIV
 
@@ -163,6 +152,17 @@ extern void debug_enter(char *);
 
 #ifdef  __cplusplus
 }
+#endif
+
+#undef VERIFYN
+
+#if defined(__CPROVER)
+#define	VERIFYN(EX) do { \
+	__CPROVER_assume((EX) != NULL); \
+	((void)(((EX) != NULL) || assfail(#EX " non-NULL", __FILE__, __LINE__))); \
+	} while (0)
+#else
+#define	VERIFYN(EX)	((void)(((EX) != NULL) || assfail(#EX " non-NULL", __FILE__, __LINE__)))
 #endif
 
 #if !defined(__CPROVER)
