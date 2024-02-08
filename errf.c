@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
 
 #include "errf.h"
 
@@ -166,7 +167,7 @@ _errf(const char *name, struct errf *cause, const char *func, const char *file,
 		}
 	}
 	va_end(ap);
-	if (wrote >= sizeof (e->errf_message))
+	if (wrote > 0 && (size_t)wrote >= sizeof (e->errf_message))
 		e->errf_message[sizeof (e->errf_message) - 1] = '\0';
 
 	return (e);
@@ -178,7 +179,7 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 {
 	struct errf *e;
 	char *p;
-	size_t wrote;
+	int wrote;
 	va_list ap;
 	const char *macro;
 
@@ -202,19 +203,32 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 		e->errf_message[0] = '\0';
 		strlcpy(e->errf_message, "<vsnprintf failed>",
 		    sizeof (e->errf_message));
-	}
-	if (wrote >= sizeof (e->errf_message)) {
+		return (e);
+	} else if ((size_t)wrote >= sizeof (e->errf_message)) {
 		e->errf_message[sizeof (e->errf_message) - 1] = '\0';
 		return (e);
 	}
 	if (fmt != NULL) {
+		int nwrote;
 		p = &e->errf_message[wrote];
 		va_start(ap, fmt);
-		wrote += vsnprintf(p, sizeof (e->errf_message) - wrote,
+		nwrote = vsnprintf(p, sizeof (e->errf_message) - wrote,
 		    fmt, ap);
+		if (nwrote < 0) {
+			wrote = -1;
+		} else {
+			const uint sum = (uint)wrote + (uint)nwrote;
+			if (sum < wrote || sum > INT_MAX) {
+				e->errf_message[0] = '\0';
+				strlcpy(e->errf_message, "<fmt overflow>",
+				    sizeof (e->errf_message));
+				return (e);
+			}
+			wrote = (int)sum;
+		}
 		va_end(ap);
 	}
-	if (wrote >= sizeof (e->errf_message))
+	if (wrote > 0 && (size_t)wrote >= sizeof (e->errf_message))
 		e->errf_message[sizeof (e->errf_message) - 1] = '\0';
 
 	return (e);
