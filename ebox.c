@@ -211,11 +211,11 @@ enum ebox_tpl_version {
 	EBOX_TPL_VMIN = EBOX_TPL_V1
 };
 
-#define boxderrf(cause) \
+#define eboxderrf(cause) \
     errf("InvalidDataError", cause, \
     "ebox contained invalid or corrupted data")
 
-#define boxverrf(cause) \
+#define eboxverrf(cause) \
     errf("NotSupportedError", cause, \
     "ebox is not supported")
 
@@ -1042,38 +1042,38 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 
 	if ((rc = sshbuf_get_u8(buf, &magic[0])) ||
 	    (rc = sshbuf_get_u8(buf, &magic[1]))) {
-		err = boxderrf(errf("MagicError",
+		err = eboxderrf(errf("MagicError",
 		    ssherrf("sshbuf_get_u8", rc), "failed reading ebox magic"));
 		goto out;
 	}
 	if (magic[0] != 0xEB && magic[1] != 0x0C) {
-		err = boxderrf(errf("MagicError", NULL,
+		err = eboxderrf(errf("MagicError", NULL,
 		    "bad ebox magic number"));
 		goto out;
 	}
 	if ((rc = sshbuf_get_u8(buf, &ver)) ||
 	    (rc = sshbuf_get_u8(buf, &type))) {
-		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
 	if (ver < EBOX_TPL_VMIN || ver >= EBOX_TPL_VNEXT) {
-		err = boxverrf(errf("VersionError", NULL,
+		err = eboxverrf(errf("VersionError", NULL,
 		    "unsupported version number 0x%02x", ver));
 		goto out;
 	}
 	tpl->et_version = ver;
 	if (type != EBOX_TEMPLATE) {
-		err = boxderrf(errf("EboxTypeError", NULL,
+		err = eboxderrf(errf("EboxTypeError", NULL,
 		    "buffer does not contain an ebox template"));
 		goto out;
 	}
 	if ((rc = sshbuf_get_u8(buf, &nconfigs))) {
-		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
 
 	if ((err = sshbuf_get_ebox_tpl_config(buf, &config))) {
-		err = boxderrf(errf("ConfigError", err,
+		err = eboxderrf(errf("ConfigError", err,
 		    "failed to read config 0"));
 		goto out;
 	}
@@ -1082,7 +1082,7 @@ sshbuf_get_ebox_tpl(struct sshbuf *buf, struct ebox_tpl **ptpl)
 
 	for (i = 1; i < nconfigs; ++i) {
 		if ((err = sshbuf_get_ebox_tpl_config(buf, &config->etc_next))) {
-			err = boxderrf(errf("ConfigError", err,
+			err = eboxderrf(errf("ConfigError", err,
 			    "failed to read config %u", i));
 			goto out;
 		}
@@ -1313,12 +1313,12 @@ sshbuf_get_ebox_stream_chunk(struct sshbuf *buf, const struct ebox_stream *es,
 	esc->esc_stream = (struct ebox_stream *)es;
 
 	if ((rc = sshbuf_get_u32(buf, &esc->esc_seqnr))) {
-		err = boxderrf(ssherrf("sshbuf_get_u32", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_u32", rc));
 		goto out;
 	}
 
 	if ((rc = sshbuf_get_string(buf, &esc->esc_enc, &esc->esc_enclen))) {
-		err = boxderrf(ssherrf("sshbuf_get_string", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_string", rc));
 		goto out;
 	}
 
@@ -1359,7 +1359,7 @@ sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **pes)
 		return (err);
 
 	if (e->e_type != EBOX_STREAM) {
-		err = boxverrf(errf("EboxTypeError", NULL,
+		err = eboxverrf(errf("EboxTypeError", NULL,
 		    "buffer contains an ebox, but not an ebox stream"));
 		goto out;
 	}
@@ -1373,11 +1373,11 @@ sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **pes)
 	e = NULL;
 
 	if ((rc = sshbuf_get_u64(buf, &chunklen))) {
-		err = boxderrf(ssherrf("sshbuf_get_u64", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_u64", rc));
 		goto out;
 	}
 	if (chunklen > SIZE_MAX) {
-		err = boxderrf(errf("OverflowError", NULL,
+		err = eboxderrf(errf("OverflowError", NULL,
 		    "stream chunk size (%" PRIu64 ") too large", chunklen));
 		goto out;
 	}
@@ -1385,19 +1385,19 @@ sshbuf_get_ebox_stream(struct sshbuf *buf, struct ebox_stream **pes)
 
 	if ((rc = sshbuf_get_cstring8(buf, &es->es_cipher, NULL)) ||
 	    (rc = sshbuf_get_cstring8(buf, &es->es_mac, NULL))) {
-		err = boxderrf(ssherrf("sshbuf_get_cstring8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_cstring8", rc));
 		goto out;
 	}
 
 	cipher = cipher_by_name(es->es_cipher);
 	if (cipher == NULL) {
-		err = boxverrf(errf("BadAlgorithmError", NULL,
+		err = eboxverrf(errf("BadAlgorithmError", NULL,
 		    "unsupported cipher '%s'", es->es_cipher));
 		goto out;
 	}
 	dgalg = ssh_digest_alg_by_name(es->es_mac);
 	if (dgalg == -1) {
-		err = boxverrf(errf("BadAlgorithmError", NULL,
+		err = eboxverrf(errf("BadAlgorithmError", NULL,
 		    "unsupported MAC algorithm '%s'", es->es_mac));
 		goto out;
 	}
@@ -2106,27 +2106,27 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 
 	if ((rc = sshbuf_get_u8(buf, &magic[0])) ||
 	    (rc = sshbuf_get_u8(buf, &magic[1]))) {
-		err = boxderrf(errf("MagicError",
+		err = eboxderrf(errf("MagicError",
 		    ssherrf("sshbuf_get_u8", rc), "failed reading ebox magic"));
 		goto out;
 	}
 	if (magic[0] != 0xEB && magic[1] != 0x0C) {
-		err = boxderrf(errf("MagicError", NULL,
+		err = eboxderrf(errf("MagicError", NULL,
 		    "bad ebox magic number"));
 		goto out;
 	}
 	if ((rc = sshbuf_get_u8(buf, &ver)) ||
 	    (rc = sshbuf_get_u8(buf, &type))) {
-		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
 	if (ver < EBOX_VMIN || ver >= EBOX_VNEXT) {
-		err = boxverrf(errf("VersionError", NULL,
+		err = eboxverrf(errf("VersionError", NULL,
 		    "unsupported version number 0x%02x", ver));
 		goto out;
 	}
 	if (type != EBOX_KEY && type != EBOX_STREAM) {
-		err = boxderrf(errf("EboxTypeError", NULL,
+		err = eboxderrf(errf("EboxTypeError", NULL,
 		    "buffer does not contain an ebox"));
 		goto out;
 	}
@@ -2134,20 +2134,20 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 	box->e_type = (enum ebox_type)type;
 
 	if ((rc = sshbuf_get_cstring8(buf, &box->e_rcv_cipher, NULL))) {
-		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
 	rc = sshbuf_get_string8(buf, &box->e_rcv_iv.b_data,
 	    &box->e_rcv_iv.b_len);
 	if (rc) {
-		err = boxderrf(ssherrf("sshbuf_get_string8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_string8", rc));
 		goto out;
 	}
 
 	rc = sshbuf_get_string8(buf, &box->e_rcv_enc.b_data,
 	    &box->e_rcv_enc.b_len);
 	if (rc) {
-		err = boxderrf(ssherrf("sshbuf_get_string8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_string8", rc));
 		goto out;
 	}
 
@@ -2156,13 +2156,13 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 		uint8_t neeks;
 
 		if ((rc = sshbuf_get_u8(buf, &neeks))) {
-			err = boxderrf(ssherrf("sshbuf_get_u8", rc));
+			err = eboxderrf(ssherrf("sshbuf_get_u8", rc));
 			goto out;
 		}
 
 		for (i = 0; i < neeks; ++i) {
 			if ((err = sshbuf_get_ebox_ephem_key(buf, &eek))) {
-				err = boxderrf(err);
+				err = eboxderrf(err);
 				goto out;
 			}
 			eek->eek_next = box->e_ephemkeys;
@@ -2171,12 +2171,12 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 	}
 
 	if ((rc = sshbuf_get_u8(buf, &nconfigs))) {
-		err = boxderrf(ssherrf("sshbuf_get_u8", rc));
+		err = eboxderrf(ssherrf("sshbuf_get_u8", rc));
 		goto out;
 	}
 
 	if ((err = sshbuf_get_ebox_config(buf, box, &config))) {
-		err = boxderrf(err);
+		err = eboxderrf(err);
 		goto out;
 	}
 	box->e_configs = config;
@@ -2186,7 +2186,7 @@ sshbuf_get_ebox(struct sshbuf *buf, struct ebox **pbox)
 	for (i = 1; i < nconfigs; ++i) {
 		if ((err = sshbuf_get_ebox_config(buf, box,
 		    &config->ec_next))) {
-			err = boxderrf(err);
+			err = eboxderrf(err);
 			goto out;
 		}
 		config = config->ec_next;

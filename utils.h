@@ -58,6 +58,18 @@ typedef unsigned int u_int;
 #define B_FALSE _B_FALSE
 #endif
 
+struct strbuf;
+struct strbuf *strbuf_new(void);
+struct strbuf *strbuf_new_init(size_t);
+struct strbuf *strbuf_from(const char *);
+void strbuf_free(struct strbuf *);
+void strbuf_freezero(struct strbuf *);
+void strbuf_reset(struct strbuf *);
+void strbuf_append(struct strbuf *, const char *);
+void strbuf_concat(struct strbuf *, const struct strbuf *);
+const char *strbuf_cstr(struct strbuf *);
+size_t strbuf_len(const struct strbuf *);
+
 struct bitbuf;
 struct bitbuf *bitbuf_new(void);
 struct bitbuf *bitbuf_from(const uint8_t *, size_t len);
@@ -65,6 +77,48 @@ void bitbuf_free(struct bitbuf *);
 struct errf *bitbuf_write(struct bitbuf *, uint32_t v, uint nbits);
 struct errf *bitbuf_read(struct bitbuf *, uint nbits, uint32_t *v);
 uint8_t *bitbuf_to_bytes(const struct bitbuf *, size_t *outlen);
+size_t bitbuf_rem(const struct bitbuf *);
+size_t bitbuf_len(const struct bitbuf *);
+boolean_t bitbuf_at_end(const struct bitbuf *);
+
+enum iso7811_bcd {
+	/* used as a control char, never put on wire */
+	ISO_BCD_NONE	= 0x00,
+
+	/* ordinary BCD digits */
+	ISO_BCD_0	= 0x01,
+	ISO_BCD_1	= 0x10,
+	ISO_BCD_2	= 0x08,
+	ISO_BCD_3	= 0x19,
+	ISO_BCD_4	= 0x04,
+	ISO_BCD_5	= 0x15,
+	ISO_BCD_6	= 0x0d,
+	ISO_BCD_7	= 0x1c,
+	ISO_BCD_8	= 0x02,
+	ISO_BCD_9	= 0x13,
+
+	/* control chars that go on the wire */
+	ISO_BCD_SS	= 0x1a,
+	ISO_BCD_FS	= 0x16,
+	ISO_BCD_ES	= 0x1f
+};
+struct bcdbuf;
+struct bcdbuf *bcdbuf_new(void);
+struct bcdbuf *bcdbuf_from(const uint8_t *, size_t);
+void bcdbuf_free(struct bcdbuf *);
+const char *iso7811_to_str(enum iso7811_bcd);
+struct errf *bcdbuf_write(struct bcdbuf *, enum iso7811_bcd);
+struct errf *bcdbuf_write_lrc(struct bcdbuf *);
+struct errf *bcdbuf_write_string(struct bcdbuf *, const char *str,
+    enum iso7811_bcd terminator);
+struct errf *bcdbuf_read(struct bcdbuf *, enum iso7811_bcd *out);
+struct errf *bcdbuf_read_and_check_lrc(struct bcdbuf *);
+struct errf *bcdbuf_read_string(struct bcdbuf *, size_t limit, char **pstr,
+    enum iso7811_bcd *terminator);
+uint8_t *bcdbuf_to_bytes(const struct bcdbuf *, size_t *outlen);
+size_t bcdbuf_rem(const struct bcdbuf *);
+size_t bcdbuf_len(const struct bcdbuf *);
+boolean_t bcdbuf_at_end(const struct bcdbuf *);
 
 void *malloc_conceal(size_t size) __attribute__((malloc));
 void *calloc_conceal(size_t nmemb, size_t size) __attribute__((malloc));

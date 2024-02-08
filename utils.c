@@ -231,6 +231,32 @@ bitbuf_to_bytes(const struct bitbuf *b, size_t *outlen)
 	return (buf);
 }
 
+size_t
+bitbuf_rem(const struct bitbuf *b)
+{
+	size_t nbits, ubits;
+	VERIFY(b->bb_mode == BITBUF_READ);
+	nbits = b->bb_len * 8;
+	ubits = b->bb_byte * 8 + b->bb_bit;
+	VERIFY3U(ubits, <=, nbits);
+	return (nbits - ubits);
+}
+
+size_t
+bitbuf_len(const struct bitbuf *b)
+{
+	if (b->bb_mode == BITBUF_READ)
+		return (b->bb_len * 8);
+	else
+		return (b->bb_byte * 8 + b->bb_bit);
+}
+
+boolean_t
+bitbuf_at_end(const struct bitbuf *b)
+{
+	return (b->bb_byte == b->bb_len);
+}
+
 errf_t *
 bitbuf_expand(struct bitbuf *b)
 {
@@ -290,6 +316,12 @@ bitbuf_read(struct bitbuf *b, uint nbits, uint32_t *out)
 	uint32_t final = 0;
 
 	VERIFY(b->bb_mode == BITBUF_READ);
+
+	if (b->bb_byte >= b->bb_len) {
+		return (errf("ShortBuffer", NULL, "Tried to read %u bits from "
+		    "bitbuf with nothing left", nbits));
+	}
+
 
 	while (rem > 0) {
 		uint take = 8 - b->bb_bit;
@@ -491,3 +523,575 @@ X509_CRL_from_der(const uint8_t *buf, size_t len, X509_CRL **pcrl)
 	*pcrl = x;
 	return (ERRF_OK);
 }
+
+const char *
+iso7811_to_str(enum iso7811_bcd b)
+{
+	switch (b) {
+	case ISO_BCD_0: return ("0");
+	case ISO_BCD_1: return ("1");
+	case ISO_BCD_2: return ("2");
+	case ISO_BCD_3: return ("3");
+	case ISO_BCD_4: return ("4");
+	case ISO_BCD_5: return ("5");
+	case ISO_BCD_6: return ("6");
+	case ISO_BCD_7: return ("7");
+	case ISO_BCD_8: return ("8");
+	case ISO_BCD_9: return ("9");
+	case ISO_BCD_SS: return ("SS");
+	case ISO_BCD_FS: return ("FS");
+	case ISO_BCD_ES: return ("ES");
+	default: return (NULL);
+	}
+}
+
+struct bcdbuf {
+	struct bitbuf 	*bcd_b;
+	char	 	*bcd_sb;
+	size_t		 bcd_sblen;
+	uint8_t		 bcd_last;
+	uint8_t		 bcd_lrc;
+};
+
+struct bcdbuf *
+bcdbuf_new(void)
+{
+	struct bcdbuf *b = NULL;
+
+	b = calloc(1, sizeof (*b));
+	if (b == NULL)
+		goto fail;
+
+	b->bcd_b = bitbuf_new();
+	if (b->bcd_b == NULL)
+		goto fail;
+
+	return (b);
+fail:
+	bcdbuf_free(b);
+	return (NULL);
+}
+
+struct bcdbuf *
+bcdbuf_from(const uint8_t *data, size_t len)
+{
+	struct bcdbuf *b = NULL;
+
+	b = calloc(1, sizeof (*b));
+	if (b == NULL)
+		goto fail;
+
+	b->bcd_b = bitbuf_from(data, len);
+	if (b->bcd_b == NULL)
+		goto fail;
+
+	b->bcd_sblen = 30;
+	b->bcd_sb = malloc(b->bcd_sblen);
+	if (b->bcd_sb == NULL)
+		goto fail;
+	b->bcd_sb[0] = '\0';
+
+	return (b);
+fail:
+	bcdbuf_free(b);
+	return (NULL);
+}
+
+void
+bcdbuf_free(struct bcdbuf *b)
+{
+	if (b == NULL)
+		return;
+	bitbuf_free(b->bcd_b);
+	free(b->bcd_sb);
+	free(b);
+}
+
+errf_t *
+bcdbuf_write(struct bcdbuf *b, enum iso7811_bcd v)
+{
+	errf_t *err;
+
+	VERIFY(b->bcd_b->bb_mode == BITBUF_WRITE);
+	VERIFY(v != ISO_BCD_NONE);
+	if ((err = bitbuf_write(b->bcd_b, v, 5)))
+		return (err);
+	b->bcd_last = v;
+	b->bcd_lrc ^= (v & 0x1e);
+
+	return (ERRF_OK);
+}
+
+errf_t *
+bcdbuf_write_lrc(struct bcdbuf *b)
+{
+	errf_t *err;
+	uint32_t v;
+
+	VERIFY(b->bcd_b->bb_mode == BITBUF_WRITE);
+	v = b->bcd_lrc;
+	v |= ((v & (1<<4)) >> 4) ^ ((v & (1<<3)) >> 3) ^ ((v & (1<<2)) >> 2) ^
+	    ((v & (1<<1)) >> 1) ^ 1;
+
+	if ((err = bitbuf_write(b->bcd_b, v, 5))) {
+		err = errf("ISO7811Error", err, "Failed to write LRC");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+errf_t *
+bcdbuf_write_string(struct bcdbuf *b, const char *strval,
+    enum iso7811_bcd terminator)
+{
+	enum iso7811_bcd v;
+	errf_t *err;
+	const char *p = strval;
+
+	VERIFY(b->bcd_b->bb_mode == BITBUF_WRITE);
+	while (*p != '\0') {
+		switch (*p) {
+		case '0':
+			v = ISO_BCD_0;
+			break;
+		case '1':
+			v = ISO_BCD_1;
+			break;
+		case '2':
+			v = ISO_BCD_2;
+			break;
+		case '3':
+			v = ISO_BCD_3;
+			break;
+		case '4':
+			v = ISO_BCD_4;
+			break;
+		case '5':
+			v = ISO_BCD_5;
+			break;
+		case '6':
+			v = ISO_BCD_6;
+			break;
+		case '7':
+			v = ISO_BCD_7;
+			break;
+		case '8':
+			v = ISO_BCD_8;
+			break;
+		case '9':
+			v = ISO_BCD_9;
+			break;
+		default:
+			err = errf("ISO7811Error", NULL, "String data "
+			    "contains invalid BCD char: '%c'", *p);
+			return (err);
+		}
+		if ((err = bcdbuf_write(b, v)))
+			return (err);
+		p++;
+	}
+
+	if (terminator != ISO_BCD_NONE) {
+		if ((err = bcdbuf_write(b, terminator)))
+			return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+errf_t *
+bcdbuf_read(struct bcdbuf *b, enum iso7811_bcd *out)
+{
+	errf_t *err;
+	uint32_t v;
+
+	VERIFY(b->bcd_b->bb_mode == BITBUF_READ);
+	if ((err = bitbuf_read(b->bcd_b, 5, &v)))
+		return (err);
+	b->bcd_last = v;
+	b->bcd_lrc ^= (v & 0x1e);
+
+	switch (v) {
+	case ISO_BCD_0:
+	case ISO_BCD_1:
+	case ISO_BCD_2:
+	case ISO_BCD_3:
+	case ISO_BCD_4:
+	case ISO_BCD_5:
+	case ISO_BCD_6:
+	case ISO_BCD_7:
+	case ISO_BCD_8:
+	case ISO_BCD_9:
+	case ISO_BCD_SS:
+	case ISO_BCD_FS:
+	case ISO_BCD_ES:
+		*out = v;
+		return (ERRF_OK);
+
+	default:
+		return (errf("ISO7811Error", NULL, "Input data contains "
+		    "illegal BCD symbol: %x at offset 0x%x(+%u bits)",
+		    v, b->bcd_b->bb_byte, 8 - b->bcd_b->bb_bit));
+	}
+}
+
+errf_t *
+bcdbuf_read_and_check_lrc(struct bcdbuf *b)
+{
+	errf_t *err;
+	uint32_t v;
+
+	if ((err = bitbuf_read(b->bcd_b, 5, &v)))
+		return (err);
+
+	v &= 0x1e;
+
+	if (v != b->bcd_lrc) {
+		err = errf("ISO7811Error", NULL, "LRC mismatch");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+errf_t *
+bcdbuf_read_string(struct bcdbuf *b, size_t limit, char **field,
+    enum iso7811_bcd *terminator)
+{
+	enum iso7811_bcd v;
+	const char *vstr;
+	errf_t *err;
+	size_t len;
+
+	if (limit >= b->bcd_sblen) {
+		b->bcd_sblen = limit * 2;
+		free(b->bcd_sb);
+		b->bcd_sb = malloc(b->bcd_sblen);
+		__CPROVER_assume(b->bcd_sb != NULL);
+		VERIFY(b->bcd_sb != NULL);
+	}
+
+	while (1) {
+		err = bcdbuf_read(b, &v);
+		if (err != ERRF_OK)
+			return (err);
+		if (v == ISO_BCD_SS) {
+			err = errf("ISO7811Error", NULL, "Read SS at start "
+			    "of string, expected valid BCD char");
+			return (err);
+		}
+		if (v == ISO_BCD_FS || v == ISO_BCD_ES) {
+			if (terminator)
+				*terminator = v;
+			break;
+		}
+		vstr = iso7811_to_str(v);
+		VERIFY(vstr != NULL);
+		len = strlcat(b->bcd_sb, vstr, b->bcd_sblen);
+		if (limit != 0 && len >= limit) {
+			if (terminator)
+				*terminator = ISO_BCD_NONE;
+			break;
+		}
+	}
+	*field = strdup(b->bcd_sb);
+	__CPROVER_assume(*field != NULL);
+	VERIFY(*field != NULL);
+	b->bcd_sb[0] = '\0';
+	return (ERRF_OK);
+}
+
+uint8_t *
+bcdbuf_to_bytes(const struct bcdbuf *b, size_t *outlen)
+{
+	VERIFY(b->bcd_b->bb_mode == BITBUF_WRITE);
+	return (bitbuf_to_bytes(b->bcd_b, outlen));
+}
+
+size_t
+bcdbuf_rem(const struct bcdbuf *b)
+{
+	size_t nbits = bitbuf_rem(b->bcd_b);
+	size_t nsyms = nbits / 5;
+	if (nsyms == 0 && nbits > 0)
+		return (1);
+	return (nsyms);
+}
+
+size_t
+bcdbuf_len(const struct bcdbuf *b)
+{
+	size_t nbits = bitbuf_len(b->bcd_b);
+	size_t nsyms = nbits / 5;
+	if (nsyms == 0 && nbits > 0)
+		return (1);
+	return (nsyms);
+}
+
+boolean_t
+bcdbuf_at_end(const struct bcdbuf *b)
+{
+	return (bitbuf_at_end(b->bcd_b));
+}
+
+#if defined(__CPROVER) && __CPROVER_MAIN == __FILE_utils_c
+
+uint8_t nondet_u8(void);
+uint32_t nondet_u32(void);
+char nondet_char(void);
+
+char
+rbcdchar(void)
+{
+	char b = nondet_char();
+	__CPROVER_assume(b >= '0' && b <= '9');
+	return (b);
+}
+
+enum iso7811_bcd
+rbcdenum(void)
+{
+	enum iso7811_bcd v;
+	__CPROVER_assume(v >= ISO_BCD_0 && v <= ISO_BCD_9);
+	return (v);
+}
+
+void
+prove_bitbuf_read_uniform(uint nbits, uint minbpf, uint maxbpf)
+{
+	struct bitbuf *bit;
+	uint32_t v32;
+	struct errf *err;
+	uint nfields, bpf, i;
+	size_t len;
+	uint8_t *buf;
+	const uint nbytes = nbits / 8;
+
+	__CPROVER_assume(bpf >= minbpf && bpf <= maxbpf);
+	nfields = nbits / bpf;
+	assert(nfields > 0 && nfields <= 4);
+
+	uint8_t *data = malloc(nbytes);
+	__CPROVER_assume(data != NULL);
+	for (i = 0; i < nbytes; ++i)
+		__CPROVER_assume(data[i] != 0);
+
+	bit = bitbuf_from(data, nbytes);
+	__CPROVER_assume(bit != NULL);
+
+	for (i = 0; i < nfields; ++i) {
+		err = bitbuf_read(bit, bpf, &v32);
+		__CPROVER_assume(err != ERRF_NOMEM);
+		assert(err == ERRF_OK);
+		assert(v32 <= (1<<bpf));
+	}
+
+	err = bitbuf_read(bit, bpf, &v32);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err != ERRF_OK);
+	assert(errf_caused_by(err, "ShortBuffer"));
+
+	assert(bitbuf_rem(bit) <= bpf);
+
+	bitbuf_free(bit);
+}
+
+void
+prove_bitbuf_read_any(uint nbits, uint minbpf, uint maxbpf)
+{
+	struct bitbuf *bit;
+	uint32_t v32;
+	struct errf *err;
+	size_t len;
+	uint i;
+	uint8_t *buf;
+	const uint nbytes = nbits / 8;
+	uint bitrem = nbits;
+
+	uint8_t *data = malloc(nbytes);
+	__CPROVER_assume(data != NULL);
+	for (i = 0; i < nbytes; ++i)
+		__CPROVER_assume(data[i] != 0);
+
+	bit = bitbuf_from(data, nbytes);
+	__CPROVER_assume(bit != NULL);
+
+	while (bitrem > 0 && i < 4) {
+		uint bpf;
+		__CPROVER_assume(bpf >= minbpf && bpf <= maxbpf);
+		__CPROVER_assume(bpf <= bitrem);
+
+		err = bitbuf_read(bit, bpf, &v32);
+		__CPROVER_assume(err != ERRF_NOMEM);
+		assert(err == ERRF_OK);
+		assert(v32 <= (1<<bpf));
+
+		bitrem -= bpf;
+		++i;
+	}
+
+	bitbuf_free(bit);
+}
+
+void
+prove_bitbuf_write(void)
+{
+	struct bitbuf *bit;
+	struct errf *err;
+	uint nbits, nfields, i, nbytes;
+	size_t len;
+	uint8_t *buf;
+
+	bit = bitbuf_new();
+	__CPROVER_assume(bit != NULL);
+
+	__CPROVER_assume(nfields > 0 && nfields < 3);
+	nbits = 0;
+
+	for (i = 0; i < nfields; ++i) {
+		uint bpf;
+		uint32_t v32;
+		__CPROVER_assume(bpf >= 3 && bpf <= 16);
+		__CPROVER_assume(v32 < (1<<bpf));
+
+		err = bitbuf_write(bit, v32, bpf);
+		__CPROVER_assume(err != ERRF_NOMEM);
+		assert(err == ERRF_OK);
+
+		nbits += bpf;
+	}
+
+	assert(bitbuf_len(bit) == nbits);
+	nbytes = (nbits + 7) / 8;
+
+	buf = bitbuf_to_bytes(bit, &len);
+	__CPROVER_assume(buf != NULL);
+	assert(len == nbytes);
+
+	bitbuf_free(bit);
+	free(buf);
+}
+
+void
+prove_bitbuf(void)
+{
+	prove_bitbuf_read_uniform(16, 4, 8);
+	prove_bitbuf_read_uniform(32, 8, 16);
+	prove_bitbuf_read_any(8, 1, 4);
+	prove_bitbuf_write();
+}
+
+void
+prove_bcdbuf(void)
+{
+	struct bcdbuf *bcd;
+	uint32_t v32;
+	struct errf *err;
+	uint nbits;
+	size_t len;
+	uint8_t *buf;
+	char *str;
+	enum iso7811_bcd bcdchar;
+
+	const uint8_t bbuf0[] = { (ISO_BCD_SS << 3), nondet_u8(), nondet_u8(),
+	    nondet_u8(), nondet_u8(), (ISO_BCD_ES << 3) };
+	bcd = bcdbuf_from(bbuf0, sizeof (bbuf0));
+	__CPROVER_assume(bcd != NULL);
+
+	err = bcdbuf_read(bcd, &bcdchar);
+	__CPROVER_assume(err == ERRF_OK);
+	assert(bcdchar == ISO_BCD_SS);
+
+	err = bcdbuf_read_string(bcd, 8, &str, &bcdchar);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	if (err == ERRF_OK) {
+		assert(str != NULL);
+		assert(strlen(str) <= 8);
+		assert(bcdchar == ISO_BCD_ES || bcdchar == ISO_BCD_FS);
+	}
+
+	bcdbuf_free(bcd);
+
+	bcd = bcdbuf_new();
+	__CPROVER_assume(bcd != NULL);
+
+	const char bbuf1[] = { rbcdchar(), rbcdchar(), '\0' };
+	err = bcdbuf_write_string(bcd, bbuf1, ISO_BCD_FS);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+	err = bcdbuf_write_lrc(bcd);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+
+	assert(bcdbuf_len(bcd) == 4);
+
+	buf = bcdbuf_to_bytes(bcd, &len);
+	__CPROVER_assume(buf != NULL);
+	assert(len == 3);
+
+	bcdbuf_free(bcd);
+	free(buf);
+
+	bcd = bcdbuf_new();
+	__CPROVER_assume(bcd != NULL);
+
+	const enum iso7811_bcd bcdbuf[] = { rbcdenum(), rbcdenum(),
+	    ISO_BCD_ES };
+	err = bcdbuf_write(bcd, bcdbuf[0]);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+	err = bcdbuf_write(bcd, bcdbuf[1]);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+	err = bcdbuf_write(bcd, bcdbuf[2]);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+	err = bcdbuf_write_lrc(bcd);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+
+	/*buf = bcdbuf_to_bytes(bcd, &len);
+	__CPROVER_assume(buf != NULL);
+	assert(len == 2);
+
+	bcdbuf_free(bcd);
+
+	bcd = bcdbuf_from(buf, len);
+	__CPROVER_assume(bcd != NULL);
+
+	err = bcdbuf_read(bcd, &bcdchar);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+	assert(bcdchar == bcdbuf[0]);
+
+	err = bcdbuf_read(bcd, &bcdchar);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+	assert(bcdchar == bcdbuf[1]);
+
+	err = bcdbuf_read(bcd, &bcdchar);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);
+	assert(bcdchar == bcdbuf[2]);
+
+	err = bcdbuf_read(bcd, &bcdchar);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err != ERRF_OK);
+
+	err = bcdbuf_read_and_check_lrc(bcd);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(err == ERRF_OK);*/
+
+	bcdbuf_free(bcd);
+}
+
+int
+main(int argc, char *argv[])
+{
+	__CPROVER_assume(ERRF_NOMEM != NULL);
+	prove_bitbuf();
+	prove_bcdbuf();
+	return (0);
+}
+#endif

@@ -178,7 +178,7 @@ _errfno(const char *enofunc, int eno, const char *func, const char *file,
 {
 	struct errf *e;
 	char *p;
-	int wrote;
+	size_t wrote;
 	va_list ap;
 	const char *macro;
 
@@ -278,3 +278,36 @@ errf_free(struct errf *ep)
 			free(tofree);
 	}
 }
+
+#if defined(__CPROVER) && __CPROVER_MAIN == __FILE_errf_c
+#include <assert.h>
+
+int
+main(int argc, char *argv[])
+{
+	errf_t *err;
+
+	err = errf("Testing", NULL, "what is the format: %d", 5);
+	assert(err != NULL);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(strcmp(errf_name(err), "Testing") == 0);
+	assert(errf_caused_by(err, "Testing") == B_TRUE);
+
+	err = errf("Test", err, "something else");
+	assert(err != NULL);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(strcmp(errf_name(err), "Test") == 0);
+	assert(errf_caused_by(err, "Test") == B_TRUE);
+	assert(errf_caused_by(err, "Testing") == B_TRUE);
+	assert(errf_caused_by(err, "Else") == B_FALSE);
+
+	errf_free(err);
+
+	err = errfno("test", EPERM, "what");
+	assert(err != NULL);
+	__CPROVER_assume(err != ERRF_NOMEM);
+	assert(strcmp(errf_name(err), "EPERM") == 0);
+	assert(errf_errno(err) == EPERM);
+	errf_free(err);
+}
+#endif

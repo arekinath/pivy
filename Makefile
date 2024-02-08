@@ -45,8 +45,10 @@ SECURITY_CFLAGS	= \
 SYSTEM		:= $(shell uname -s)
 ifeq ($(SYSTEM), Linux)
 	PCSC_CFLAGS	= $(shell pkg-config --cflags libpcsclite)
+	PCSC_CBMCFLAGS	= $(shell pkg-config --cflags-only-I libpcsclite)
 	PCSC_LIBS	= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_CBMCFLAGS = $(CRYPTO_CFLAGS)
 	CRYPTO_LDFLAGS	= -L$(LIBRESSL_LIB)
 	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto -pthread
 	ZLIB_CFLAGS	= $(shell pkg-config --cflags zlib)
@@ -58,6 +60,7 @@ ifeq ($(SYSTEM), Linux)
 		-DHAVE_USER_FROM_UID	\
 		-DHAVE_STRMODE		\
 		-DHAVE_GROUP_FROM_GID
+	SYSTEM_CBMCFLAGS = $(subst isystem,I,$(shell pkg-config --cflags libbsd-overlay))
 	OPTIM_CFLAGS	= -flto
 	OPTIM_LDFLAGS	= -O0 -flto
 	SYSTEM_LIBS	= $(shell pkg-config --libs libbsd-overlay)
@@ -104,12 +107,15 @@ ifeq ($(SYSTEM), Linux)
 endif
 ifeq ($(SYSTEM), OpenBSD)
 	PCSC_CFLAGS	?= $(shell pkg-config --cflags libpcsclite)
+	PCSC_CBMCFLAGS	?= $(shell pkg-config --cflags-only-I libpcsclite)
 	PCSC_LIBS	?= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	=
+	CRYPTO_CBMCFLAGS =
 	CRYPTO_LIBS	= -lcrypto
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	=
+	SYSTEM_CBMCFLAGS =
 	SYSTEM_LIBS	= -lutil
 	SYSTEM_LDFLAGS	=
 	RDLINE_CFLAGS	=
@@ -132,13 +138,16 @@ ifeq ($(SYSTEM), OpenBSD)
 endif
 ifeq ($(SYSTEM), Darwin)
 	PCSC_CFLAGS	= -I/System/Library/Frameworks/PCSC.framework/Headers/
+	PCSC_CBMCFLAGS	= $(PCSC_CFLAGS)
 	PCSC_LIBS	= -framework PCSC
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_CBMCFLAGS = $(CRYPTO_CFLAGS)
 	CRYPTO_LIBS	= -L$(LIBRESSL_LIB) -lcrypto
 	CRYPTO_LDFLAGS	= -L$(LIBRESSL_LIB)
 	ZLIB_CFLAGS	=
 	ZLIB_LIBS	= -lz
 	SYSTEM_CFLAGS	= -arch x86_64 -arch arm64
+	SYSTEM_CBMCFLAGS =
 	SYSTEM_LIBS	= -lproc
 	SYSTEM_LDFLAGS	= -arch x86_64 -arch arm64
 	RDLINE_CFLAGS	=
@@ -150,8 +159,10 @@ ifeq ($(SYSTEM), Darwin)
 endif
 ifeq ($(SYSTEM), SunOS)
 	PCSC_CFLAGS	?= $(shell pkg-config --cflags libpcsclite)
+	PCSC_CBMCFLAGS	?= $(shell pkg-config --cflags-only-I libpcsclite)
 	PCSC_LIBS	?= $(shell pkg-config --libs libpcsclite)
 	CRYPTO_CFLAGS	= -I$(LIBRESSL_INC)
+	CRYPTO_CBMCFLAGS = $(CRYPTO_CFLAGS)
 	CRYPTO_LIBS	= -Wl,-Bstatic -L$(LIBRESSL_LIB) -lcrypto -Wl,-Bdynamic -pthread
 	CRYPTO_LDFLAGS	= -Wl,-Bstatic -L$(LIBRESSL_LIB) -lcrypto -Wl,-Bdynamic
 	ZLIB_CFLAGS	=
@@ -162,13 +173,14 @@ ifeq ($(SYSTEM), SunOS)
 	ifdef PROTO_AREA
 		SYSTEM_CFLAGS	+= -isystem $(PROTO_AREA)/usr/include
 	endif
-	SYSTEM_CFLAGS	+= -m64 -msave-args
 	SYSTEM_CFLAGS	+= -Du_int8_t=uint8_t -Du_int16_t=uint16_t \
 		-Du_int32_t=uint32_t -Du_int64_t=uint64_t
 
 	# feature tests, who likes 'em
 	SYSTEM_CFLAGS	+= -D_XOPEN_SOURCE=600
 	SYSTEM_CFLAGS	+= -D__EXTENSIONS__ -D_REENTRANT
+	SYSTEM_CBMCFLAGS := $(value SYSTEM_CFLAGS)
+	SYSTEM_CFLAGS	+= -m64 -msave-args
 	SYSTEM_CFLAGS	+= -Wno-error=attributes
 
 	SYSTEM_LIBS	= -L$(PROTO_AREA)/usr/lib/64 -lssp -lsocket -lnsl
@@ -296,11 +308,13 @@ SSS_SOURCES=$(_SSS_SOURCES:%=sss/%)
 
 PIV_COMMON_SOURCES=		\
 	piv.c			\
+	piv-fascn.c		\
 	tlv.c			\
 	debug.c			\
 	bunyan.c		\
 	errf.c			\
 	utils.c			\
+	strbuf.c		\
 	slot-spec.c
 PIV_COMMON_HEADERS=		\
 	piv.h			\
@@ -902,17 +916,60 @@ install: install_common $(SMF_BITS)
 	$(INSTALLBIN) illumos/svc-pivy-agent $(DESTDIR)$(SMF_METHODS)
 endif
 
-CBMC_BASE_OPTS=	-D__CPROVER \
+CBMC_OPTS=	-D__CPROVER \
+		--stop-on-fail \
 		--bounds-check \
 		--pointer-check \
-		--unwind 20 \
-		--trace
+		--signed-overflow-check \
+		--pointer-overflow-check \
+		--conversion-check \
+		--div-by-zero-check \
+		--trace \
+		--drop-unused-functions \
+		-I. -Iopenssh/ \
+		$(SYSTEM_CBMCFLAGS) \
+		$(PCSC_CBMCFLAGS) \
+		$(CRYPTO_CBMCFLAGS)
 
-_CBMC_TARGETS=	tlv.c
+_CBMC_TARGETS=	tlv.c \
+		errf.c \
+		utils.c \
+		piv-fascn.c \
+		strbuf.c
 CBMC_TARGETS=$(_CBMC_TARGETS:%=.%.cbmc)
 
+CBMC_AUX=	cbmc-aux.c
+
 .%.cbmc: %
-	$(CBMC) $(CBMC_BASE_OPTS) $< && \
-	    touch $@
+	$(CBMC) \
+	    $(CBMC_OPTS) \
+	    -D__CPROVER_MAIN=101011 \
+	    -D__FILE_$(subst -,_,$(subst .,_,$<))=101011 \
+	    $< $(CBMC_AUX) && touch $@
+
+.piv-fascn.c.cbmc:	CBMC_AUX+=	strbuf.c
+.piv-fascn.c.cbmc:	CBMC_OPTS+=	--unwinding-assertions
+.piv-fascn.c.cbmc:	CBMC_OPTS+=	--unwind 30
+.piv-fascn.c.cbmc:	CBMC_OPTS+=	--object-bits 12
+.piv-fascn.c.cbmc:	CBMC_OPTS+=	--unwindset strbuf_expand.0:3
+.piv-fascn.c.cbmc:	CBMC_OPTS+=	--unwindset bcdbuf_read_string.0:11
+
+.tlv.c.cbmc:		CBMC_AUX+=
+.tlv.c.cbmc:		CBMC_OPTS+=	--unwind 10
+.tlv.c.cbmc:		CBMC_OPTS+=	--unwinding-assertions
+
+.utils.c.cbmc:		CBMC_AUX+=
+.utils.c.cbmc:		CBMC_OPTS+=	--unwind 30
+.utils.c.cbmc:		CBMC_OPTS+=	--unwindset prove_bitbuf_read.1:4
+.utils.c.cbmc:		CBMC_OPTS+=	--unwindset prove_bitbuf_write.0:4
+.utils.c.cbmc:		CBMC_OPTS+=	--unwindset bitbuf_read.0:5
+.utils.c.cbmc:		CBMC_OPTS+=	--unwindset bitbuf_write.0:5
+.utils.c.cbmc:		CBMC_OPTS+=	--unwinding-assertions
+.utils.c.cbmc:		CBMC_OPTS+=	--object-bits 12
+
+.strbuf.c.cbmc:		CBMC_AUX+=
+.strbuf.c.cbmc:		CBMC_OPTS+=	--unwind 30
+.strbuf.c.cbmc:		CBMC_OPTS+=	--unwinding-assertions
+.strbuf.c.cbmc:		CBMC_OPTS+=	--object-bits 12
 
 cbmc: $(CBMC_TARGETS)

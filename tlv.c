@@ -602,7 +602,7 @@ tlv_len(const struct tlv_state *ts)
 	return (ts->ts_root->tc_pos);
 }
 
-#if defined(__CPROVER)
+#if defined(__CPROVER) && __CPROVER_MAIN == __FILE_tlv_c
 
 uint8_t nondet_uchar(void);
 

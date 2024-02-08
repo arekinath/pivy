@@ -121,4 +121,91 @@ struct varval *varval_parse(const char *);
 void varval_free(struct varval *);
 char *varval_unparse(const struct varval *);
 
+#define pcscerrf(call, rv)	\
+    errf("PCSCError", NULL, call " failed: %d (%s)", \
+    rv, pcsc_stringify_error(rv))
+
+#define pcscrerrf(call, reader, rv)	\
+    errf("PCSCError", NULL, call " failed on '%s': %d (%s)", \
+    reader, rv, pcsc_stringify_error(rv))
+
+#define swerrf(ins, sw, ...)	\
+    errf("APDUError", NULL, "Card replied with SW=%04x (%s) to " ins, \
+    (uint)sw, sw_to_name(sw), ##__VA_ARGS__)
+
+#define tagerrf(ins, tag, ...)	\
+    errf("PIVTagError", NULL, "Invalid tag 0x%x in PIV " ins " response", \
+    (uint)tag, ##__VA_ARGS__)
+
+#define ioerrf(cause, rdr)	\
+    errf("IOError", cause, "Failed to communicate with PIV device '%s'", rdr)
+
+#define invderrf(cause, rdr)	\
+    errf("InvalidDataError", cause, "PIV device '%s' returned invalid or " \
+    "unsupported payload", rdr)
+
+/* smatch and similar don't support varargs macros */
+#ifndef LINT
+
+#define permerrf(cause, rdr, doing, ...)	\
+    errf("PermissionError", cause, \
+    "Permission denied " doing " on PIV device '%s'", ##__VA_ARGS__, rdr)
+
+#define notsuperrf(cause, rdr, thing, ...) \
+    errf("NotSupportedError", cause, \
+    thing " not supported by PIV device '%s'", ##__VA_ARGS__, rdr)
+
+#endif
+
+#define boxderrf(cause) \
+    errf("InvalidDataError", cause, \
+    "PIVBox contained invalid or corrupted data")
+
+#define boxverrf(cause) \
+    errf("NotSupportedError", cause, \
+    "PIVBox is not supported")
+
+#define boxaerrf(cause) \
+    errf("ArgumentError", cause, \
+    "Supplied piv_ecdh_box argument is invalid")
+
+#define VERIFYB(apdubuf)	\
+	do { \
+		VERIFY((apdubuf).b_data != NULL);	\
+		VERIFY3U((apdubuf).b_size, >=, 0);	\
+		VERIFY3U((apdubuf).b_size, >=, (apdubuf).b_len);	\
+		VERIFY3U((apdubuf).b_offset + (apdubuf).b_len, <=,	\
+		    (apdubuf).b_size);	\
+	} while (0)
+
+enum piv_fascn_flags {
+	PIV_FASCN_ALL_ZERO	= (1<<0)
+};
+
+struct piv_fascn {
+	enum piv_fascn_flags	 pf_flags;
+	char 			*pf_agency;
+	char 			*pf_system;
+	char 			*pf_crednum;
+	char 			*pf_cs;
+	char 			*pf_ici;
+	char 			*pf_pi;
+	char			*pf_oi;
+	enum piv_fascn_oc	 pf_oc;
+	enum piv_fascn_poa	 pf_poa;
+	struct strbuf		*pf_str_cache;
+};
+
+inline static char *
+nstrdup(const char *str)
+{
+	char *out;
+	if (str == NULL)
+		return (NULL);
+	out = strdup(str);
+	__CPROVER_assume(out != NULL);
+	VERIFY(out != NULL);
+	return (out);
+}
+
 #endif

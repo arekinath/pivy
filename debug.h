@@ -14,6 +14,11 @@ extern "C" {
 #include <sys/debug.h>
 #else
 
+#if !defined(__CPROVER)
+#define __CPROVER_assume(X)	((void)(0))
+#define __CPROVER_assert(X,Y)	(0)
+#endif
+
 #undef VERIFY
 #undef ASSERT
 
@@ -25,13 +30,11 @@ extern "C" {
  */
 
 extern boolean_t assfail(const char *, const char *, int);
-#define VERIFY(EX) do {\
-	((void)((EX) || assfail(#EX, __FILE__, __LINE__))); \
-	assert((EX)); } while (0)
+#define VERIFY(EX)	\
+	((void)((EX) || assfail(#EX, __FILE__, __LINE__)), (void)(__CPROVER_assert((EX), #EX)))
 #if DEBUG
-#define ASSERT(EX) do { \
-	((void)((EX) || assfail(#EX, __FILE__, __LINE__))); \
-	assert((EX)); } while (0)
+#define ASSERT(EX)	\
+	((void)((EX) || assfail(#EX, __FILE__, __LINE__)), (void)(__CPROVER_assert((EX), #EX)))
 #else
 #define ASSERT(x)  ((void)0)
 #endif
@@ -165,8 +168,14 @@ extern void debug_enter(char *);
 #define	VERIFYN(EX)	((void)(((EX) != NULL) || assfail(#EX " non-NULL", __FILE__, __LINE__)))
 #endif
 
-#if !defined(__CPROVER)
-#define __CPROVER_assume(X)
+#if defined(__CPROVER)
+/*
+ * CBMC has special knowledge of memcpy/memset, so change bcopy/bzero into those
+ * when we're running under the prover.
+ */
+#define bcopy(SRC, DST, SIZE)		memcpy((DST), (SRC), (SIZE))
+#define bzero(DST, SIZE)		memset((DST), 0, (SIZE))
+#define explicit_bzero(DST, SIZE)	memset((DST), 0, (SIZE))
 #endif
 
 #endif
