@@ -330,10 +330,15 @@ ifneq ($(SYSTEM), OpenBSD)
 PIV_COMMON_SOURCES+= 	readpassphrase.c
 endif
 
+RAGEL_VER :=	$(shell $(RAGEL) -v | \
+		    awk '$$5 == "version" { print ($$6 > 6.0); }')
+
+ifeq ($(RAGEL_VER), 1)
 %.c: %.rl
 	$(RAGEL) -o $@ $<
 %.png: %.rl
 	$(RAGEL) -Vp $< | dot -Tpng > $@
+endif
 
 PIV_CERT_SOURCES=			\
 	piv-certs.c		\
