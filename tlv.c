@@ -13,9 +13,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "debug.h"
+
 #include "utils.h"
 #include "tlv.h"
-#include "debug.h"
 
 #include "openssh/config.h"
 #include "openssh/sshbuf.h"

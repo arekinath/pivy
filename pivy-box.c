@@ -23,6 +23,8 @@
 #include <dirent.h>
 #include <ctype.h>
 
+#include "debug.h"
+
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
 #include <PCSC/winscard.h>

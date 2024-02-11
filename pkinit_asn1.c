@@ -11,6 +11,9 @@
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
+
+#include "debug.h"
+
 #include "pkinit_asn1.h"
 
 static const ASN1_AUX PKINIT_PRINC_NAME_aux = {

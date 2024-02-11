@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <assert.h>
 
+#include "debug.h"
 #include "slot-spec.h"
 
 struct slotspec {

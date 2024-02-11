@@ -20,8 +20,9 @@
 #include <fcntl.h>
 #include <inttypes.h>
 
-#include "bunyan.h"
 #include "debug.h"
+
+#include "bunyan.h"
 #include "errf.h"
 #include "utils.h"
 

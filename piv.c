@@ -26,6 +26,8 @@
 #include <errno.h>
 #include <strings.h>
 
+#include "debug.h"
+
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
 #include <PCSC/winscard.h>
@@ -59,7 +61,6 @@
 #include "piv.h"
 #include "bunyan.h"
 #include "utils.h"
-#include "debug.h"
 
 /* Contains structs apdubuf, piv_ecdh_box, and enum piv_box_version */
 #include "piv-internal.h"

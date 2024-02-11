@@ -25,6 +25,8 @@
 #include <ctype.h>
 #include <inttypes.h>
 
+#include "debug.h"
+
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
 #include <PCSC/winscard.h>
@@ -58,7 +60,6 @@
 #include "piv.h"
 #include "bunyan.h"
 #include "utils.h"
-#include "debug.h"
 #include "pkinit_asn1.h"
 #include "piv-ca.h"
 

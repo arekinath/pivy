@@ -73,6 +73,8 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 
+#include "debug.h"
+
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -94,7 +96,6 @@
 #include <pwd.h>
 
 #include "utils.h"
-#include "debug.h"
 
 #include "openssh/config.h"
 #include "openssh/ssh2.h"

@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <assert.h>
 
+#include "debug.h"
 #include "slot-spec.h"
 
 struct slotspec {
@@ -22,7 +23,7 @@ struct slotspec {
 };
 
 
-#line 74 "slot-spec.rl"
+#line 75 "slot-spec.rl"
 
 
 struct slotspec *
@@ -83,7 +84,7 @@ slotspec_clear_all(struct slotspec *spec)
 }
 
 
-#line 87 "slot-spec.c"
+#line 88 "slot-spec.c"
 static const char _slotspec_actions[] = {
 	0, 1, 3, 1, 6, 2, 0, 3, 
 	2, 2, 5, 2, 4, 5, 2, 6, 
@@ -162,7 +163,7 @@ static const int slotspec_error = 0;
 static const int slotspec_en_main = 1;
 
 
-#line 134 "slot-spec.rl"
+#line 135 "slot-spec.rl"
 
 errf_t *
 slotspec_parse_pe(struct slotspec *spec, const char *p, const char *pe)
@@ -178,14 +179,14 @@ slotspec_parse_pe(struct slotspec *spec, const char *p, const char *pe)
 	int cs;
 
 	
-#line 182 "slot-spec.c"
+#line 183 "slot-spec.c"
 	{
 	cs = slotspec_start;
 	}
 
-#line 149 "slot-spec.rl"
+#line 150 "slot-spec.rl"
 	
-#line 189 "slot-spec.c"
+#line 190 "slot-spec.c"
 	{
 	int _klen;
 	unsigned int _trans;
@@ -260,23 +261,23 @@ _match:
 		switch ( *_acts++ )
 		{
 	case 0:
-#line 25 "slot-spec.rl"
+#line 26 "slot-spec.rl"
 	{ invert = B_TRUE; }
 	break;
 	case 1:
-#line 26 "slot-spec.rl"
+#line 27 "slot-spec.rl"
 	{ invert = B_FALSE; }
 	break;
 	case 2:
-#line 27 "slot-spec.rl"
+#line 28 "slot-spec.rl"
 	{ mask = 0x743ffffc; }
 	break;
 	case 3:
-#line 28 "slot-spec.rl"
+#line 29 "slot-spec.rl"
 	{ slotp = p; slotpe = NULL; }
 	break;
 	case 4:
-#line 29 "slot-spec.rl"
+#line 30 "slot-spec.rl"
 	{
 	slotpe = p;
 	slot = strndup(slotp, slotpe - slotp);
@@ -302,7 +303,7 @@ _match:
 }
 	break;
 	case 5:
-#line 52 "slot-spec.rl"
+#line 53 "slot-spec.rl"
 	{
 	if (invert)
 		spec->ss_mask &= ~mask;
@@ -311,20 +312,20 @@ _match:
 }
 	break;
 	case 6:
-#line 58 "slot-spec.rl"
+#line 59 "slot-spec.rl"
 	{
 	return (errf("InvalidSlot", NULL, "Invalid slot spec at: '%s'",
 	    p - 1));
 }
 	break;
 	case 7:
-#line 62 "slot-spec.rl"
+#line 63 "slot-spec.rl"
 	{
 	return (errf("InvalidSlotSpec", NULL, "Invalid inverse spec: '%s' "
 	    "(expected '!' and then a slot)", p - 1));
 }
 	break;
-#line 328 "slot-spec.c"
+#line 329 "slot-spec.c"
 		}
 	}
 
@@ -341,15 +342,15 @@ _again:
 	while ( __nacts-- > 0 ) {
 		switch ( *__acts++ ) {
 	case 1:
-#line 26 "slot-spec.rl"
+#line 27 "slot-spec.rl"
 	{ invert = B_FALSE; }
 	break;
 	case 2:
-#line 27 "slot-spec.rl"
+#line 28 "slot-spec.rl"
 	{ mask = 0x743ffffc; }
 	break;
 	case 4:
-#line 29 "slot-spec.rl"
+#line 30 "slot-spec.rl"
 	{
 	slotpe = p;
 	slot = strndup(slotp, slotpe - slotp);
@@ -375,7 +376,7 @@ _again:
 }
 	break;
 	case 5:
-#line 52 "slot-spec.rl"
+#line 53 "slot-spec.rl"
 	{
 	if (invert)
 		spec->ss_mask &= ~mask;
@@ -384,20 +385,20 @@ _again:
 }
 	break;
 	case 6:
-#line 58 "slot-spec.rl"
+#line 59 "slot-spec.rl"
 	{
 	return (errf("InvalidSlot", NULL, "Invalid slot spec at: '%s'",
 	    p - 1));
 }
 	break;
 	case 7:
-#line 62 "slot-spec.rl"
+#line 63 "slot-spec.rl"
 	{
 	return (errf("InvalidSlotSpec", NULL, "Invalid inverse spec: '%s' "
 	    "(expected '!' and then a slot)", p - 1));
 }
 	break;
-#line 401 "slot-spec.c"
+#line 402 "slot-spec.c"
 		}
 	}
 	}
@@ -405,7 +406,7 @@ _again:
 	_out: {}
 	}
 
-#line 150 "slot-spec.rl"
+#line 151 "slot-spec.rl"
 
 	if (cs == slotspec_error) {
 		err = errf("InvalidSlotSpec", NULL, "Unexpected '%c'",

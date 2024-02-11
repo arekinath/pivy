@@ -21,6 +21,8 @@
 #include <limits.h>
 #include <err.h>
 
+#include "debug.h"
+
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
 #include <PCSC/winscard.h>
@@ -66,7 +68,6 @@
 
 #include "sss/hazmat.h"
 
-#include "debug.h"
 #include "tlv.h"
 #include "errf.h"
 #include "ebox.h"

@@ -22,6 +22,8 @@
 #include <err.h>
 #include <dirent.h>
 
+#include "debug.h"
+
 #if defined(__APPLE__)
 #include <PCSC/wintypes.h>
 #include <PCSC/winscard.h>
