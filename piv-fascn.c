@@ -103,8 +103,8 @@ piv_fascn_decode(const uint8_t *data, size_t len, struct piv_fascn **out)
 {
 	struct piv_fascn *pf;
 	errf_t *err = NULL;
-	enum iso7811_bcd v, term = ISO_BCD_NONE;
-	const char *vstr;
+	enum iso7811_bcd v = ISO_BCD_NONE, term = ISO_BCD_NONE;
+	const char *vstr = NULL;
 	char *oc = NULL, *poa = NULL;
 	struct bcdbuf *b = NULL;
 	uint i;
