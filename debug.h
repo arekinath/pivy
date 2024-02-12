@@ -10,14 +10,14 @@ extern "C" {
 
 #include "utils.h"
 
-#if defined(__sun)
-#include <sys/debug.h>
-#else
-
 #if !defined(__CPROVER)
 #define __CPROVER_assume(X)	((void)(0))
 #define __CPROVER_assert(X,Y)	(0)
 #endif
+
+#if defined(__sun)
+#include <sys/debug.h>
+#else
 
 #undef VERIFY
 #undef ASSERT
