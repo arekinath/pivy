@@ -208,7 +208,15 @@ cmd_unlock(const char *fsname)
 	zfs_handle_t *ds;
 	nvlist_t *props, *prop;
 	char *description;
+	/*
+	 * illumos libnvpair has the output args as 'char **'
+	 * but on ZoL they changed it to 'const char **'
+	 */
+#if defined(__sun)
+	char *b64;
+#else
 	const char *b64;
+#endif
 	char *nb64;
 	struct sshbuf *buf;
 	struct ebox *ebox, *nebox;
@@ -391,7 +399,11 @@ cmd_rekey(const char *fsname)
 	zfs_handle_t *ds;
 	nvlist_t *props, *prop;
 	char *description;
+#if defined(__sun)
+	char *b64;
+#else
 	const char *b64;
+#endif
 	char *nb64;
 	struct sshbuf *buf;
 	struct ebox *ebox = NULL, *nebox;
