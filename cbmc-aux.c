@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <assert.h>
 
 #include "errf.h"
 
@@ -452,6 +453,479 @@ iso7811_to_str(enum iso7811_bcd b)
 	}
 }
 
+static char
+nybble_to_hex(uint8_t nybble)
+{
+	if (nybble >= 0xA)
+		return ('A' + (nybble - 0xA));
+	else
+		return ('0' + nybble);
+}
+
+char *
+buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces)
+{
+	size_t i, j = 0;
+	char *out = calloc(1, len * 3 + 1);
+	uint8_t nybble;
+	for (i = 0; i < len; ++i) {
+		nybble = (buf[i] & 0xF0) >> 4;
+		out[j++] = nybble_to_hex(nybble);
+		nybble = (buf[i] & 0x0F);
+		out[j++] = nybble_to_hex(nybble);
+		if (spaces && i + 1 < len)
+			out[j++] = ' ';
+	}
+	out[j] = 0;
+	return (out);
+}
+
 #endif 	/* !proving utils.c */
+
+#if __CPROVER_MAIN != __FILE_tlv_c
+/* mocks of tlv functions */
+
+struct tlv_state {
+	struct tlv_context 	*ts_root;
+	struct tlv_context	*ts_cur;
+	boolean_t		 ts_write;
+};
+
+struct tlv_context {
+	struct tlv_context	*tc_parent;
+	size_t			 tc_bytes;
+};
+
+struct tlv_state *
+tlv_init(const uint8_t *buf, size_t offset, size_t len)
+{
+	struct tlv_state *ts;
+	struct tlv_context *tc;
+
+	ts = calloc(1, sizeof (*ts));
+	if (ts == NULL)
+		return (NULL);
+
+	tc = calloc(1, sizeof (*tc));
+	if (tc == NULL) {
+		free(ts);
+		return (NULL);
+	}
+
+	ts->ts_write = B_FALSE;
+	ts->ts_root = tc;
+	ts->ts_cur = tc;
+
+	tc->tc_bytes = len - offset;
+
+	return (ts);
+}
+
+void
+tlv_free(struct tlv_state *ts)
+{
+	if (ts == NULL)
+		return;
+	assert(ts->ts_root != NULL);
+	assert(ts->ts_cur == ts->ts_root);
+	assert(ts->ts_write || ts->ts_root->tc_bytes == 0);
+	free(ts->ts_root);
+	free(ts);
+}
+
+void
+tlv_abort(struct tlv_state *ts)
+{
+	struct tlv_context *tc = ts->ts_cur;
+	struct tlv_context *ntc;
+	while (tc != ts->ts_root) {
+		ntc = tc->tc_parent;
+		free(tc);
+		tc = ntc;
+	}
+	ts->ts_cur = ts->ts_root;
+	ts->ts_root->tc_bytes = 0;
+}
+
+boolean_t
+tlv_at_end(const struct tlv_state *ts)
+{
+	return (ts->ts_cur->tc_bytes == 0);
+}
+
+boolean_t
+tlv_at_root_end(const struct tlv_state *ts)
+{
+	return (ts->ts_cur->tc_bytes == 0 && ts->ts_root->tc_bytes == 0);
+}
+
+size_t
+tlv_rem(const struct tlv_state *ts)
+{
+	return (ts->ts_cur->tc_bytes);
+}
+
+void
+tlv_skip(struct tlv_state *ts)
+{
+	struct tlv_context *tc = ts->ts_cur;
+	ts->ts_cur = tc->tc_parent;
+	free(tc);
+}
+
+errf_t *
+tlv_read_tag(struct tlv_state *ts, uint *tag)
+{
+	boolean_t do_error;
+	uint tagv;
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	size_t tagb, lenb, datab;
+
+	if (tc->tc_bytes < 2) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	__CPROVER_assume(do_error == B_FALSE || do_error == B_TRUE);
+	if (do_error) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	__CPROVER_assume(tagb > 0 && tagb <= 4);
+	__CPROVER_assume(lenb > 0 && lenb <= 4);
+	__CPROVER_assume(datab < (1ul << (lenb * 8ul - 1ul)));
+	__CPROVER_assume(tagb + lenb + datab <= tc->tc_bytes);
+
+	__CPROVER_assume(tagv > 0 && tagv < (1ul << (tagb * 8ul - 1ul)));
+
+	tc->tc_bytes -= tagb + lenb + datab;
+
+	tc = calloc(1, sizeof (*tc));
+	__CPROVER_assume(tc != NULL);
+
+	tc->tc_parent = ts->ts_cur;
+	tc->tc_bytes = datab;
+
+	ts->ts_cur = tc;
+	*tag = tagv;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_end(struct tlv_state *ts)
+{
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+
+	if (tc->tc_bytes > 0) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	ts->ts_cur = tc->tc_parent;
+	free(tc);
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_read_u8(struct tlv_state *ts, uint8_t *out)
+{
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	uint8_t v;
+
+	if (tc->tc_bytes < 1) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	tc->tc_bytes -= 1;
+	*out = v;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_read_u16(struct tlv_state *ts, uint16_t *out)
+{
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	uint8_t v;
+
+	if (tc->tc_bytes < 2) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	tc->tc_bytes -= 2;
+	*out = v;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_read_u8to32(struct tlv_state *ts, uint32_t *out)
+{
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	uint32_t v;
+	size_t nbytes;
+
+	if (tc->tc_bytes < 1) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	nbytes = tc->tc_bytes;
+	if (nbytes > 4)
+		nbytes = 4;
+
+	tc->tc_bytes -= nbytes;
+	__CPROVER_assume(v < (1 << (nbytes * 8)));
+	*out = v;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_read_alloc(struct tlv_state *ts, uint8_t **data, size_t *len)
+{
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	uint8_t *datab;
+	size_t nbytes;
+
+	if (tc->tc_bytes < 1) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	nbytes = tc->tc_bytes;
+	tc->tc_bytes = 0;
+	datab = malloc(nbytes);
+	__CPROVER_assume(datab != NULL);
+	*data = datab;
+	*len = nbytes;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
+    size_t *len)
+{
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	size_t nbytes;
+	uint i;
+
+	if (tc->tc_bytes < 1) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	nbytes = tc->tc_bytes;
+	if (nbytes > maxLen)
+		nbytes = maxLen;
+	tc->tc_bytes -= nbytes;
+
+	for (i = 0; i < nbytes; ++i) {
+		uint8_t v;
+		dest[i] = v;
+	}
+	*len = nbytes;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_read_string(struct tlv_state *ts, char **dest)
+{
+	errf_t *err;
+	int do_error;
+	struct tlv_context *tc = ts->ts_cur;
+	size_t nbytes;
+	uint i;
+	char *str;
+
+	if (tc->tc_bytes < 1) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+	__CPROVER_assume(do_error == 0 || do_error == 1);
+	if (do_error) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	nbytes = tc->tc_bytes;
+	tc->tc_bytes -= nbytes;
+
+	str = malloc(nbytes + 1);
+	__CPROVER_assume(str != NULL);
+	for (i = 0; i < nbytes; ++i) {
+		char v;
+		__CPROVER_assume(v != 0);
+		str[i] = v;
+	}
+	*dest = str;
+
+	return (ERRF_OK);
+}
+
+errf_t *
+tlv_read(struct tlv_state *ts, uint8_t *dest, size_t len)
+{
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	uint i;
+	char *str;
+
+	if (tc->tc_bytes != len) {
+		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		return (err);
+	}
+
+	tc->tc_bytes -= len;
+
+	for (i = 0; i < len; ++i) {
+		uint8_t v;
+		dest[i] = v;
+	}
+
+	return (ERRF_OK);
+}
+
+struct tlv_state *
+tlv_init_write(void)
+{
+	struct tlv_state *ts;
+	struct tlv_context *tc;
+
+	ts = calloc(1, sizeof (*ts));
+	if (ts == NULL)
+		return (NULL);
+
+	tc = calloc(1, sizeof (*tc));
+	if (tc == NULL) {
+		free(ts);
+		return (NULL);
+	}
+
+	ts->ts_write = B_TRUE;
+	ts->ts_root = tc;
+	ts->ts_cur = tc;
+
+	return (ts);
+}
+
+void
+tlv_push(struct tlv_state *ts, uint tag)
+{
+	struct tlv_context *tc;
+
+	assert(ts->ts_write == B_TRUE);
+
+	tc = calloc(1, sizeof (*tc));
+	__CPROVER_assume(tc != NULL);
+
+	if (tag >= (1<<24))
+		tc->tc_bytes = 4;
+	else if (tag >= (1<<16))
+		tc->tc_bytes = 3;
+	else if (tag >= (1<<8))
+		tc->tc_bytes = 2;
+	else
+		tc->tc_bytes = 1;
+	tc->tc_bytes += tag;
+	tc->tc_parent = ts->ts_cur;
+	ts->ts_cur = tc;
+}
+
+void
+tlv_pop(struct tlv_state *ts)
+{
+	struct tlv_context *tc = ts->ts_cur;
+	size_t len = tc->tc_bytes;
+
+	assert(tc != ts->ts_root);
+	assert(ts->ts_write == B_TRUE);
+
+	if (len >= (1<<24))
+		len += 5;
+	else if (len >= (1<<16))
+		len += 4;
+	else if (len >= (1<<8))
+		len += 3;
+	else if (len >= (1<<7))
+		len += 2;
+	else
+		len += 1;
+
+	ts->ts_cur = tc->tc_parent;
+	free(tc);
+
+	ts->ts_cur->tc_bytes += len;
+}
+
+uint8_t *
+tlv_buf(const struct tlv_state *ts)
+{
+	uint8_t *data;
+	assert(ts->ts_write == B_TRUE);
+	assert(ts->ts_cur == ts->ts_root);
+	data = malloc(ts->ts_root->tc_bytes);
+	__CPROVER_assume(data != NULL);
+	return (data);
+}
+
+void
+tlv_write(struct tlv_state *ts, const uint8_t *src, size_t len)
+{
+	assert(ts->ts_write == B_TRUE);
+	ts->ts_cur->tc_bytes += len;
+}
+
+void
+tlv_write_u16(struct tlv_state *ts, uint16_t val)
+{
+	assert(ts->ts_write == B_TRUE);
+	ts->ts_cur->tc_bytes += 2;
+}
+
+void
+tlv_write_u8to32(struct tlv_state *ts, uint32_t val)
+{
+	struct tlv_context *tc = ts->ts_cur;
+	if (val >= (1<<24))
+		tc->tc_bytes = 4;
+	else if (val >= (1<<16))
+		tc->tc_bytes = 3;
+	else if (val >= (1<<8))
+		tc->tc_bytes = 2;
+	else
+		tc->tc_bytes = 1;
+}
+
+void
+tlv_write_byte(struct tlv_state *ts, uint8_t val)
+{
+	assert(ts->ts_write == B_TRUE);
+	ts->ts_cur->tc_bytes += 1;
+}
+
+size_t
+tlv_len(const struct tlv_state *ts)
+{
+	assert(ts->ts_write == B_TRUE);
+	assert(ts->ts_cur == ts->ts_root);
+	return (ts->ts_root->tc_bytes);
+}
+
+#endif
 
 #endif

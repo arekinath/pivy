@@ -940,6 +940,7 @@ _CBMC_TARGETS=	tlv.c \
 		errf.c \
 		utils.c \
 		piv-fascn.c \
+		piv-cardcap.c \
 		strbuf.c
 CBMC_TARGETS=$(_CBMC_TARGETS:%=.%.cbmc)
 
@@ -958,6 +959,14 @@ CBMC_AUX=	cbmc-aux.c
 .piv-fascn.c.cbmc:	CBMC_OPTS+=	--object-bits 12
 .piv-fascn.c.cbmc:	CBMC_OPTS+=	--unwindset strbuf_expand.0:3
 .piv-fascn.c.cbmc:	CBMC_OPTS+=	--unwindset bcdbuf_read_string.0:11
+
+.piv-cardcap.c.cbmc:	CBMC_AUX+=
+.piv-cardcap.c.cbmc:	CBMC_OPTS+=	--unwinding-assertions
+.piv-cardcap.c.cbmc:	CBMC_OPTS+=	--unwind 30
+.piv-cardcap.c.cbmc:	CBMC_OPTS+=	--object-bits 12
+.piv-cardcap.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_read_upto.0:25
+.piv-cardcap.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_abort.0:3
+.piv-cardcap.c.cbmc:	CBMC_OPTS+=	--unwindset piv_cardcap_decode.0:14
 
 .tlv.c.cbmc:		CBMC_AUX+=
 .tlv.c.cbmc:		CBMC_OPTS+=	--unwind 10
