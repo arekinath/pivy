@@ -309,6 +309,7 @@ SSS_SOURCES=$(_SSS_SOURCES:%=sss/%)
 PIV_COMMON_SOURCES=		\
 	piv.c			\
 	piv-fascn.c		\
+	piv-cardcap.c		\
 	tlv.c			\
 	debug.c			\
 	bunyan.c		\
