@@ -1577,7 +1577,8 @@ populate_user_key_mgmt(struct cert_var_scope *cs, X509 *cert)
 
 	err = scope_eval(cs, "ad_upn", &upn);
 	if (err == ERRF_OK) {
-		eku = "1.3.6.1.4.1.311.10.3.4";
+		eku = "1.3.6.1.4.1.311.10.3.4,1.3.6.1.4.1.311.10.3.4.1,"
+		    "1.3.6.1.4.1.311.67.1.1,1.3.6.1.4.1.311.67.1.2";
 	} else {
 		errf_free(err);
 		upn = NULL;
@@ -2223,7 +2224,8 @@ rpopulate_user_key_mgmt(struct cert_var_scope *cs, X509_REQ *req)
 
 	err = scope_eval(cs, "ad_upn", &upn);
 	if (err == ERRF_OK) {
-		eku = "1.3.6.1.4.1.311.10.3.4";
+		eku = "1.3.6.1.4.1.311.10.3.4,1.3.6.1.4.1.311.10.3.4.1,"
+		    "1.3.6.1.4.1.311.67.1.1,1.3.6.1.4.1.311.67.1.2";
 	} else {
 		errf_free(err);
 		upn = NULL;
