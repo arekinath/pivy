@@ -208,27 +208,6 @@ struct piv_token {
 	uint32_t pt_ykserial;
 };
 
-enum piv_chuid_flags {
-	PIV_CHUID_HAS_CHUUID 	= (1<<0),
-	PIV_CHUID_HAS_BUFLEN	= (1<<1),
-};
-
-struct piv_chuid {
-	enum piv_chuid_flags	 pc_flags;
-	uint16_t		 pc_buflen;
-	struct piv_fascn	*pc_fascn;
-	uint8_t			 pc_guid[GUID_LEN];
-	uint8_t			 pc_chuuid[GUID_LEN];
-	uint8_t			*pc_expiry;
-	size_t			 pc_expiry_len;
-	uint8_t			*pc_orgid;
-	size_t			 pc_orgid_len;
-	uint8_t			*pc_duns;
-	size_t			 pc_duns_len;
-	CMS_ContentInfo		*pc_sig;
-	char			*pc_guidhex;
-};
-
 enum piv_pinfo_kv_type {
 	PIV_PINFO_KV_UINT,
 	PIV_PINFO_KV_STRING,
@@ -412,7 +391,7 @@ piv_token_fascn(const struct piv_token *token)
 {
 	if (token->pt_chuid == NULL)
 		return (NULL);
-	return (token->pt_chuid->pc_fascn);
+	return (piv_chuid_get_fascn(token->pt_chuid));
 }
 
 const uint8_t *
@@ -456,7 +435,7 @@ piv_token_has_signed_chuid(const struct piv_token *token)
 {
 	if (token->pt_chuid == NULL)
 		return (B_FALSE);
-	return (token->pt_chuid->pc_sig != NULL);
+	return (piv_chuid_is_signed(token->pt_chuid));
 }
 
 enum piv_pin
@@ -1031,9 +1010,11 @@ piv_read_chuid(struct piv_token *pk)
 	if (apdu->a_sw == SW_NO_ERROR ||
 	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
 	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
-	    	tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
+		const uint8_t *guid;
+
+		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
 		    apdu->a_reply.b_len);
-	    	if ((err = tlv_read_tag(tlv, &tag)))
+		if ((err = tlv_read_tag(tlv, &tag)))
 			goto invdata;
 		if (tag != 0x53) {
 			err = tagerrf("INS_GET_DATA(CHUID)", tag);
@@ -1042,23 +1023,27 @@ piv_read_chuid(struct piv_token *pk)
 		if (pk->pt_chuid != NULL)
 			piv_chuid_free(pk->pt_chuid);
 		pk->pt_chuid = NULL;
-	    	err = piv_chuid_decode(tlv_ptr(tlv), tlv_rem(tlv),
-	    	    &pk->pt_chuid);
-	    	if (err != ERRF_OK)
-	    		goto invdata;
-	    	tlv_skip(tlv);
+		err = piv_chuid_decode(tlv_ptr(tlv), tlv_rem(tlv),
+		    &pk->pt_chuid);
+		if (err != ERRF_OK)
+			goto invdata;
+		tlv_skip(tlv);
 
-		for (i = 0; i < sizeof (pk->pt_chuid->pc_guid); ++i) {
-			if (pk->pt_chuid->pc_guid[i] != 0)
+		guid = piv_chuid_get_guid(pk->pt_chuid);
+		for (i = 0; i < GUID_LEN; ++i) {
+			if (guid != 0)
 				break;
 		}
-		if (i == sizeof (pk->pt_guid)) {
-			if (pk->pt_chuid->pc_flags & PIV_CHUID_HAS_CHUUID) {
-				bcopy(pk->pt_chuid->pc_chuuid,
-				    pk->pt_guid, sizeof (pk->pt_guid));
-			} else if (pk->pt_chuid->pc_fascn != NULL) {
+		if (i == GUID_LEN) {
+			const uint8_t *chuuid;
+			const struct piv_fascn *pf;
+			chuuid = piv_chuid_get_chuuid(pk->pt_chuid);
+			pf = piv_chuid_get_fascn(pk->pt_chuid);
+
+			if (chuuid != NULL) {
+				bcopy(chuuid, pk->pt_guid, GUID_LEN);
+			} else if (pf != NULL) {
 				struct ssh_digest_ctx *hctx;
-				struct piv_fascn *pf = pk->pt_chuid->pc_fascn;
 				uint8_t *buf = calloc(1, 32);
 				VERIFY(buf != NULL);
 				hctx = ssh_digest_start(SSH_DIGEST_SHA256);
@@ -1078,8 +1063,7 @@ piv_read_chuid(struct piv_token *pk)
 				ssh_digest_free(hctx);
 			}
 		} else {
-			bcopy(pk->pt_chuid->pc_guid, pk->pt_guid,
-			    sizeof (pk->pt_guid));
+			bcopy(guid, pk->pt_guid, sizeof (pk->pt_guid));
 		}
 
 		err = ERRF_OK;
@@ -2447,12 +2431,15 @@ piv_write_chuid(struct piv_token *pt, const struct piv_chuid *chuid)
 	tlv = NULL;
 
 	if (apdu->a_sw == SW_NO_ERROR) {
+		const uint8_t *nguid;
+
 		piv_chuid_free(pt->pt_chuid);
 		if ((err = piv_chuid_clone(chuid, &pt->pt_chuid))) {
 			piv_apdu_free(apdu);
 			return (err);
 		}
-		bcopy(chuid->pc_guid, pt->pt_guid, sizeof (pt->pt_guid));
+		nguid = piv_chuid_get_guid(chuid);
+		bcopy(nguid, pt->pt_guid, sizeof (pt->pt_guid));
 
 		free(pt->pt_guidhex);
 		pt->pt_guidhex = NULL;
@@ -6101,511 +6088,10 @@ piv_slotid_from_string(const char *str, enum piv_slotid *out)
 	    "slot ID: '%s'", str));
 }
 
-void
-piv_chuid_free(struct piv_chuid *chuid)
-{
-	if (chuid == NULL)
-		return;
-	piv_fascn_free(chuid->pc_fascn);
-	free(chuid->pc_expiry);
-	free(chuid->pc_orgid);
-	free(chuid->pc_duns);
-	CMS_ContentInfo_free(chuid->pc_sig);
-	free(chuid->pc_guidhex);
-	free(chuid);
-}
-
-struct piv_chuid *
-piv_chuid_new(void)
-{
-	struct piv_chuid *chuid;
-
-	chuid = calloc(1, sizeof (struct piv_chuid));
-	if (chuid == NULL)
-		return (NULL);
-
-	return (chuid);
-}
-
-errf_t *
-piv_chuid_clone(const struct piv_chuid *other, struct piv_chuid **out)
-{
-	struct piv_chuid *chuid = NULL;
-	uint8_t *buf = NULL;
-	const uint8_t *p;
-	size_t len;
-	errf_t *err;
-
-	chuid = calloc(1, sizeof (struct piv_chuid));
-	if (chuid == NULL)
-		return (NULL);
-
-	chuid->pc_flags = other->pc_flags;
-
-	chuid->pc_buflen = other->pc_buflen;
-
-	bcopy(other->pc_guid, chuid->pc_guid, sizeof (chuid->pc_guid));
-	bcopy(other->pc_chuuid, chuid->pc_chuuid, sizeof (chuid->pc_chuuid));
-
-	if (other->pc_fascn != NULL) {
-		chuid->pc_fascn = piv_fascn_clone(other->pc_fascn);
-		if (chuid->pc_fascn == NULL) {
-			err = ERRF_NOMEM;
-			goto out;
-		}
-	}
-
-	if (other->pc_expiry_len > 0) {
-		chuid->pc_expiry = malloc(other->pc_expiry_len);
-		if (chuid->pc_expiry == NULL) {
-			err = ERRF_NOMEM;
-			goto out;
-		}
-		bcopy(other->pc_expiry, chuid->pc_expiry, other->pc_expiry_len);
-		chuid->pc_expiry_len = other->pc_expiry_len;
-	}
-
-	if (other->pc_orgid_len > 0) {
-		chuid->pc_orgid = malloc(other->pc_orgid_len);
-		if (chuid->pc_orgid == NULL) {
-			err = ERRF_NOMEM;
-			goto out;
-		}
-		bcopy(other->pc_orgid, chuid->pc_orgid, other->pc_orgid_len);
-		chuid->pc_orgid_len = other->pc_orgid_len;
-	}
-
-	if (other->pc_duns_len > 0) {
-		chuid->pc_duns = malloc(other->pc_duns_len);
-		if (chuid->pc_duns == NULL) {
-			err = ERRF_NOMEM;
-			goto out;
-		}
-		bcopy(other->pc_duns, chuid->pc_duns, other->pc_duns_len);
-		chuid->pc_duns_len = other->pc_duns_len;
-	}
-
-	if (other->pc_sig != NULL) {
-		len = i2d_CMS_ContentInfo(other->pc_sig, &buf);
-		if (len == 0) {
-			make_sslerrf(err, "i2d_CMS_ContentInfo", "encoding "
-			    "chuid signature");
-			goto out;
-		}
-		p = buf;
-		chuid->pc_sig = d2i_CMS_ContentInfo(NULL, &p, len);
-		if (chuid->pc_sig == NULL) {
-			make_sslerrf(err, "d2i_CMS_ContentInfo",
-			    "parsing issuer signature in CHUID");
-			goto out;
-		}
-	}
-
-	*out = chuid;
-	chuid = NULL;
-	err = ERRF_OK;
-
-out:
-	OPENSSL_free(buf);
-	piv_chuid_free(chuid);
-	return (err);
-}
-
-boolean_t
-piv_chuid_is_expired(const struct piv_chuid *pc)
-{
-	return (B_FALSE);
-}
-
-void
-piv_chuid_set_random_guid(struct piv_chuid *pc)
-{
-	arc4random_buf(pc->pc_guid, sizeof (pc->pc_guid));
-	free(pc->pc_guidhex);
-	pc->pc_guidhex = NULL;
-}
-
-void
-piv_chuid_set_fascn(struct piv_chuid *pc, const struct piv_fascn *v)
-{
-	piv_fascn_free(pc->pc_fascn);
-	pc->pc_fascn = piv_fascn_clone(v);
-}
-
-void
-piv_chuid_set_guid(struct piv_chuid *pc, uint8_t *v)
-{
-	bcopy(v, pc->pc_guid, sizeof (pc->pc_guid));
-	free(pc->pc_guidhex);
-	pc->pc_guidhex = NULL;
-}
-
-const char *
-piv_chuid_get_guidhex(const struct piv_chuid *pc)
-{
-	if (pc->pc_guidhex == NULL) {
-		struct piv_chuid *pcw = (struct piv_chuid *)pc;
-		pcw->pc_guidhex = buf_to_hex(pc->pc_guid, sizeof (pc->pc_guid),
-		    B_FALSE);
-		return (pcw->pc_guidhex);
-	}
-	return (pc->pc_guidhex);
-}
-
-void
-piv_chuid_set_chuuid(struct piv_chuid *pc, uint8_t *v)
-{
-	if (v == NULL) {
-		bzero(pc->pc_chuuid, sizeof (pc->pc_chuuid));
-		pc->pc_flags &= ~PIV_CHUID_HAS_CHUUID;
-	} else {
-		bcopy(v, pc->pc_chuuid, sizeof (pc->pc_chuuid));
-		pc->pc_flags |= PIV_CHUID_HAS_CHUUID;
-	}
-}
-
-void
-piv_chuid_set_expiry(struct piv_chuid *pc, uint8_t *v, size_t len)
-{
-	free(pc->pc_expiry);
-	pc->pc_expiry = malloc(len);
-	bcopy(v, pc->pc_expiry, len);
-	pc->pc_expiry_len = len;
-}
-
-void
-piv_chuid_set_expiry_rel(struct piv_chuid *pc, uint sec)
-{
-	char buf[9] = {0};
-	time_t now;
-	struct tm *tm;
-
-	now = time(NULL);
-	now += sec;
-
-	tm = gmtime(&now);
-
-	snprintf(buf, sizeof (buf), "%04d%02d%02d", tm->tm_year + 1900,
-	    tm->tm_mon + 1, tm->tm_mday);
-
-	piv_chuid_set_expiry(pc, (uint8_t *)buf, strlen(buf));
-}
-
-static errf_t *
-piv_chuid_write_tbs_tlv(const struct piv_chuid *pc, struct tlv_state *tlv)
-{
-	uint8_t *buf = NULL;
-	size_t len;
-	errf_t *err;
-
-	if (pc->pc_flags & PIV_CHUID_HAS_BUFLEN) {
-		tlv_push(tlv, 0xEE);
-		tlv_write_u16(tlv, pc->pc_buflen);
-		tlv_pop(tlv);
-	}
-
-	if (pc->pc_fascn != NULL) {
-		err = piv_fascn_encode(pc->pc_fascn, &buf, &len);
-		if (err != ERRF_OK) {
-			err = errf("CHUIDEncodeError", err, "Failed to encode "
-			    "FASC-N in CHUID");
-			goto out;
-		}
-		tlv_push(tlv, 0x30);
-		tlv_write(tlv, buf, len);
-		tlv_pop(tlv);
-		free(buf);
-		buf = NULL;
-	}
-
-	if (pc->pc_orgid != NULL) {
-		tlv_push(tlv, 0x32);
-		tlv_write(tlv, pc->pc_orgid, pc->pc_orgid_len);
-		tlv_pop(tlv);
-	}
-
-	if (pc->pc_duns != NULL) {
-		tlv_push(tlv, 0x32);
-		tlv_write(tlv, pc->pc_duns, pc->pc_duns_len);
-		tlv_pop(tlv);
-	}
-
-	tlv_push(tlv, 0x34);
-	tlv_write(tlv, pc->pc_guid, sizeof (pc->pc_guid));
-	tlv_pop(tlv);
-
-	if (pc->pc_expiry != NULL) {
-		tlv_push(tlv, 0x35);
-		tlv_write(tlv, pc->pc_expiry, pc->pc_expiry_len);
-		tlv_pop(tlv);
-	}
-
-	if (pc->pc_flags & PIV_CHUID_HAS_CHUUID) {
-		tlv_push(tlv, 0x36);
-		tlv_write(tlv, pc->pc_chuuid, sizeof (pc->pc_chuuid));
-		tlv_pop(tlv);
-	}
-
-	err = ERRF_OK;
-
-out:
-	free(buf);
-	return (err);
-}
-
-errf_t *
-piv_chuid_tbs(const struct piv_chuid *pc, uint8_t **out, size_t *len)
-{
-	struct tlv_state *tlv = NULL;
-	errf_t *err;
-
-	tlv = tlv_init_write();
-	if (tlv == NULL) {
-		err = errfno("tlv_init_write", errno, NULL);
-		goto out;
-	}
-
-	if ((err = piv_chuid_write_tbs_tlv(pc, tlv)))
-		goto out;
-
-	*len = tlv_len(tlv);
-	*out = malloc(*len);
-	if (*out == NULL) {
-		err = ERRF_NOMEM;
-		goto out;
-	}
-	bcopy(tlv_buf(tlv), *out, *len);
-
-	err = ERRF_OK;
-
-out:
-	tlv_free(tlv);
-	return (err);
-}
-
-errf_t *
-piv_chuid_encode(const struct piv_chuid *pc, uint8_t **out, size_t *outlen)
-{
-	struct tlv_state *tlv = NULL;
-	uint8_t *buf = NULL;
-	size_t len;
-	errf_t *err;
-
-	tlv = tlv_init_write();
-	if (tlv == NULL) {
-		err = errfno("tlv_init_write", errno, NULL);
-		goto out;
-	}
-
-	if ((err = piv_chuid_write_tbs_tlv(pc, tlv)))
-		goto out;
-
-	if (pc->pc_sig != NULL) {
-		len = i2d_CMS_ContentInfo(pc->pc_sig, &buf);
-		if (len == 0) {
-			make_sslerrf(err, "i2d_CMS_ContentInfo", "encoding "
-			    "CHUID signature");
-			goto out;
-		}
-		tlv_push(tlv, 0x3E);
-		tlv_write(tlv, buf, len);
-		tlv_pop(tlv);
-	} else {
-		/*
-		 * The signature field is compulsory, so write an empty tag.
-		 */
-		tlv_push(tlv, 0x3E);
-		tlv_pop(tlv);
-	}
-
-	len = tlv_len(tlv);
-	*out = malloc(len);
-	if (*out == NULL) {
-		err = ERRF_NOMEM;
-		goto out;
-	}
-	bcopy(tlv_buf(tlv), *out, len);
-	*outlen = len;
-
-	err = ERRF_OK;
-
-out:
-	tlv_free(tlv);
-	free(buf);
-	return (err);
-}
-
-errf_t *
-piv_chuid_decode(const uint8_t *data, size_t len, struct piv_chuid **out)
-{
-	struct tlv_state *tlv = NULL;
-	uint tag;
-	errf_t *err;
-	struct piv_chuid *chuid = NULL;
-	uint8_t *d;
-	size_t dlen;
-	const uint8_t *p;
-
-	chuid = calloc(1, sizeof (struct piv_chuid));
-	if (chuid == NULL) {
-		err = errfno("calloc", errno, NULL);
-		goto out;
-	}
-
-	tlv = tlv_init(data, 0, len);
-	if (tlv == NULL) {
-		err = errfno("tlv_init", errno, NULL);
-		goto out;
-	}
-
-	while (!tlv_at_end(tlv)) {
-		if ((err = tlv_read_tag(tlv, &tag)))
-			goto out;
-		switch (tag) {
-		case 0xEE:	/* Buffer Length */
-			err = tlv_read_u16(tlv, &chuid->pc_buflen);
-			if (err)
-				goto out;
-			if ((err = tlv_end(tlv)))
-				goto out;
-			chuid->pc_flags |= PIV_CHUID_HAS_BUFLEN;
-			break;
-		case 0x30:	/* FASC-N */
-			err = piv_fascn_decode(tlv_ptr(tlv), tlv_rem(tlv),
-			    &chuid->pc_fascn);
-			if (err)
-				goto out;
-			tlv_skip(tlv);
-			break;
-		case 0x32:	/* Organizational Identifier */
-			err = tlv_read_alloc(tlv, &chuid->pc_orgid,
-			    &chuid->pc_orgid_len);
-			if (err)
-				goto out;
-			if ((err = tlv_end(tlv)))
-				goto out;
-			break;
-		case 0x33:	/* DUNS */
-			err = tlv_read_alloc(tlv, &chuid->pc_duns,
-			    &chuid->pc_duns_len);
-			if (err)
-				goto out;
-			if ((err = tlv_end(tlv)))
-				goto out;
-			break;
-		case 0x34:	/* GUID */
-			err = tlv_read(tlv, chuid->pc_guid,
-			    sizeof (chuid->pc_guid));
-			if (err)
-				goto out;
-			if ((err = tlv_end(tlv)))
-				goto out;
-			break;
-		case 0x35:	/* Expiry */
-			err = tlv_read_alloc(tlv, &chuid->pc_expiry,
-			    &chuid->pc_expiry_len);
-			if (err)
-				goto out;
-			if ((err = tlv_end(tlv)))
-				goto out;
-			break;
-		case 0x36:	/* Cardholder UUID */
-			err = tlv_read(tlv, chuid->pc_chuuid,
-			    sizeof (chuid->pc_chuuid));
-			if (err)
-				goto out;
-			if ((err = tlv_end(tlv)))
-				goto out;
-			chuid->pc_flags |= PIV_CHUID_HAS_CHUUID;
-			break;
-		case 0x3D:	/* Authentication Key Map (Deprecated) */
-			tlv_skip(tlv);
-			break;
-		case 0x3E:	/* Issuer Signature */
-			err = tlv_read_alloc(tlv, &d, &dlen);
-			if (err)
-				goto out;
-			if ((err = tlv_end(tlv)))
-				goto out;
-			if (dlen == 0) {
-				/* Skip an empty signature */
-				free(d);
-				break;
-			}
-			p = d;
-			chuid->pc_sig = d2i_CMS_ContentInfo(NULL, &p, len);
-			free(d);
-			if (chuid->pc_sig == NULL) {
-				make_sslerrf(err, "d2i_CMS_ContentInfo",
-				    "parsing issuer signature in CHUID");
-				goto out;
-			}
-			break;
-		case 0xFE:	/* LRC */
-			tlv_skip(tlv);
-			break;
-		default:
-			err = tagerrf("CHUID", tag);
-			goto out;
-		}
-	}
-
-	*out = chuid;
-	chuid = NULL;
-	err = ERRF_OK;
-
-out:
-	if (err != ERRF_OK)
-		tlv_abort(tlv);
-	else
-		tlv_free(tlv);
-	piv_chuid_free(chuid);
-	return (err);
-}
-
 const struct piv_chuid *
 piv_token_chuid(struct piv_token *pk)
 {
 	return (pk->pt_chuid);
-}
-
-const struct piv_fascn *
-piv_chuid_get_fascn(const struct piv_chuid *c)
-{
-	return (c->pc_fascn);
-}
-
-const uint8_t *
-piv_chuid_get_guid(const struct piv_chuid *c)
-{
-	return (c->pc_guid);
-}
-
-const uint8_t *
-piv_chuid_get_chuuid(const struct piv_chuid *c)
-{
-	if (!(c->pc_flags & PIV_CHUID_HAS_CHUUID))
-		return (NULL);
-	return (c->pc_chuuid);
-}
-
-const uint8_t *
-piv_chuid_get_expiry(const struct piv_chuid *c, size_t *plen)
-{
-	*plen = c->pc_expiry_len;
-	return (c->pc_expiry);
-}
-
-CMS_ContentInfo *
-piv_chuid_get_signature(struct piv_chuid *c)
-{
-	return (c->pc_sig);
-}
-
-boolean_t
-piv_chuid_is_signed(const struct piv_chuid *c)
-{
-	return (c->pc_sig != NULL);
 }
 
 errf_t *
