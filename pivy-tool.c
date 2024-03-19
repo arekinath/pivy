@@ -453,7 +453,8 @@ cmd_list(void)
 			return (err);
 		assert_select(pk);
 		if ((err = piv_read_cardcap(pk, &cardcap))) {
-			warnfx(err, "failed to read cardcap");
+			if (!errf_caused_by(err, "NotFoundError"))
+				warnfx(err, "failed to read cardcap");
 			cardcap = NULL;
 			errf_free(err);
 		}
