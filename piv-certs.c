@@ -1165,6 +1165,54 @@ cert_var_eval_into(struct cert_var *cv, struct sshbuf *buf)
 }
 
 static errf_t *
+pkey_key_id(EVP_PKEY *pkey, ASN1_OCTET_STRING **out)
+{
+	errf_t *err;
+	int rc;
+	ASN1_OCTET_STRING *kid = NULL;
+	X509_PUBKEY *xpub = NULL;
+	const uint8_t *pkdata;
+	uint8_t *pkhash = NULL;
+	uint pkhlen;
+	int pklen;
+
+	rc = X509_PUBKEY_set(&xpub, pkey);
+	if (rc != 1) {
+		make_sslerrf(err, "X509_PUBKEY_set", "allocating keyid");
+		goto out;
+	}
+
+	rc = X509_PUBKEY_get0_param(NULL, &pkdata, &pklen, NULL, xpub);
+	VERIFY(rc == 1);
+
+	pkhlen = SHA_DIGEST_LENGTH;
+	pkhash = malloc(pkhlen);
+	VERIFY(pkhash != NULL);
+	rc = EVP_Digest(pkdata, pklen, pkhash, &pkhlen, EVP_sha1(), NULL);
+	if (rc != 1) {
+		make_sslerrf(err, "EVP_Digest", "allocating keyid");
+		goto out;
+	}
+
+	kid = ASN1_OCTET_STRING_new();
+	if (kid == NULL) {
+		make_sslerrf(err, "ASN1_OCTET_STRING_new", "allocating keyid");
+		goto out;
+	}
+	ASN1_STRING_set(kid, pkhash, pkhlen);
+
+	*out = kid;
+	kid = NULL;
+	err = ERRF_OK;
+
+out:
+	free(pkhash);
+	X509_PUBKEY_free(xpub);
+	ASN1_OCTET_STRING_free(kid);
+	return (err);
+}
+
+static errf_t *
 populate_common(struct cert_var_scope *cs, X509 *cert, char *basic, char *ku,
     char *eku)
 {
@@ -1980,6 +2028,9 @@ populate_ca(struct cert_var_scope *cs, X509 *cert)
 	char basic[128];
 	char *eku = NULL;
 	CONF *config = NULL;
+	EVP_PKEY *pubkey = NULL;
+	ASN1_OCTET_STRING *kid = NULL;
+	int rc;
 
 	OPENSSL_load_builtin_modules();
 
@@ -2029,9 +2080,26 @@ populate_ca(struct cert_var_scope *cs, X509 *cert)
 		errf_free(err);
 	}
 
+	pubkey = X509_get_pubkey(cert);
+	if (pubkey != NULL) {
+		err = pkey_key_id(pubkey, &kid);
+		if (err != ERRF_OK)
+			goto out;
+
+		rc = X509_add1_ext_i2d(cert, NID_subject_key_identifier, kid, 0,
+		    X509V3_ADD_REPLACE);
+		if (rc != 1) {
+			make_sslerrf(err, "X509_add1_ext_i2d", "adding subject "
+			    "key id");
+			goto out;
+		}
+	}
+
 	err = ERRF_OK;
 
 out:
+	ASN1_OCTET_STRING_free(kid);
+	EVP_PKEY_free(pubkey);
 	free(namecons);
 	free(pathlen);
 	free(eku);
@@ -2501,6 +2569,9 @@ rpopulate_ca(struct cert_var_scope *cs, X509_REQ *req)
 	char basic[128];
 	char *eku = NULL;
 	CONF *config = NULL;
+	EVP_PKEY *pubkey = NULL;
+	ASN1_OCTET_STRING *kid = NULL;
+	int rc;
 
 	exts = sk_X509_EXTENSION_new_null();
 	VERIFY(exts != NULL);
@@ -2549,12 +2620,29 @@ rpopulate_ca(struct cert_var_scope *cs, X509_REQ *req)
 		errf_free(err);
 	}
 
+	pubkey = X509_REQ_get_pubkey(req);
+	if (pubkey != NULL) {
+		err = pkey_key_id(pubkey, &kid);
+		if (err != ERRF_OK)
+			goto out;
+
+		rc = X509V3_add1_i2d(&exts, NID_subject_key_identifier, kid,
+		    0, X509V3_ADD_REPLACE);
+		if (rc != 1) {
+			make_sslerrf(err, "X509V3_add1_i2d", "generating "
+			    " subject key id");
+			goto out;
+		}
+	}
+
 	VERIFY(X509_REQ_add_extensions(req, exts) == 1);
 	sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
 
 	err = ERRF_OK;
 
 out:
+	ASN1_OCTET_STRING_free(kid);
+	EVP_PKEY_free(pubkey);
 	free(namecons);
 	free(pathlen);
 	free(eku);
@@ -2661,54 +2749,6 @@ out:
 	BN_free(e);
 	BN_free(n);
 
-	return (err);
-}
-
-static errf_t *
-pkey_key_id(EVP_PKEY *pkey, ASN1_OCTET_STRING **out)
-{
-	errf_t *err;
-	int rc;
-	ASN1_OCTET_STRING *kid = NULL;
-	X509_PUBKEY *xpub = NULL;
-	const uint8_t *pkdata;
-	uint8_t *pkhash = NULL;
-	uint pkhlen;
-	int pklen;
-
-	rc = X509_PUBKEY_set(&xpub, pkey);
-	if (rc != 1) {
-		make_sslerrf(err, "X509_PUBKEY_set", "allocating keyid");
-		goto out;
-	}
-
-	rc = X509_PUBKEY_get0_param(NULL, &pkdata, &pklen, NULL, xpub);
-	VERIFY(rc == 1);
-
-	pkhlen = SHA_DIGEST_LENGTH;
-	pkhash = malloc(pkhlen);
-	VERIFY(pkhash != NULL);
-	rc = EVP_Digest(pkdata, pklen, pkhash, &pkhlen, EVP_sha1(), NULL);
-	if (rc != 1) {
-		make_sslerrf(err, "EVP_Digest", "allocating keyid");
-		goto out;
-	}
-
-	kid = ASN1_OCTET_STRING_new();
-	if (kid == NULL) {
-		make_sslerrf(err, "ASN1_OCTET_STRING_new", "allocating keyid");
-		goto out;
-	}
-	ASN1_STRING_set(kid, pkhash, pkhlen);
-
-	*out = kid;
-	kid = NULL;
-	err = ERRF_OK;
-
-out:
-	free(pkhash);
-	X509_PUBKEY_free(xpub);
-	ASN1_OCTET_STRING_free(kid);
 	return (err);
 }
 
