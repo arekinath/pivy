@@ -1569,8 +1569,19 @@ populate_user_auth(struct cert_var_scope *cs, X509 *cert)
 {
 	errf_t *err;
 	char *upn, *krbpn, *aduser;
-	const char *eku = "clientAuth";
+	char eku[128], ku[64];
 	boolean_t is_ad_user = B_FALSE;
+	EVP_PKEY *pkey;
+
+	ku[0] = 0;
+	xstrlcat(ku, "critical,digitalSignature", sizeof (ku));
+
+	eku[0] = 0;
+	xstrlcat(eku, "clientAuth", sizeof (eku));
+
+	pkey = X509_get0_pubkey(cert);
+	if (pkey != NULL && EVP_PKEY_base_id(pkey) == EVP_PKEY_RSA)
+		xstrlcat(ku, ",keyEncipherment", sizeof (ku));
 
 	err = scope_eval(cs, "ad_upn", &upn);
 	if (err != ERRF_OK) {
@@ -1593,20 +1604,16 @@ populate_user_auth(struct cert_var_scope *cs, X509 *cert)
 	    strcasecmp(aduser, "true") == 0)) {
 		is_ad_user = B_TRUE;
 	}
-	if (is_ad_user && krbpn != NULL) {
-		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2,1.3.6.1.5.2.3.4";
-	} else if (is_ad_user) {
-		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
-	} else if (krbpn != NULL) {
-		eku = "clientAuth,1.3.6.1.5.2.3.4";
-	}
+
+	if (is_ad_user)
+		xstrlcat(eku, ",1.3.6.1.4.1.311.20.2.2", sizeof (eku));
+	if (krbpn != NULL)
+		xstrlcat(eku, ",1.3.6.1.5.2.3.4", sizeof (eku));;
 	free(upn);
 	free(aduser);
 	free(krbpn);
 
-	err = populate_common(cs, cert, "critical,CA:FALSE",
-	    "critical,digitalSignature,nonRepudiation",
-	    (char *)eku);
+	err = populate_common(cs, cert, "critical,CA:FALSE", ku, eku);
 	if (err != ERRF_OK)
 		return (err);
 
@@ -2240,9 +2247,21 @@ rpopulate_user_auth(struct cert_var_scope *cs, X509_REQ *req)
 {
 	errf_t *err;
 	char *upn = NULL, *krbpn = NULL, *aduser = NULL;
-	const char *eku = "clientAuth";
+	char eku[128];
+	char ku[64];
 	STACK_OF(X509_EXTENSION) *exts;
 	boolean_t is_ad_user = B_FALSE;
+	EVP_PKEY *pkey;
+
+	eku[0] = 0;
+	xstrlcat(eku, "clientAuth", sizeof (eku));
+
+	ku[0] = 0;
+	xstrlcat(ku, "critical,digitalSignature", sizeof (ku));
+
+	pkey = X509_REQ_get0_pubkey(req);
+	if (pkey != NULL && EVP_PKEY_base_id(pkey) == EVP_PKEY_RSA)
+		xstrlcat(ku, ",keyEncipherment", sizeof (ku));
 
 	exts = sk_X509_EXTENSION_new_null();
 	VERIFY(exts != NULL);
@@ -2268,20 +2287,17 @@ rpopulate_user_auth(struct cert_var_scope *cs, X509_REQ *req)
 	    strcasecmp(aduser, "true") == 0)) {
 		is_ad_user = B_TRUE;
 	}
-	if (is_ad_user && krbpn != NULL) {
-		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2,1.3.6.1.5.2.3.4";
-	} else if (is_ad_user) {
-		eku = "clientAuth,1.3.6.1.4.1.311.20.2.2";
-	} else if (krbpn != NULL) {
-		eku = "clientAuth,1.3.6.1.5.2.3.4";
-	}
+
+	if (is_ad_user)
+		xstrlcat(eku, ",1.3.6.1.4.1.311.20.2.2", sizeof (eku));
+	if (krbpn != NULL)
+		xstrlcat(eku, ",1.3.6.1.5.2.3.4", sizeof (eku));
+
 	free(upn);
 	free(krbpn);
 	free(aduser);
 
-	err = rpopulate_common(cs, req, exts, "critical,CA:FALSE",
-	    "critical,digitalSignature,nonRepudiation",
-	    (char *)eku);
+	err = rpopulate_common(cs, req, exts, "critical,CA:FALSE", ku, eku);
 	if (err != ERRF_OK)
 		return (err);
 
