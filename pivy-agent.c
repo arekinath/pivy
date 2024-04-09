@@ -908,8 +908,8 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 
 	guid = piv_token_shortid(selk);
 	snprintf(prompt, sizeof (prompt),
-	    "%sA new client is trying to use PIV token %s\n\n"
-	    "Client PID: %d\nClient executable: %s\nClient cmd: %s\n"
+	    "%sA new client is trying to use PIV token %s\r\n\r\n"
+	    "Client PID: %d\r\nClient executable: %s\r\nClient cmd: %s\r\n"
 	    "Slot requested: %02x",
 	    (add_zenity_args ? "--text=" : ""),
 	    guid, (int)e->se_pid,
@@ -939,6 +939,8 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 			    (char *)NULL);
 		} else if (confirm && add_notify_send_args) {
 			execlp(confirm, confirm,
+			    "--app-name=pivy-agent",
+			    "--icon=user-info",
 			    "--urgency=critical",
 			    "--expire-time=0",
 			    "--wait",
