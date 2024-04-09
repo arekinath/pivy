@@ -1337,6 +1337,7 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	const char *guidhex;
 	struct cert_var_scope *scope;
 	const struct cert_tpl *tpl;
+	EVP_PKEY *pkey;
 
 	guidhex = piv_token_shortid(selk);
 	(void) scope_set(cvroot, "guid", guidhex);
@@ -1362,6 +1363,13 @@ selfsign_slot(uint slotid, enum piv_alg alg, struct sshkey *pub)
 	VERIFY(cert != NULL);
 	VERIFY(X509_set_version(cert, 2) == 1);
 	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
+
+	if ((err = sshkey_to_evp_pkey(pub, &pkey))) {
+		X509_free(cert);
+		return (funcerrf(err, "Error converting pubkey to EVP_PKEY"));
+	}
+	VERIFY(X509_set_pubkey(cert, pkey) == 1);
+	EVP_PKEY_free(pkey);
 
 	err = cert_tpl_populate(tpl, scope, cert);
 	if (err != ERRF_OK) {
@@ -1922,6 +1930,7 @@ cmd_req_cert(uint slotid)
 	struct cert_var_scope *scope;
 	const struct cert_tpl *tpl;
 	char *guidhex;
+	EVP_PKEY *pkey;
 
 	guidhex = piv_token_shortid(selk);
 	(void) scope_set(cvroot, "guid", guidhex);
@@ -1962,6 +1971,13 @@ cmd_req_cert(uint slotid)
 	VERIFY(req != NULL);
 
 	VERIFY(X509_REQ_set_version(req, 1) == 1);
+
+	if ((err = sshkey_to_evp_pkey(pub, &pkey))) {
+		X509_REQ_free(req);
+		return (funcerrf(err, "Error converting pubkey to EVP_PKEY"));
+	}
+	VERIFY(X509_REQ_set_pubkey(req, pkey) == 1);
+	EVP_PKEY_free(pkey);
 
 	err = cert_tpl_populate_req(tpl, scope, req);
 	if (err != ERRF_OK) {

@@ -26,6 +26,14 @@
 #include "openssh/ssherr.h"
 
 void
+xstrlcat(char *buf, const char *str, size_t buflen)
+{
+	size_t rc;
+	rc = strlcat(buf, str, buflen);
+	VERIFY3U(rc, <=, buflen);
+}
+
+void
 set_no_dump(void *ptr, size_t size)
 {
 #if defined(MADV_DONTDUMP)

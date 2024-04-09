@@ -129,6 +129,8 @@ void set_no_dump(void *ptr, size_t size);
 void freezero(void *ptr, size_t size);
 #endif
 
+void xstrlcat(char *, const char *, size_t);
+
 char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 
 #if defined(__bounded)

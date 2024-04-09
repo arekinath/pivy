@@ -2152,6 +2152,7 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	char *dnstr = NULL;
 	const char *jsonstr;
 	struct ca_session sess;
+	EVP_PKEY *pkey;
 
 	ca = calloc(1, sizeof(struct ca));
 	if (ca == NULL)
@@ -2328,6 +2329,14 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	VERIFY(X509_set_version(cert, 2) == 1);
 	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
 
+	if ((err = sshkey_to_evp_pkey(pubkey, &pkey))) {
+		err = errf("CertificateError", err,
+		    "Error converting pubkey to EVP_PKEY");
+		goto out;
+	}
+	VERIFY(X509_set_pubkey(cert, pkey) == 1);
+	EVP_PKEY_free(pkey);
+
 	tpl = cert_tpl_find("ca");
 
 	cv = scope_lookup(args->cna_scope, "lifetime", 1);
@@ -2426,6 +2435,14 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	VERIFY(cert != NULL);
 	VERIFY(X509_set_version(cert, 2) == 1);
 	VERIFY(X509_set_serialNumber(cert, serial_asn1) == 1);
+
+	if ((err = sshkey_to_evp_pkey(cak, &pkey))) {
+		err = errf("CertificateError", err,
+		    "Error converting CAK pubkey to EVP_PKEY");
+		goto out;
+	}
+	VERIFY(X509_set_pubkey(cert, pkey) == 1);
+	EVP_PKEY_free(pkey);
 
 	tpl = cert_tpl_find("user-auth");
 	scope = scope_new_root();

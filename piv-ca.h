@@ -93,6 +93,8 @@ errf_t			*cert_tpl_populate_req(const struct cert_tpl *tpl,
 struct cert_var		*scope_all_vars(struct cert_var_scope *scope);
 struct cert_var		*scope_undef_vars(struct cert_var_scope *scope);
 
+errf_t	*sshkey_to_evp_pkey(const struct sshkey *pubkey, EVP_PKEY **ppkey);
+
 errf_t	*piv_selfsign_cert(struct piv_token *tkn, struct piv_slot *slot,
     struct sshkey *pubkey, X509 *cert);
 errf_t	*piv_sign_cert(struct piv_token *tkn, struct piv_slot *slot,

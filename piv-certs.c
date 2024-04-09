@@ -79,7 +79,7 @@ struct param {
 struct cert_tpl {
 	const char      *ct_name;
 	const char      *ct_help;
-	struct param     ct_params[9];
+	struct param     ct_params[16];
 	errf_t          *(*ct_populate)(struct cert_var_scope *, X509 *);
 	errf_t          *(*ct_populate_req)(struct cert_var_scope *, X509_REQ *);
 };
@@ -184,6 +184,7 @@ struct cert_tpl cert_templates[] = {
 			{ "is_ad_dc", 0, "Generate a KDC cert for an AD DC if 'yes'" },
 			{ "ad_repl_guid", 0, "Hex GUID for AD email replication cert" },
 			PARAM_AD_SID,
+			{ "is_ike_server", 0, "Add IKE EKU for VPN servers if 'yes'" },
 			{ NULL }
 		},
 		.ct_populate = populate_computer_auth,
@@ -1858,7 +1859,7 @@ static errf_t *
 populate_computer_auth(struct cert_var_scope *cs, X509 *cert)
 {
 	errf_t *err;
-	char *upn, *krbpn, *dns_name, *replguid, *is_dc_str;
+	char *upn, *krbpn, *dns_name, *replguid, *is_dc_str, *ike;
 	boolean_t is_dc = B_FALSE;
 	char *eku, *ku;
 	X509_EXTENSION *ext;
@@ -1868,6 +1869,7 @@ populate_computer_auth(struct cert_var_scope *cs, X509 *cert)
 	char *tkn;
 	struct sshbuf *ekubuf;
 	struct sshbuf *kubuf;
+	EVP_PKEY *pubkey;
 
 	ekubuf = sshbuf_new();
 	VERIFY(ekubuf != NULL);
@@ -1907,8 +1909,18 @@ populate_computer_auth(struct cert_var_scope *cs, X509 *cert)
 	}
 	free(is_dc_str);
 
-	VERIFY0(sshbuf_putf(kubuf, "critical,digitalSignature,nonRepudiation"));
-	if (replguid != NULL || is_dc) {
+	err = scope_eval(cs, "is_ike_server", &ike);
+	if (err != ERRF_OK) {
+		errf_free(err);
+		ike = NULL;
+	}
+
+	VERIFY0(sshbuf_putf(kubuf, "critical,digitalSignature"));
+
+	pubkey = X509_get0_pubkey(cert);
+
+	if (replguid != NULL || is_dc ||
+	    (pubkey != NULL && EVP_PKEY_base_id(pubkey) == EVP_PKEY_RSA)) {
 		VERIFY0(sshbuf_putf(kubuf, ",keyEncipherment"));
 	}
 
@@ -1916,14 +1928,18 @@ populate_computer_auth(struct cert_var_scope *cs, X509 *cert)
 	if (upn != NULL) {
 		VERIFY0(sshbuf_putf(ekubuf, ",1.3.6.1.4.1.311.20.2.2"));
 	}
-	if (is_dc) {
+	if (is_dc && krbpn != NULL) {
 		VERIFY0(sshbuf_putf(ekubuf, ",1.3.6.1.5.2.3.5"));
 	}
 	if (replguid != NULL) {
 		VERIFY0(sshbuf_putf(ekubuf, ",1.3.6.1.4.1.311.21.19"));
 	}
+	if (ike != NULL) {
+		VERIFY0(sshbuf_putf(ekubuf, ",1.3.6.1.5.5.8.2.2"));
+	}
 	free(upn);
 	free(krbpn);
+	free(ike);
 
 	eku = sshbuf_dup_string(ekubuf);
 	sshbuf_free(ekubuf);
@@ -2404,14 +2420,27 @@ static errf_t *
 rpopulate_computer_auth(struct cert_var_scope *cs, X509_REQ *req)
 {
 	errf_t *err;
-	char *upn, *krbpn, *dns_name;
-	const char *eku = "clientAuth,serverAuth";
+	char *upn, *krbpn, *dns_name, *ike, *is_dc_str;
+	boolean_t is_dc = B_FALSE;
+	char eku[128];
+	char ku[64];
 	X509_EXTENSION *ext;
 	GENERAL_NAME *gn;
 	STACK_OF(GENERAL_NAME) *gns;
 	char *saveptr;
 	char *tkn;
 	STACK_OF(X509_EXTENSION) *exts;
+	EVP_PKEY *pkey;
+
+	eku[0] = 0;
+	xstrlcat(eku, "clientAuth,serverAuth", sizeof (eku));
+
+	ku[0] = 0;
+	xstrlcat(ku, "critical,digitalSignature", sizeof (ku));
+
+	pkey = X509_REQ_get0_pubkey(req);
+	if (pkey != NULL && EVP_PKEY_base_id(pkey) == EVP_PKEY_RSA)
+		xstrlcat(ku, ",keyEncipherment", sizeof (ku));
 
 	exts = sk_X509_EXTENSION_new_null();
 	VERIFY(exts != NULL);
@@ -2432,19 +2461,36 @@ rpopulate_computer_auth(struct cert_var_scope *cs, X509_REQ *req)
 		errf_free(err);
 		krbpn = NULL;
 	}
-	if (upn != NULL && krbpn != NULL) {
-		eku = "clientAuth,serverAuth,1.3.6.1.4.1.311.20.2.2,1.3.6.1.5.2.3.5";
-	} else if (upn != NULL) {
-		eku = "clientAuth,serverAuth,1.3.6.1.4.1.311.20.2.2";
-	} else if (krbpn != NULL) {
-		eku = "clientAuth,serverAuth,1.3.6.1.5.2.3.5";
+	err = scope_eval(cs, "is_ike_server", &ike);
+	if (err != ERRF_OK) {
+		errf_free(err);
+		ike = NULL;
 	}
+
+	err = scope_eval(cs, "is_ad_dc", &is_dc_str);
+	if (err != ERRF_OK) {
+		errf_free(err);
+		is_dc_str = NULL;
+	}
+	if (is_dc_str != NULL && (
+	    strcasecmp(is_dc_str, "yes") == 0 ||
+	    strcasecmp(is_dc_str, "true") == 0)) {
+		is_dc = B_TRUE;
+	}
+	free(is_dc_str);
+
+	if (upn != NULL)
+		xstrlcat(eku, ",1.3.6.1.4.1.311.20.2.2", sizeof (eku));
+	if (krbpn != NULL && is_dc)
+		xstrlcat(eku, ",1.3.6.1.5.2.3.5", sizeof (eku));
+	if (ike != NULL && strcasecmp(ike, "yes") == 0)
+		xstrlcat(eku, ",1.3.6.1.5.5.8.2.2", sizeof (eku));
+
 	free(upn);
 	free(krbpn);
+	free(ike);
 
-	err = rpopulate_common(cs, req, exts, "critical,CA:FALSE",
-	    "critical,digitalSignature,nonRepudiation",
-	    (char *)eku);
+	err = rpopulate_common(cs, req, exts, "critical,CA:FALSE", ku, eku);
 	if (err != ERRF_OK) {
 		sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
 		return (err);
@@ -2647,6 +2693,87 @@ out:
 	free(pathlen);
 	free(eku);
 	NCONF_free(config);
+
+	return (err);
+}
+
+errf_t *
+sshkey_to_evp_pkey(const struct sshkey *pubkey, EVP_PKEY **ppkey)
+{
+	int rc;
+	errf_t *err = ERRF_OK;
+	RSA *copy = NULL;
+	BIGNUM *e = NULL, *n = NULL;
+	EC_KEY *ecopy = NULL;
+	EVP_PKEY *pkey = NULL;
+
+	pkey = EVP_PKEY_new();
+	VERIFY(pkey != NULL);
+
+	if (pubkey->type == KEY_RSA) {
+		copy = RSA_new();
+		if (copy == NULL) {
+			make_sslerrf(err, "RSA_new", "copying pubkey");
+			goto out;
+		}
+
+		e = BN_dup(RSA_get0_e(pubkey->rsa));
+		n = BN_dup(RSA_get0_n(pubkey->rsa));
+		if (e == NULL || n == NULL) {
+			make_sslerrf(err, "BN_dup", "copying pubkey");
+			goto out;
+		}
+
+		rc = RSA_set0_key(copy, n, e, NULL);
+		if (rc != 1) {
+			make_sslerrf(err, "RSA_set0_key", "copying pubkey");
+			goto out;
+		}
+		/* copy now owns these */
+		n = NULL;
+		e = NULL;
+
+		rc = EVP_PKEY_assign_RSA(pkey, copy);
+		if (rc != 1) {
+			make_sslerrf(err, "EVP_PKEY_assign_RSA",
+			    "copying pubkey");
+			goto out;
+		}
+		/* pkey owns this now */
+		copy = NULL;
+
+	} else if (pubkey->type == KEY_ECDSA) {
+		ecopy = EC_KEY_dup(pubkey->ecdsa);
+		if (ecopy == NULL) {
+			make_sslerrf(err, "EC_KEY_dup", "copying pubkey");
+			goto out;
+		}
+
+		rc = EVP_PKEY_assign_EC_KEY(pkey, ecopy);
+		if (rc != 1) {
+			make_sslerrf(err, "EVP_PKEY_assign_EC_KEY",
+			    "copying pubkey");
+			goto out;
+		}
+		/* pkey owns this now */
+		ecopy = NULL;
+
+	} else {
+		err = errf("InvalidKeyType", NULL, "invalid key type: %d",
+		    pubkey->type);
+		goto out;
+	}
+
+	*ppkey = pkey;
+	pkey = NULL;
+	err = ERRF_OK;
+
+out:
+	EVP_PKEY_free(pkey);
+	RSA_free(copy);
+	EC_KEY_free(ecopy);
+	BN_free(e);
+	BN_free(n);
 
 	return (err);
 }
