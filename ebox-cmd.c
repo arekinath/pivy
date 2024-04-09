@@ -1269,15 +1269,15 @@ compose_path(const struct ebox_tpl_path_seg *segs, const char *tpl)
 	while (seg != NULL) {
 		switch (seg->tps_type) {
 		case PATH_SEG_FIXED:
-			strlcat(buf, seg->tps_fixed, PATH_MAX);
+			xstrlcat(buf, seg->tps_fixed, PATH_MAX);
 			break;
 		case PATH_SEG_ENV:
 			tmp = getenv(seg->tps_env);
 			if (tmp != NULL)
-				strlcat(buf, tmp, PATH_MAX);
+				xstrlcat(buf, tmp, PATH_MAX);
 			break;
 		case PATH_SEG_TPL:
-			strlcat(buf, tpl, PATH_MAX);
+			xstrlcat(buf, tpl, PATH_MAX);
 			break;
 		}
 		seg = seg->tps_next;

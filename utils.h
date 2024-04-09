@@ -130,6 +130,7 @@ void freezero(void *ptr, size_t size);
 #endif
 
 void xstrlcat(char *, const char *, size_t);
+void xstrlcpy(char *, const char *, size_t);
 
 char *buf_to_hex(const uint8_t *buf, size_t len, boolean_t spaces);
 

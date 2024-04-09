@@ -380,7 +380,7 @@ strpaddup(const char *instr, size_t len, char prefix)
 	for (i = 0; i < pad; ++i)
 		out[i] = prefix;
 	out[pad] = '\0';
-	strlcat(out, instr, len + 1);
+	xstrlcat(out, instr, len + 1);
 	return (out);
 }
 

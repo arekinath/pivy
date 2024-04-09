@@ -211,8 +211,8 @@ i2v_PKINIT_PRINC(PKINIT_PRINC *princ)
 		bcopy(ASN1_STRING_get0_data(gs), p, len);
 		p[len] = '\0';
 		if (*out != '\0')
-			strlcat(out, "/", outlen);
-		strlcat(out, p, outlen);
+			xstrlcat(out, "/", outlen);
+		xstrlcat(out, p, outlen);
 		free(p);
 		sk_ASN1_GENERALSTRING_push(gss, gs);
 	}
@@ -223,8 +223,8 @@ i2v_PKINIT_PRINC(PKINIT_PRINC *princ)
 	p = malloc(len + 1);
 	bcopy(ASN1_STRING_get0_data(princ->realm), p, len);
 	p[len] = '\0';
-	strlcat(out, "@", outlen);
-	strlcat(out, p, outlen);
+	xstrlcat(out, "@", outlen);
+	xstrlcat(out, p, outlen);
 	free(p);
 
 	return (out);

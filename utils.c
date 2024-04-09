@@ -30,7 +30,15 @@ xstrlcat(char *buf, const char *str, size_t buflen)
 {
 	size_t rc;
 	rc = strlcat(buf, str, buflen);
-	VERIFY3U(rc, <=, buflen);
+	VERIFY3U(rc, <, buflen);
+}
+
+void
+xstrlcpy(char *buf, const char *str, size_t buflen)
+{
+	size_t rc;
+	rc = strlcpy(buf, str, buflen);
+	VERIFY3U(rc, <, buflen);
 }
 
 void

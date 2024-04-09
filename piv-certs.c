@@ -1776,8 +1776,8 @@ populate_user_email(struct cert_var_scope *cs, X509 *cert)
 	cfglen = strlen(email) + 8;
 	cfg = calloc(cfglen, 1);
 	VERIFY(cfg != NULL);
-	strlcat(cfg, "email:", cfglen);
-	strlcat(cfg, email, cfglen);
+	xstrlcat(cfg, "email:", cfglen);
+	xstrlcat(cfg, email, cfglen);
 
 	X509V3_set_ctx_nodb(&x509ctx);
 	X509V3_set_ctx(&x509ctx, cert, cert, NULL, NULL, 0);
@@ -2060,11 +2060,11 @@ populate_ca(struct cert_var_scope *cs, X509 *cert)
 	X509V3_set_nconf(&x509ctx, config);
 	X509V3_set_ctx(&x509ctx, cert, cert, NULL, NULL, 0);
 
-	strlcpy(basic, "critical,CA:TRUE", sizeof (basic));
+	xstrlcpy(basic, "critical,CA:TRUE", sizeof (basic));
 	err = scope_eval(cs, "path_len", &pathlen);
 	if (err == ERRF_OK) {
-		strlcat(basic, ",pathlen:", sizeof (basic));
-		strlcat(basic, pathlen, sizeof (basic));
+		xstrlcat(basic, ",pathlen:", sizeof (basic));
+		xstrlcat(basic, pathlen, sizeof (basic));
 	} else {
 		errf_free(err);
 	}
@@ -2391,8 +2391,8 @@ rpopulate_user_email(struct cert_var_scope *cs, X509_REQ *req)
 	cfglen = strlen(email) + 8;
 	cfg = calloc(cfglen, 1);
 	VERIFY(cfg != NULL);
-	strlcat(cfg, "email:", cfglen);
-	strlcat(cfg, email, cfglen);
+	xstrlcat(cfg, "email:", cfglen);
+	xstrlcat(cfg, email, cfglen);
 
 	X509V3_set_ctx_nodb(&x509ctx);
 	X509V3_set_ctx(&x509ctx, NULL, NULL, req, NULL, 0);
@@ -2634,8 +2634,8 @@ rpopulate_ca(struct cert_var_scope *cs, X509_REQ *req)
 	strlcpy(basic, "critical,CA:TRUE", sizeof (basic));
 	err = scope_eval(cs, "path_len", &pathlen);
 	if (err == ERRF_OK) {
-		strlcat(basic, ",pathlen:", sizeof (basic));
-		strlcat(basic, pathlen, sizeof (basic));
+		xstrlcat(basic, ",pathlen:", sizeof (basic));
+		xstrlcat(basic, pathlen, sizeof (basic));
 	} else {
 		errf_free(err);
 	}
@@ -3489,9 +3489,9 @@ load_ossl_config(const char *section, struct cert_var_scope *cs, CONF **out)
 					goto out;
 				}
 
-				strlcpy(namebuf, "_ossl_config:",
+				xstrlcpy(namebuf, "_ossl_config:",
 				    sizeof (namebuf));
-				strlcat(namebuf, fname, sizeof (namebuf));
+				xstrlcat(namebuf, fname, sizeof (namebuf));
 				name = namebuf;
 
 				cvv = scope_lookup(cs, namebuf, 1);
@@ -3505,9 +3505,9 @@ load_ossl_config(const char *section, struct cert_var_scope *cs, CONF **out)
 
 			} else if (name[0] == '@') {
 				cvv = scope_lookup(cs, name, 1);
-				strlcpy(prefix, "[", sizeof (prefix));
-				strlcat(prefix, name + 1, sizeof (prefix));
-				strlcat(prefix, "]\n", sizeof (prefix));
+				xstrlcpy(prefix, "[", sizeof (prefix));
+				xstrlcat(prefix, name + 1, sizeof (prefix));
+				xstrlcat(prefix, "]\n", sizeof (prefix));
 
 			} else {
 				continue;

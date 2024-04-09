@@ -1803,10 +1803,10 @@ ca_write_key_backup(struct ca *ca, struct sshkey *privkey)
 	if (err != ERRF_OK)
 		goto out;
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".key.ebox", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".key.ebox", sizeof (fname));
 
 	baf = fopen(fname, "w");
 	if (baf == NULL) {
@@ -1887,12 +1887,12 @@ ca_write_pukpin(struct ca *ca, enum piv_pin type, boolean_t old,
 	if (err != ERRF_OK)
 		goto out;
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".", sizeof (fname));
-	strlcat(fname, typeslug, sizeof (fname));
-	strlcat(fname, ".ebox", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".", sizeof (fname));
+	xstrlcat(fname, typeslug, sizeof (fname));
+	xstrlcat(fname, ".ebox", sizeof (fname));
 
 	baf = fopen(fname, "w");
 	if (baf == NULL) {
@@ -2170,8 +2170,8 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 		goto out;
 	}
 
-	strlcpy(fname, path, sizeof (fname));
-	strlcat(fname, "/pivy-ca.json", sizeof (fname));
+	xstrlcpy(fname, path, sizeof (fname));
+	xstrlcat(fname, "/pivy-ca.json", sizeof (fname));
 
 	caf = fopen(fname, "w");
 	if (caf == NULL) {
@@ -2394,10 +2394,10 @@ ca_generate(const char *path, struct ca_new_args *args, struct piv_token *tkn,
 	if (err != ERRF_OK)
 		goto out;
 
-	strlcpy(fname, path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".crt", sizeof (fname));
+	xstrlcpy(fname, path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".crt", sizeof (fname));
 
 	crtf = fopen(fname, "w");
 	if (crtf == NULL) {
@@ -2647,12 +2647,12 @@ load_ebox_file(struct ca *ca, const char *typeslug, struct ebox **outp)
 	struct ebox *box = NULL;
 	int rc;
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".", sizeof (fname));
-	strlcat(fname, typeslug, sizeof (fname));
-	strlcat(fname, ".ebox", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".", sizeof (fname));
+	xstrlcat(fname, typeslug, sizeof (fname));
+	xstrlcat(fname, ".ebox", sizeof (fname));
 
 	f = fopen(fname, "r");
 	if (f == NULL) {
@@ -2798,8 +2798,8 @@ ca_open(const char *path, struct ca **outca)
 		goto out;
 	}
 
-	strlcpy(fname, path, sizeof (fname));
-	strlcat(fname, "/pivy-ca.json", sizeof (fname));
+	xstrlcpy(fname, path, sizeof (fname));
+	xstrlcat(fname, "/pivy-ca.json", sizeof (fname));
 
 	err = read_text_file(fname, &buf, &len);
 	if (err != ERRF_OK)
@@ -2844,10 +2844,10 @@ ca_open(const char *path, struct ca **outca)
 
 	ca_recalc_slug(ca);
 
-	strlcpy(fname, path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".crt", sizeof (fname));
+	xstrlcpy(fname, path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".crt", sizeof (fname));
 
 	free(buf);
 	buf = NULL;
@@ -3326,10 +3326,10 @@ ca_log_verify(struct ca *ca, char **final_hash, log_iter_cb_t cb, void *cookie)
 	uint8_t *rptr;
 	size_t rlen;
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".log", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".log", sizeof (fname));
 
 	hbuf = sshbuf_new();
 	if (hbuf == NULL) {
@@ -3923,10 +3923,10 @@ ca_log_init(struct ca *ca, struct ca_session *sess, BIGNUM *ca_serial,
 	size_t done;
 	char *serialhex = NULL;
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".log", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".log", sizeof (fname));
 
 	logf = fopen(fname, "w");
 	if (logf == NULL) {
@@ -4013,10 +4013,10 @@ ca_log_crl_gen(struct ca *ca, struct ca_session *sess, X509_CRL *crl, uint seq)
 		goto out;
 	}
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".log", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".log", sizeof (fname));
 
 	logf = fopen(fname, "a");
 	if (logf == NULL) {
@@ -4145,10 +4145,10 @@ ca_log_revoke_serial(struct ca *ca, struct ca_session *sess, BIGNUM *serial)
 		goto out;
 	}
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".log", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".log", sizeof (fname));
 
 	logf = fopen(fname, "a");
 	if (logf == NULL) {
@@ -4244,10 +4244,10 @@ ca_log_cert_action(struct ca *ca, struct ca_session *sess, const char *action,
 		goto out;
 	}
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/", sizeof (fname));
-	strlcat(fname, ca->ca_slug, sizeof (fname));
-	strlcat(fname, ".log", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/", sizeof (fname));
+	xstrlcat(fname, ca->ca_slug, sizeof (fname));
+	xstrlcat(fname, ".log", sizeof (fname));
 
 	logf = fopen(fname, "a");
 	if (logf == NULL) {
@@ -4959,8 +4959,8 @@ ca_config_write(struct ca *ca, struct ca_session *sess)
 
 	jsonstr = json_object_to_json_string_ext(robj, JSON_C_TO_STRING_PRETTY);
 
-	strlcpy(fname, ca->ca_base_path, sizeof (fname));
-	strlcat(fname, "/pivy-ca.json", sizeof (fname));
+	xstrlcpy(fname, ca->ca_base_path, sizeof (fname));
+	xstrlcat(fname, "/pivy-ca.json", sizeof (fname));
 
 	caf = fopen(fname, "w");
 	if (caf == NULL) {
@@ -5321,8 +5321,8 @@ scope_populate_req(struct cert_var_scope *scope, X509_REQ *req)
 		vbuf[len] = '\0';
 
 		for (j = 0; j < nms; ++j) {
-			strlcpy(kbuf, "req_", sizeof (kbuf));
-			strlcat(kbuf, names[j], sizeof (kbuf));
+			xstrlcpy(kbuf, "req_", sizeof (kbuf));
+			xstrlcat(kbuf, names[j], sizeof (kbuf));
 
 			err = scope_set(scope, kbuf, vbuf);
 			if (err != ERRF_OK)
