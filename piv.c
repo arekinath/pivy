@@ -93,16 +93,6 @@ enum gen_auth_tag {
 	GA_TAG_EXP = 0x85,
 };
 
-/* Tags used in the response to select on the PIV applet. */
-enum piv_sel_tag {
-	PIV_TAG_APT = 0x61,
-	PIV_TAG_AID = 0x4F,
-	PIV_TAG_AUTHORITY = 0x79,
-	PIV_TAG_APP_LABEL = 0x50,
-	PIV_TAG_URI = 0x5F50,
-	PIV_TAG_ALGS = 0xAC,
-};
-
 struct piv_slot {
 	/*
 	 * Links to the next member of the slot list hanging off a token at
@@ -171,7 +161,7 @@ struct piv_token {
 	 * Array of supported algorithms, if we got any in the answer to
 	 * SELECT. Lots of PIV cards don't supply these.
 	 */
-	enum piv_alg pt_algs[32];
+	enum piv_alg pt_algs[PIV_RTS_MAX_ALGS];
 	size_t pt_alg_count;
 
 	/*
@@ -2012,9 +2002,6 @@ piv_select(struct piv_token *tk)
 {
 	errf_t *rv = ERRF_OK;
 	struct apdu *apdu;
-	struct tlv_state *tlv = NULL;
-	uint tag, idx, uval;
-	boolean_t extra_apt = B_FALSE;
 
 	VERIFY(tk->pt_intxn == B_TRUE);
 
@@ -2031,80 +2018,16 @@ piv_select(struct piv_token *tk)
 	}
 
 	if (apdu->a_sw == SW_NO_ERROR || apdu->a_sw == SW_WARNING_EOF) {
-		/*
-		 * The PIV response to select is documented in
-		 * [piv] 800-73-4 part 2, section 3.1.1
-		 * In particular, table 3 has the list of tags here.
-		 */
-		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
-		    apdu->a_reply.b_len);
-		if ((rv = tlv_read_tag(tlv, &tag)))
+		struct piv_rts rts;
+		bzero(&rts, sizeof (rts));
+		rv = piv_decode_rts(&rts, &apdu->a_reply);
+		if (rv)
 			goto invdata;
-		if (tag != PIV_TAG_APT) {
-			rv = tagerrf("INS_SELECT", tag);
-			goto invdata;
-		}
-		tk->pt_alg_count = 0;
-		while (!tlv_at_end(tlv)) {
-			if ((rv = tlv_read_tag(tlv, &tag)))
-				goto invdata;
-			switch (tag) {
-			case PIV_TAG_APT:
-				extra_apt = B_TRUE;
-				break;
-			case PIV_TAG_AID:
-			case PIV_TAG_AUTHORITY:
-				/* TODO: validate/store these maybe? */
-				tlv_skip(tlv);
-				break;
-			case PIV_TAG_APP_LABEL:
-				rv = tlv_read_string(tlv, &tk->pt_app_label);
-				if (rv != NULL)
-					goto invdata;
-				if ((rv = tlv_end(tlv)))
-					goto invdata;
-				break;
-			case PIV_TAG_URI:
-				rv = tlv_read_string(tlv, &tk->pt_app_uri);
-				if (rv != NULL)
-					goto invdata;
-				if ((rv = tlv_end(tlv)))
-					goto invdata;
-				break;
-			case PIV_TAG_ALGS:
-				while (!tlv_at_end(tlv)) {
-					if ((rv = tlv_read_tag(tlv, &tag)))
-						goto invdata;
-					if (tag == 0x80) {
-						idx = tk->pt_alg_count++;
-						rv = tlv_read_u8to32(tlv, &uval);
-						if (rv)
-							goto invdata;
-						tk->pt_algs[idx] = uval;
-						if ((rv = tlv_end(tlv)))
-							goto invdata;
-					} else if (tag == 0x06) {
-						tlv_skip(tlv);
-					} else {
-						rv = tagerrf("algo "
-						    "list in INS_SELECT",
-						    tag);
-						goto invdata;
-					}
-				}
-				if ((rv = tlv_end(tlv)))
-					goto invdata;
-				break;
-			default:
-				rv = tagerrf("INS_SELECT", tag);
-				goto invdata;
-			}
-		}
-		if (extra_apt && (rv = tlv_end(tlv)))
-			goto invdata;
-		if ((rv = tlv_end(tlv)))
-			goto invdata;
-		rv = NULL;
+		tk->pt_app_label = rts.pr_app_label;
+		tk->pt_app_uri = rts.pr_app_uri;
+		tk->pt_alg_count = rts.pr_alg_count;
+		bcopy(rts.pr_algs, tk->pt_algs, sizeof (tk->pt_algs));
+		rv = ERRF_OK;
 	} else {
 		rv = errf("NotFoundError", swerrf("INS_SELECT", apdu->a_sw),
 		    "PIV applet was not found on device '%s'", tk->pt_rdrname);
@@ -2113,12 +2036,10 @@ piv_select(struct piv_token *tk)
 	}
 
 out:
-	tlv_free(tlv);
 	piv_apdu_free(apdu);
 	return (rv);
 
 invdata:
-	tlv_abort(tlv);
 	rv = invderrf(rv, tk->pt_rdrname);
 	debug_dump(rv, apdu);
 	goto out;

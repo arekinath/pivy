@@ -311,6 +311,7 @@ PIV_COMMON_SOURCES=		\
 	piv-fascn.c		\
 	piv-cardcap.c		\
 	piv-chuid.c		\
+	piv-apdu.c		\
 	tlv.c			\
 	debug.c			\
 	bunyan.c		\
@@ -944,6 +945,7 @@ _CBMC_TARGETS=	tlv.c \
 		piv-fascn.c \
 		piv-cardcap.c \
 		piv-chuid.c \
+		piv-apdu.c \
 		strbuf.c
 CBMC_TARGETS=$(_CBMC_TARGETS:%=.%.cbmc)
 
@@ -978,6 +980,16 @@ CBMC_AUX=	cbmc-aux.c
 .piv-chuid.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_read_upto.0:25
 .piv-chuid.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_abort.0:3
 .piv-chuid.c.cbmc:	CBMC_OPTS+=	--unwindset piv_chuid_decode.1:14
+
+.piv-apdu.c.cbmc:	CBMC_AUX+=
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwinding-assertions
+#.piv-apdu.c.cbmc:	CBMC_OPTS+=	--paths lifo
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwind 20
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--object-bits 12
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_read_string.0:12
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_abort.0:5
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset piv_decode_rts.0:10
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset piv_decode_rts.1:14
 
 .tlv.c.cbmc:		CBMC_AUX+=
 .tlv.c.cbmc:		CBMC_OPTS+=	--unwind 10

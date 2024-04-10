@@ -18,6 +18,8 @@
 
 #include "piv.h"
 
+#define	PIV_RTS_MAX_ALGS	32
+
 struct apdubuf {
 	uint8_t *b_data;
 	size_t b_offset;
@@ -207,5 +209,14 @@ nstrdup(const char *str)
 	VERIFY(out != NULL);
 	return (out);
 }
+
+struct piv_rts {
+	char 		*pr_app_label;
+	char 		*pr_app_uri;
+	uint 		 pr_alg_count;
+	enum piv_alg	 pr_algs[PIV_RTS_MAX_ALGS];
+};
+
+errf_t *piv_decode_rts(struct piv_rts *, const struct apdubuf *);
 
 #endif

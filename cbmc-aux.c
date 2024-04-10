@@ -267,13 +267,15 @@ bcdbuf_read(struct bcdbuf *b, enum iso7811_bcd *out)
 	enum iso7811_bcd v;
 
 	if (b->bcd_bits < 5) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("ShortBuffer", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
 	__CPROVER_assume(doerr == 0 || doerr == 1);
-	if (doerr) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+	if (doerr == 1) {
+		err = errf("ISO7811Error", NULL, "blah");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -295,13 +297,15 @@ bcdbuf_read_string(struct bcdbuf *b, size_t limit, char **pstr,
 	char *str;
 
 	if (b->bcd_bits < 5) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
 	__CPROVER_assume(doerr == 0 || doerr == 1);
 	if (doerr) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("ISO7811Error", NULL, "blah");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -334,13 +338,15 @@ bcdbuf_read_and_check_lrc(struct bcdbuf *b)
 	errf_t *err;
 
 	if (b->bcd_bits < 5) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
 	__CPROVER_assume(doerr == 0 || doerr == 1);
 	if (doerr) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("ISO7811Error", NULL, "blah");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -375,7 +381,8 @@ bcdbuf_write(struct bcdbuf *b, enum iso7811_bcd v)
 	errf_t *err;
 
 	if (b == ISO_BCD_NONE) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("DomainError", NULL, "invalid argument");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -400,7 +407,8 @@ bcdbuf_write_string(struct bcdbuf *b, const char *str,
 	len = strlen(str);
 	for (i = 0; i < len; ++i) {
 		if (!(str[i] >= '0' && str[i] <= '9')) {
-			__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+			err = errf("DomainError", NULL, "invalid argument");
+			__CPROVER_assume(err != ERRF_NOMEM);
 			return (err);
 		}
 		b->bcd_bits += 5;
@@ -569,8 +577,43 @@ void
 tlv_skip(struct tlv_state *ts)
 {
 	struct tlv_context *tc = ts->ts_cur;
+	assert(tc != ts->ts_root);
 	ts->ts_cur = tc->tc_parent;
 	free(tc);
+}
+
+errf_t *
+tlv_peek_tag(struct tlv_state *ts, uint *tag)
+{
+	boolean_t do_error;
+	uint tagv;
+	errf_t *err;
+	struct tlv_context *tc = ts->ts_cur;
+	size_t tagb, lenb, datab;
+
+	if (tc->tc_bytes < 2) {
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
+		return (err);
+	}
+
+	__CPROVER_assume(do_error == B_FALSE || do_error == B_TRUE);
+	if (do_error) {
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
+		return (err);
+	}
+
+	__CPROVER_assume(tagb > 0 && tagb <= 4);
+	__CPROVER_assume(lenb > 0 && lenb <= 4);
+	__CPROVER_assume(datab < (1ul << (lenb * 8ul - 1ul)));
+	__CPROVER_assume(tagb + lenb + datab <= tc->tc_bytes);
+
+	__CPROVER_assume(tagv > 0 && tagv < (1ul << (tagb * 8ul - 1ul)));
+
+	*tag = tagv;
+
+	return (ERRF_OK);
 }
 
 errf_t *
@@ -583,13 +626,15 @@ tlv_read_tag(struct tlv_state *ts, uint *tag)
 	size_t tagb, lenb, datab;
 
 	if (tc->tc_bytes < 2) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
 	__CPROVER_assume(do_error == B_FALSE || do_error == B_TRUE);
 	if (do_error) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -621,9 +666,11 @@ tlv_end(struct tlv_state *ts)
 	struct tlv_context *tc = ts->ts_cur;
 
 	if (tc->tc_bytes > 0) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "leftover bytes");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
+	assert(tc != ts->ts_root);
 
 	ts->ts_cur = tc->tc_parent;
 	free(tc);
@@ -639,7 +686,8 @@ tlv_read_u8(struct tlv_state *ts, uint8_t *out)
 	uint8_t v;
 
 	if (tc->tc_bytes < 1) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -657,7 +705,8 @@ tlv_read_u16(struct tlv_state *ts, uint16_t *out)
 	uint8_t v;
 
 	if (tc->tc_bytes < 2) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -676,7 +725,8 @@ tlv_read_u8to32(struct tlv_state *ts, uint32_t *out)
 	size_t nbytes;
 
 	if (tc->tc_bytes < 1) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -685,7 +735,10 @@ tlv_read_u8to32(struct tlv_state *ts, uint32_t *out)
 		nbytes = 4;
 
 	tc->tc_bytes -= nbytes;
-	__CPROVER_assume(v < (1 << (nbytes * 8)));
+	if (nbytes < 4) {
+		__CPROVER_assume((unsigned long long)v <
+		    (1ULL << (nbytes * 8ULL)));
+	}
 	*out = v;
 
 	return (ERRF_OK);
@@ -700,7 +753,8 @@ tlv_read_alloc(struct tlv_state *ts, uint8_t **data, size_t *len)
 	size_t nbytes;
 
 	if (tc->tc_bytes < 1) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -724,7 +778,8 @@ tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
 	uint i;
 
 	if (tc->tc_bytes < 1) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
@@ -753,17 +808,19 @@ tlv_read_string(struct tlv_state *ts, char **dest)
 	char *str;
 
 	if (tc->tc_bytes < 1) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 	__CPROVER_assume(do_error == 0 || do_error == 1);
 	if (do_error) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("StringError", NULL, "got a NUL");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 
 	nbytes = tc->tc_bytes;
-	tc->tc_bytes -= nbytes;
+	tc->tc_bytes = 0;
 
 	str = malloc(nbytes + 1);
 	__CPROVER_assume(str != NULL);
@@ -772,6 +829,7 @@ tlv_read_string(struct tlv_state *ts, char **dest)
 		__CPROVER_assume(v != 0);
 		str[i] = v;
 	}
+	__CPROVER_assume(str[nbytes] == 0);
 	*dest = str;
 
 	return (ERRF_OK);
@@ -786,7 +844,8 @@ tlv_read(struct tlv_state *ts, uint8_t *dest, size_t len)
 	char *str;
 
 	if (tc->tc_bytes != len) {
-		__CPROVER_assume(err != ERRF_OK && err != ERRF_NOMEM);
+		err = errf("LengthError", NULL, "short");
+		__CPROVER_assume(err != ERRF_NOMEM);
 		return (err);
 	}
 

@@ -68,6 +68,9 @@ void tlv_enable_debug(struct tlv_state *ts);
 MUST_CHECK
 errf_t *tlv_read_tag(struct tlv_state *ts, uint *tag);
 
+MUST_CHECK
+errf_t *tlv_peek_tag(struct tlv_state *ts, uint *tag);
+
 /*
  * Ends the parsing of the current tag, asserting that all bytes in the tag
  * have been consumed. Error will be returned if there are outstanding bytes.

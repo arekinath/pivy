@@ -195,6 +195,53 @@ tlv_pop(struct tlv_state *ts)
 }
 
 errf_t *
+tlv_peek_tag(struct tlv_state *ts, uint *ptag)
+{
+	struct tlv_context *p = ts->ts_now;
+	const uint8_t *buf = p->tc_buf;
+	uint8_t d;
+	uint tag, octs;
+	size_t origin = p->tc_pos;
+	errf_t *error;
+
+	if (tlv_at_end(ts)) {
+		error = errf("LengthError", NULL, "tlv_read_tag called "
+		    "past end of context");
+		__CPROVER_assume(error != NULL);
+		return (error);
+	}
+	d = buf[p->tc_pos++];
+	tag = d;
+
+	if ((d & TLV_TAG_MASK) == TLV_TAG_CONT) {
+		do {
+			if (tlv_at_end(ts)) {
+				error = errf("LengthError", NULL, "TLV tag "
+				    "continued past end of context");
+				__CPROVER_assume(error != NULL);
+				p->tc_pos = origin;
+				return (error);
+			}
+			d = buf[p->tc_pos++];
+			tag <<= 8;
+			tag |= d;
+		} while ((d & TLV_CONT) == TLV_CONT);
+	}
+
+	if (tlv_at_end(ts)) {
+		error = errf("LengthError", NULL, "TLV tag length continued "
+		    "past end of context");
+		__CPROVER_assume(error != NULL);
+		p->tc_pos = origin;
+		return (error);
+	}
+
+	p->tc_pos = origin;
+	*ptag = tag;
+	return (ERRF_OK);
+}
+
+errf_t *
 tlv_read_tag(struct tlv_state *ts, uint *ptag)
 {
 	struct tlv_context *p = ts->ts_now;
