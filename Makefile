@@ -986,10 +986,9 @@ CBMC_AUX=	cbmc-aux.c
 #.piv-apdu.c.cbmc:	CBMC_OPTS+=	--paths lifo
 .piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwind 20
 .piv-apdu.c.cbmc:	CBMC_OPTS+=	--object-bits 12
-.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_read_string.0:12
 .piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset tlv_abort.0:5
-.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset piv_decode_rts.0:10
-.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset piv_decode_rts.1:14
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset piv_decode_rts.0:8
+.piv-apdu.c.cbmc:	CBMC_OPTS+=	--unwindset piv_decode_rts.1:8
 
 .tlv.c.cbmc:		CBMC_AUX+=
 .tlv.c.cbmc:		CBMC_OPTS+=	--unwind 10

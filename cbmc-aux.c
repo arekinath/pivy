@@ -788,10 +788,7 @@ tlv_read_upto(struct tlv_state *ts, uint8_t *dest, size_t maxLen,
 		nbytes = maxLen;
 	tc->tc_bytes -= nbytes;
 
-	for (i = 0; i < nbytes; ++i) {
-		uint8_t v;
-		dest[i] = v;
-	}
+	__CPROVER_havoc_slice(dest, nbytes);
 	*len = nbytes;
 
 	return (ERRF_OK);
@@ -824,12 +821,8 @@ tlv_read_string(struct tlv_state *ts, char **dest)
 
 	str = malloc(nbytes + 1);
 	__CPROVER_assume(str != NULL);
-	for (i = 0; i < nbytes; ++i) {
-		char v;
-		__CPROVER_assume(v != 0);
-		str[i] = v;
-	}
-	__CPROVER_assume(str[nbytes] == 0);
+	__CPROVER_assume(__CPROVER_is_zero_string(str));
+	__CPROVER_assume(__CPROVER_zero_string_length(str) == nbytes);
 	*dest = str;
 
 	return (ERRF_OK);
@@ -851,10 +844,7 @@ tlv_read(struct tlv_state *ts, uint8_t *dest, size_t len)
 
 	tc->tc_bytes -= len;
 
-	for (i = 0; i < len; ++i) {
-		uint8_t v;
-		dest[i] = v;
-	}
+	__CPROVER_havoc_slice(dest, len);
 
 	return (ERRF_OK);
 }
