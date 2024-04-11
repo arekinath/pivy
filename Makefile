@@ -934,6 +934,7 @@ CBMC_OPTS=	-D__CPROVER \
 		--div-by-zero-check \
 		--trace \
 		--drop-unused-functions \
+		--string-abstraction \
 		-I. -Iopenssh/ \
 		$(SYSTEM_CBMCFLAGS) \
 		$(PCSC_CBMCFLAGS) \

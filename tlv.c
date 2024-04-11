@@ -200,7 +200,7 @@ tlv_peek_tag(struct tlv_state *ts, uint *ptag)
 	struct tlv_context *p = ts->ts_now;
 	const uint8_t *buf = p->tc_buf;
 	uint8_t d;
-	uint tag, octs;
+	uint tag;
 	size_t origin = p->tc_pos;
 	errf_t *error;
 
