@@ -174,7 +174,7 @@ assert_pin(struct piv_token *pk, struct piv_slot *slot, const char *partname,
 
 	if (slot != NULL) {
 		enum piv_slot_auth rauth = piv_slot_get_auth(pk, slot);
-		if (rauth & PIV_SLOT_AUTH_PIN)
+		if ((rauth & PIV_SLOT_AUTH_PIN) && !ebox_batch)
 			prompt = B_TRUE;
 		if (rauth & PIV_SLOT_AUTH_TOUCH)
 			touch = B_TRUE;
@@ -258,7 +258,7 @@ local_unlock_agent(struct piv_ecdh_box *box)
 	boolean_t found = B_FALSE;
 
 	if (ebox_authfd == -1 &&
-	    (rc = ssh_get_authentication_socket(&ebox_authfd)) == -1) {
+	    (rc = ssh_get_authentication_socket(&ebox_authfd)) != 0) {
 		err = ssherrf("ssh_get_authentication_socket", rc);
 		goto out;
 	}
@@ -278,7 +278,7 @@ local_unlock_agent(struct piv_ecdh_box *box)
 		}
 	}
 	if (!found) {
-		err = errf("KeyNotFound", NULL, "No matching key found in "
+		err = errf("KeyNotFoundError", NULL, "No matching key found in "
 		    "ssh agent");
 		goto out;
 	}
@@ -289,8 +289,6 @@ local_unlock_agent(struct piv_ecdh_box *box)
 	}
 
 	err = piv_box_open_agent(ebox_authfd, box);
-	if (err)
-		warnfx(err, "Failed to use key from ssh-agent");
 
 out:
 	ssh_free_identitylist(idl);
@@ -321,7 +319,7 @@ can_local_unlock(struct piv_ecdh_box *box)
 	boolean_t found = B_FALSE;
 
 	if (ebox_authfd != -1 ||
-	    ssh_get_authentication_socket(&ebox_authfd) != -1) {
+	    ssh_get_authentication_socket(&ebox_authfd) == 0) {
 		pubkey = piv_box_pubkey(box);
 
 		rc = ssh_fetch_identitylist(ebox_authfd, &idl);
@@ -401,12 +399,9 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 	struct piv_slot *slot, *cakslot;
 	struct piv_token *tokens = NULL, *token;
 
-	if (ebox_authfd != -1 ||
-	    ssh_get_authentication_socket(&ebox_authfd) != -1) {
-		agerr = local_unlock_agent(box);
-		if (agerr == ERRF_OK)
-			return (ERRF_OK);
-	}
+	agerr = local_unlock_agent(box);
+	if (agerr == ERRF_OK)
+		return (ERRF_OK);
 
 	if (!piv_box_has_guidslot(box)) {
 		if (agerr) {
@@ -451,7 +446,6 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 			}
 		}
 	}
-	errf_free(agerr);
 	if (err)
 		goto out;
 
@@ -501,16 +495,28 @@ local_unlock(struct piv_ecdh_box *box, struct sshkey *cak, const char *name)
 pin:
 	assert_pin(token, slot, name, prompt);
 	err = piv_box_open(token, slot, box);
-	if (errf_caused_by(err, "PermissionError") && !prompt && !ebox_batch) {
-		errf_free(err);
-		prompt = B_TRUE;
-		goto pin;
+	if (errf_caused_by(err, "PermissionError") && !prompt) {
+		if (!ebox_batch) {
+			errf_free(err);
+			prompt = B_TRUE;
+			goto pin;
+		} else {
+			errf_free(err);
+			piv_txn_end(token);
+			err = errf("InteractiveError", agerr,
+			    "PIN input is required to use PIV device directly "
+			    "(not via agent), failed to use agent, and -b "
+			    "batch option was given");
+			goto out;
+		}
 	} else if (err) {
+		errf_free(agerr);
 		piv_txn_end(token);
 		err = errf("LocalUnlockError", err, "failed to unlock box");
 		goto out;
 	}
 
+	errf_free(agerr);
 	piv_txn_end(token);
 	err = ERRF_OK;
 
@@ -1698,7 +1704,7 @@ interactive_unlock_ebox(struct ebox *ebox, const char *fn)
 	struct ebox_part *part;
 	struct ebox_tpl_part *tpart;
 	struct ebox_tpl_config *tconfig;
-	errf_t *error;
+	errf_t *agerror = NULL, *error = NULL;
 	struct ans_config *ac;
 	struct question *q = NULL;
 	struct answer *a;
@@ -1718,14 +1724,20 @@ interactive_unlock_ebox(struct ebox *ebox, const char *fn)
 		if (ebox_tpl_config_type(tconfig) == EBOX_PRIMARY) {
 			part = ebox_config_next_part(config, NULL);
 			tpart = ebox_part_tpl(part);
-			error = local_unlock_agent(ebox_part_box(part));
-			if (error) {
-				errf_free(error);
-				continue;
+			errf_free(agerror);
+			agerror = local_unlock_agent(ebox_part_box(part));
+			if (agerror &&
+			    !errf_caused_by(agerror, "KeyNotFoundError") &&
+			    !errf_caused_by(agerror, "AgentNotPresentError") &&
+			    !errf_caused_by(agerror, "AgentEmptyError")) {
+				warnfx(agerror, "failed to unlock ebox with "
+				    "agent");
 			}
-			error = ebox_unlock(ebox, config);
-			if (error)
-				return (error);
+			if (agerror)
+				continue;
+			agerror = ebox_unlock(ebox, config);
+			if (agerror)
+				return (agerror);
 			goto done;
 		}
 	}
@@ -1753,11 +1765,12 @@ interactive_unlock_ebox(struct ebox *ebox, const char *fn)
 	}
 
 	if (ebox_batch) {
-		error = errf("InteractiveError", NULL,
+		error = errf("InteractiveError", agerror,
 		    "interactive recovery is required but the -b batch option "
 		    "was provided");
 		return (error);
 	}
+	errf_free(agerror);
 
 	q = calloc(1, sizeof (struct question));
 	question_printf(q, "-- Recovery mode --\n");

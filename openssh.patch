@@ -604,13 +604,26 @@ diff --git a/ssherr.h b/ssherr.h
 index 085e75274..e97c45771 100644
 --- a/ssherr.h
 +++ openssh/ssherr.h
-@@ -86,4 +86,30 @@
+@@ -86,4 +86,43 @@
  /* Translate a numeric error code to a human-readable error string */
  const char *ssh_err(int n);
  
++static inline const char *
++_ssh_errf_code(int code) {
++	switch (code) {
++	case SSH_ERR_MESSAGE_INCOMPLETE:
++		return ("IncompleteMessageError");
++	case SSH_ERR_AGENT_NOT_PRESENT:
++		return ("AgentNotPresentError");
++	case SSH_ERR_AGENT_NO_IDENTITIES:
++		return ("AgentEmptyError");
++	default:
++		return ("LibSSHError");
++	}
++}
++
 +#define ssherrf(func, code, ...)		\
-+    errf(((code) == SSH_ERR_MESSAGE_INCOMPLETE) ? "IncompleteMessageError" : \
-+    "LibSSHError", NULL, func " returned %d (%s)", ##__VA_ARGS__, \
++    errf(_ssh_errf_code((code)), NULL, func " returned %d (%s)", ##__VA_ARGS__, \
 +    code, ssh_err(code))
 +
 +#define make_sslerrf(var, call, action, ...)	\
