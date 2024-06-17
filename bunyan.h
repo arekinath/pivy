@@ -30,6 +30,7 @@ enum bunyan_arg_type {
 	BNY_SIZE_T,
 	BNY_BIN_HEX,
 	BNY_ERF,
+	BNY_SSHKEY,
 };
 
 void bunyan_init(void);

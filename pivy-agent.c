@@ -258,6 +258,10 @@ typedef struct socket_entry {
 	pid_entry_t	*se_pid_ent;
 	uint		 se_pid_idx;
 	sessbind_t	 se_sbind;
+#if defined(__sun)
+	zoneid_t	 se_zid;
+	char		 se_zname[128];
+#endif
 } socket_entry_t;
 
 u_int sockets_alloc = 0;
@@ -1592,6 +1596,10 @@ pin_again:
 	}
 	agent_piv_close(B_FALSE);
 
+	bunyan_log(BNY_INFO, "performed ECDH operation",
+	    "partner_pk", BNY_SSHKEY, partner,
+	    NULL);
+
 	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
 	    (r = sshbuf_put_string(msg, secret, seclen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
@@ -1624,6 +1632,7 @@ process_ext_rebox(socket_entry_t *e, struct sshbuf *buf)
 	size_t seclen, outlen;
 	boolean_t canskip = B_TRUE;
 	enum piv_slot_auth rauth;
+	char *slotstr;
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
@@ -1710,6 +1719,15 @@ pin_again:
 		agent_piv_close(B_TRUE);
 		goto out;
 	}
+
+	slotstr = piv_slotid_to_string(piv_slot_id(slot));
+	bunyan_log(BNY_INFO, "opened ECDH box",
+	    "key_slot", BNY_STRING, slotstr,
+	    "partner_pk", BNY_SSHKEY, partner,
+	    "ephem_pk", BNY_SSHKEY, piv_box_ephem_pubkey(box),
+	    "payload_size", BNY_SIZE_T, piv_box_encsize(box),
+	    NULL);
+	free(slotstr);
 
 	VERIFY0(piv_box_take_data(box, &secret, &seclen));
 	agent_piv_close(B_FALSE);
@@ -2304,9 +2322,14 @@ process_message(u_int socknum)
 	    "fd", BNY_INT, e->se_fd,
 	    "msg_type", BNY_INT, (int)type,
 	    "msg_type_name", BNY_STRING, msg_type_to_name(type),
+	    "remote_uid", BNY_INT, (int)e->se_uid,
 	    "remote_pid", BNY_INT, (int)e->se_pid,
 	    "remote_cmd", BNY_STRING,
 	    (e->se_exepath == NULL) ? "???" : e->se_exepath,
+#if defined(__sun)
+	    "remote_zid", BNY_INT, (int)e->se_zid,
+	    "remote_zone", BNY_STRING, e->se_zname,
+#endif
 	    NULL);
 	bunyan_log(BNY_DEBUG, "received ssh-agent message", NULL);
 
@@ -2412,7 +2435,6 @@ check_socket_access(int fd, socket_entry_t *ent)
 	FILE *f;
 	ucred_t *peer = NULL;
 	struct psinfo *psinfo;
-	zoneid_t zid;
 	char fn[128];
 
 	if (getpeerucred(fd, &peer) != 0) {
@@ -2422,7 +2444,10 @@ check_socket_access(int fd, socket_entry_t *ent)
 	ent->se_uid = (euid = ucred_geteuid(peer));
 	ent->se_gid = ucred_getegid(peer);
 	ent->se_pid = ucred_getpid(peer);
-	zid = ucred_getzoneid(peer);
+	ent->se_zid = ucred_getzoneid(peer);
+	ent->se_zname[0] = '\0';
+	(void) getzonenamebyid(ent->se_zid, ent->se_zname,
+	    sizeof (ent->se_zname));
 	ucred_free(peer);
 	psinfo = calloc(1, sizeof (struct psinfo));
 	snprintf(fn, sizeof (fn), "/proc/%d/psinfo", (int)ent->se_pid);
@@ -2437,9 +2462,9 @@ check_socket_access(int fd, socket_entry_t *ent)
 		fclose(f);
 	}
 	free(psinfo);
-	if (!allow_any_zoneid && !check_zid(zid)) {
+	if (!allow_any_zoneid && !check_zid(ent->se_zid)) {
 		error("zoneid mismatch: peer zoneid %u not on allow list",
-		    (u_int) zid);
+		    (u_int) ent->se_zid);
 		return (0);
 	}
 	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {

@@ -20,11 +20,14 @@
 #include <fcntl.h>
 #include <inttypes.h>
 
+
 #include "debug.h"
 
 #include "bunyan.h"
 #include "errf.h"
 #include "utils.h"
+
+#include "openssh/sshkey.h"
 
 static const char *bunyan_name = NULL;
 
@@ -470,6 +473,7 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 		uint uintval;
 		uint64_t uint64val;
 		size_t szval;
+		struct sshkey *pubk;
 
 		propname = va_arg(ap, const char *);
 		if (propname == NULL)
@@ -523,6 +527,14 @@ bunyan_log(enum bunyan_log_level level, const char *msg, ...)
 
 			evar->bv_next = evars;
 			evars = evar;
+			break;
+		case BNY_SSHKEY:
+			pubk = va_arg(ap, struct sshkey *);
+			wstrval = sshkey_fingerprint(pubk, SSH_DIGEST_SHA256,
+			    SSH_FP_BASE64);
+			printf_buf("%s = %s key (%u bits): %s", propname,
+			    sshkey_type(pubk), sshkey_size(pubk), wstrval);
+			free(wstrval);
 			break;
 		default:
 			abort();
