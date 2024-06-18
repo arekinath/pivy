@@ -1005,6 +1005,20 @@ ebox_ephem_count(const struct ebox *ebox)
 	return (n);
 }
 
+const struct sshkey *
+ebox_ephem_pubkey(const struct ebox *ebox, uint index)
+{
+	const struct ebox_ephem_key *eek;
+	eek = ebox->e_ephemkeys;
+	while (index > 0 && eek != NULL) {
+		eek = eek->eek_next;
+		--index;
+	}
+	if (eek == NULL)
+		return (NULL);
+	return (eek->eek_ephem);
+}
+
 void *
 ebox_private(const struct ebox *ebox)
 {

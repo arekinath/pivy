@@ -1497,6 +1497,7 @@ cmd_key_info(int argc, char *argv[])
 	struct ebox_config *config = NULL;
 	errf_t *error;
 	const char *fname;
+	uint i;
 
 	if (argc == 1) {
 		FILE *file;
@@ -1533,6 +1534,17 @@ cmd_key_info(int argc, char *argv[])
 		break;
 	}
 	fprintf(stderr, "ephemeral keys: %u\n", ebox_ephem_count(ebox));
+	for (i = 0; i < ebox_ephem_count(ebox); ++i) {
+		const struct sshkey *k = ebox_ephem_pubkey(ebox, i);
+		char *fp;
+		VERIFY3U(k->type, ==, KEY_ECDSA);
+		fp = sshkey_fingerprint(k, SSH_DIGEST_SHA256, SSH_FP_BASE64);
+		fprintf(stderr, "  curve %s:\n    fingerprint: %s\n    key: ",
+		    sshkey_curve_nid_to_name(k->ecdsa_nid), fp);
+		(void)sshkey_write(k, stderr);
+		fprintf(stderr, "\n");
+		free(fp);
+	}
 	fprintf(stderr, "recovery cipher: %s\n", ebox_cipher(ebox));
 
 	while ((config = ebox_next_config(ebox, config)) != NULL) {

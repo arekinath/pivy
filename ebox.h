@@ -158,6 +158,7 @@ void ebox_free(struct ebox *box);
 uint ebox_version(const struct ebox *ebox);
 enum ebox_type ebox_type(const struct ebox *ebox);
 uint ebox_ephem_count(const struct ebox *ebox);
+const struct sshkey *ebox_ephem_pubkey(const struct ebox *ebox, uint index);
 size_t ebox_config_nonce_len(const struct ebox_config *config);
 
 boolean_t ebox_is_unlocked(const struct ebox *box);
