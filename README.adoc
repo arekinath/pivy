@@ -677,8 +677,8 @@ If you're compiling yourself, clone this repository and use `make` to build
 the binaries:
 
 -----
-$ git clone https://github.com/arekinath/pivy-agent
-$ cd pivy-agent
+$ git clone https://github.com/arekinath/pivy
+$ cd pivy
 $ make
 -----
 
@@ -748,8 +748,8 @@ The commands you will need to run are as follows:
 
 -----
 ## Clone the pivy-agent repository
-$ git clone https://github.com/arekinath/pivy-agent
-$ cd pivy-agent
+$ git clone https://github.com/arekinath/pivy
+$ cd pivy
 
 ## Build libressl and then pivy-agent
 $ make -j4
