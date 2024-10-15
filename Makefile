@@ -244,7 +244,10 @@ _OBSD_COMPAT=			\
 	bsd-setres_id.c		\
 	vis.c			\
 	bsd-poll.c		\
-	timingsafe_bcmp.c
+	timingsafe_bcmp.c	\
+	reallocarray.c		\
+	recallocarray.c		\
+	explicit_bzero.c
 
 _LIBSSH_SOURCES=		\
 	sshbuf.c		\
