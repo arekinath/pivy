@@ -54,6 +54,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/pem.h>
+#include <openssl/evp.h>
 
 #include "utils.h"
 #include "tlv.h"
@@ -2716,64 +2717,20 @@ out:
 errf_t *
 sshkey_to_evp_pkey(const struct sshkey *pubkey, EVP_PKEY **ppkey)
 {
-	int rc;
 	errf_t *err = ERRF_OK;
-	RSA *copy = NULL;
-	BIGNUM *e = NULL, *n = NULL;
-	EC_KEY *ecopy = NULL;
 	EVP_PKEY *pkey = NULL;
+	RSA *rsa;
+	EC_KEY *ec;
 
 	pkey = EVP_PKEY_new();
 	VERIFY(pkey != NULL);
 
 	if (pubkey->type == KEY_RSA) {
-		copy = RSA_new();
-		if (copy == NULL) {
-			make_sslerrf(err, "RSA_new", "copying pubkey");
-			goto out;
-		}
-
-		e = BN_dup(RSA_get0_e(pubkey->rsa));
-		n = BN_dup(RSA_get0_n(pubkey->rsa));
-		if (e == NULL || n == NULL) {
-			make_sslerrf(err, "BN_dup", "copying pubkey");
-			goto out;
-		}
-
-		rc = RSA_set0_key(copy, n, e, NULL);
-		if (rc != 1) {
-			make_sslerrf(err, "RSA_set0_key", "copying pubkey");
-			goto out;
-		}
-		/* copy now owns these */
-		n = NULL;
-		e = NULL;
-
-		rc = EVP_PKEY_assign_RSA(pkey, copy);
-		if (rc != 1) {
-			make_sslerrf(err, "EVP_PKEY_assign_RSA",
-			    "copying pubkey");
-			goto out;
-		}
-		/* pkey owns this now */
-		copy = NULL;
-
+		rsa = EVP_PKEY_get1_RSA(pubkey->pkey);
+		EVP_PKEY_set1_RSA(pkey, rsa);
 	} else if (pubkey->type == KEY_ECDSA) {
-		ecopy = EC_KEY_dup(pubkey->ecdsa);
-		if (ecopy == NULL) {
-			make_sslerrf(err, "EC_KEY_dup", "copying pubkey");
-			goto out;
-		}
-
-		rc = EVP_PKEY_assign_EC_KEY(pkey, ecopy);
-		if (rc != 1) {
-			make_sslerrf(err, "EVP_PKEY_assign_EC_KEY",
-			    "copying pubkey");
-			goto out;
-		}
-		/* pkey owns this now */
-		ecopy = NULL;
-
+		ec = EVP_PKEY_get1_EC_KEY(pubkey->pkey);
+		EVP_PKEY_set1_EC_KEY(pkey, ec);
 	} else {
 		err = errf("InvalidKeyType", NULL, "invalid key type: %d",
 		    pubkey->type);
@@ -2786,11 +2743,6 @@ sshkey_to_evp_pkey(const struct sshkey *pubkey, EVP_PKEY **ppkey)
 
 out:
 	EVP_PKEY_free(pkey);
-	RSA_free(copy);
-	EC_KEY_free(ecopy);
-	BN_free(e);
-	BN_free(n);
-
 	return (err);
 }
 
@@ -2798,69 +2750,19 @@ static errf_t *
 set_pkey_from_sshkey(struct sshkey *pubkey, struct piv_token *tkn,
     EVP_PKEY **pkey, enum sshdigest_types *wantalg, int *nid)
 {
-	int rc;
 	errf_t *err = ERRF_OK;
-	RSA *copy = NULL;
-	BIGNUM *e = NULL, *n = NULL;
-	EC_KEY *ecopy = NULL;
 	uint i;
 
-	*pkey = EVP_PKEY_new();
-	VERIFY(*pkey != NULL);
+	if ((err = sshkey_to_evp_pkey(pubkey, pkey)))
+		return (err);
 
 	if (pubkey->type == KEY_RSA) {
-		copy = RSA_new();
-		if (copy == NULL) {
-			make_sslerrf(err, "RSA_new", "copying pubkey");
-			goto out;
-		}
-
-		e = BN_dup(RSA_get0_e(pubkey->rsa));
-		n = BN_dup(RSA_get0_n(pubkey->rsa));
-		if (e == NULL || n == NULL) {
-			make_sslerrf(err, "BN_dup", "copying pubkey");
-			goto out;
-		}
-
-		rc = RSA_set0_key(copy, n, e, NULL);
-		if (rc != 1) {
-			make_sslerrf(err, "RSA_set0_key", "copying pubkey");
-			goto out;
-		}
-		/* copy now owns these */
-		n = NULL;
-		e = NULL;
-
-		rc = EVP_PKEY_assign_RSA(*pkey, copy);
-		if (rc != 1) {
-			make_sslerrf(err, "EVP_PKEY_assign_RSA",
-			    "copying pubkey");
-			goto out;
-		}
-		/* pkey owns this now */
-		copy = NULL;
-
 		*nid = NID_sha256WithRSAEncryption;
 		*wantalg = SSH_DIGEST_SHA256;
 
 	} else if (pubkey->type == KEY_ECDSA) {
 		boolean_t haveSha256 = B_FALSE;
 		boolean_t haveSha1 = B_FALSE;
-
-		ecopy = EC_KEY_dup(pubkey->ecdsa);
-		if (ecopy == NULL) {
-			make_sslerrf(err, "EC_KEY_dup", "copying pubkey");
-			goto out;
-		}
-
-		rc = EVP_PKEY_assign_EC_KEY(*pkey, ecopy);
-		if (rc != 1) {
-			make_sslerrf(err, "EVP_PKEY_assign_EC_KEY",
-			    "copying pubkey");
-			goto out;
-		}
-		/* pkey owns this now */
-		ecopy = NULL;
 
 		if (tkn != NULL) {
 			for (i = 0; i < piv_token_nalgs(tkn); ++i) {
@@ -2887,10 +2789,6 @@ set_pkey_from_sshkey(struct sshkey *pubkey, struct piv_token *tkn,
 	}
 
 out:
-	RSA_free(copy);
-	EC_KEY_free(ecopy);
-	BN_free(e);
-	BN_free(n);
 
 	return (err);
 }

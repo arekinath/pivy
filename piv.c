@@ -55,6 +55,7 @@
 #include <openssl/err.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
+#include <openssl/evp.h>
 
 #include "utils.h"
 #include "tlv.h"
@@ -2456,6 +2457,9 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 	struct sshkey *k = NULL;
 	BIGNUM *mod = NULL, *exp = NULL;
 	EC_POINT *point = NULL;
+	EC_KEY *eck = NULL;
+	EVP_PKEY *pkey = NULL;
+	RSA *rsa = NULL;
 
 	err = piv_apdu_transceive_chain(pt, apdu);
 	if (err) {
@@ -2482,18 +2486,17 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 		if (alg == PIV_ALG_RSA1024 || alg == PIV_ALG_RSA2048) {
 			k = sshkey_new(KEY_RSA);
 			VERIFY(k != NULL);
+
 		} else if (alg == PIV_ALG_ECCP256) {
 			k = sshkey_new(KEY_ECDSA);
 			VERIFY(k != NULL);
 			k->ecdsa_nid = NID_X9_62_prime256v1;
-			k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-			EC_KEY_set_asn1_flag(k->ecdsa, OPENSSL_EC_NAMED_CURVE);
+
 		} else if (alg == PIV_ALG_ECCP384) {
 			k = sshkey_new(KEY_ECDSA);
 			VERIFY(k != NULL);
 			k->ecdsa_nid = NID_secp384r1;
-			k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-			EC_KEY_set_asn1_flag(k->ecdsa, OPENSSL_EC_NAMED_CURVE);
+
 		} else {
 			err = argerrf("alg", "a supported algorithm", "%d", alg);
 			tlv_abort(tlv);
@@ -2527,7 +2530,10 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 					tlv_skip(tlv);
 					continue;
 				}
-				rv = RSA_set0_key(k->rsa, mod, exp, NULL);
+
+				rsa = RSA_new();
+				VERIFY(rsa != NULL);
+				rv = RSA_set0_key(rsa, mod, exp, NULL);
 				if (rv != 1) {
 					make_sslerrf(err, "RSA_set0_key",
 					    "parsing RSA key");
@@ -2535,6 +2541,12 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 				}
 				mod = NULL;
 				exp = NULL;
+
+				pkey = EVP_PKEY_new();
+				VERIFY(pkey != NULL);
+				EVP_PKEY_assign_RSA(pkey, rsa);
+				rsa = NULL;
+
 				tlv_skip(tlv);
 				continue;
 			} else if (alg == PIV_ALG_ECCP256 ||
@@ -2542,7 +2554,16 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 				if (tag == 0x86) {
 					const EC_GROUP *g;
 
-					g = EC_KEY_get0_group(k->ecdsa);
+					pkey = EVP_PKEY_new();
+					VERIFY(pkey != NULL);
+
+					eck = EC_KEY_new_by_curve_name(
+					    k->ecdsa_nid);
+					VERIFY(eck != NULL);
+					EC_KEY_set_asn1_flag(eck,
+					    OPENSSL_EC_NAMED_CURVE);
+
+					g = EC_KEY_get0_group(eck);
 					VERIFY(g != NULL);
 					point = EC_POINT_new(g);
 					VERIFY(point != NULL);
@@ -2564,13 +2585,20 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 						goto invdata;
 					}
 					rv = EC_KEY_set_public_key(
-					    k->ecdsa, point);
+					    eck, point);
 					if (rv != 1) {
 						make_sslerrf(err,
 						    "EC_KEY_set_public_key",
 						    "parsing pubkey");
 						goto invdata;
 					}
+
+					EVP_PKEY_assign_EC_KEY(pkey, eck);
+					eck = NULL;
+
+					EVP_PKEY_free(k->pkey);
+					k->pkey = pkey;
+					pkey = NULL;
 
 					tlv_skip(tlv);
 					continue;
@@ -2598,6 +2626,9 @@ out:
 	BN_free(mod);
 	BN_free(exp);
 	EC_POINT_free(point);
+	EC_KEY_free(eck);
+	RSA_free(rsa);
+	EVP_PKEY_free(pkey);
 	tlv_free(tlv);
 	piv_apdu_free(apdu);
 	return (err);
@@ -2923,6 +2954,8 @@ ykpiv_import(struct piv_token *pt, enum piv_slotid slotid, struct sshkey *key,
 	errf_t *err;
 	enum piv_alg alg;
 	struct apdu *apdu = NULL;
+	RSA *rsa;
+	EC_KEY *eck;
 
 	VERIFY(pt->pt_intxn);
 
@@ -2943,11 +2976,12 @@ ykpiv_import(struct piv_token *pt, enum piv_slotid slotid, struct sshkey *key,
 			    sshkey_size(key));
 			goto out;
 		}
-		tlv_write_bignum(tlv, 0x01, RSA_get0_p(key->rsa));
-		tlv_write_bignum(tlv, 0x02, RSA_get0_q(key->rsa));
-		tlv_write_bignum(tlv, 0x03, RSA_get0_dmp1(key->rsa));
-		tlv_write_bignum(tlv, 0x04, RSA_get0_dmq1(key->rsa));
-		tlv_write_bignum(tlv, 0x05, RSA_get0_iqmp(key->rsa));
+		rsa = EVP_PKEY_get1_RSA(key->pkey);
+		tlv_write_bignum(tlv, 0x01, RSA_get0_p(rsa));
+		tlv_write_bignum(tlv, 0x02, RSA_get0_q(rsa));
+		tlv_write_bignum(tlv, 0x03, RSA_get0_dmp1(rsa));
+		tlv_write_bignum(tlv, 0x04, RSA_get0_dmq1(rsa));
+		tlv_write_bignum(tlv, 0x05, RSA_get0_iqmp(rsa));
 		break;
 	case KEY_ECDSA:
 		switch (sshkey_size(key)) {
@@ -2963,8 +2997,8 @@ ykpiv_import(struct piv_token *pt, enum piv_slotid slotid, struct sshkey *key,
 			    sshkey_size(key));
 			goto out;
 		}
-		tlv_write_bignum(tlv, 0x06,
-		    EC_KEY_get0_private_key(key->ecdsa));
+		eck = EVP_PKEY_get1_EC_KEY(key->pkey);
+		tlv_write_bignum(tlv, 0x06, EC_KEY_get0_private_key(eck));
 		break;
 	default:
 		err = argerrf("privkey", "an RSA or ECDSA private key",
@@ -4550,7 +4584,7 @@ piv_ecdh(struct piv_token *pk, struct piv_slot *slot, struct sshkey *pubkey,
 	sbuf = sshbuf_new();
 	VERIFY(sbuf != NULL);
 	VERIFY3S(pubkey->type, ==, KEY_ECDSA);
-	VERIFY0(sshbuf_put_eckey(sbuf, pubkey->ecdsa));
+	VERIFY0(sshbuf_put_eckey(sbuf, EVP_PKEY_get1_EC_KEY(pubkey->pkey)));
 	/* The buffer has the 32-bit length prefixed */
 	len = sshbuf_len(sbuf) - 4;
 	buf = (uint8_t *)sshbuf_ptr(sbuf) + 4;
@@ -4962,19 +4996,21 @@ paderr:
 errf_t *
 piv_box_open_offline(struct sshkey *privkey, struct piv_ecdh_box *box)
 {
+	EC_KEY *eck, *epheck;
 	uint8_t *sec;
 	size_t seclen;
 	size_t fieldsz;
 	errf_t *err;
 	int rv;
 
-	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(privkey->ecdsa));
+	eck = EVP_PKEY_get1_EC_KEY(privkey->pkey);
+	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(eck));
 	seclen = (fieldsz + 7) / 8;
 	sec = calloc_conceal(1, seclen);
 	VERIFY(sec != NULL);
+	epheck = EVP_PKEY_get1_EC_KEY(box->pdb_ephem_pub->pkey);
 	rv = ECDH_compute_key(sec, seclen,
-	    EC_KEY_get0_public_key(box->pdb_ephem_pub->ecdsa), privkey->ecdsa,
-	    NULL);
+	    EC_KEY_get0_public_key(epheck), eck, NULL);
 	if (rv <= 0) {
 		free(sec);
 		make_sslerrf(err, "ECDH_compute_key", "performing ECDH");
@@ -5013,6 +5049,7 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 	errf_t *err;
 	int dgalg;
 	struct sshkey *pkey;
+	EC_KEY *eck, *epheck;
 	struct sshcipher_ctx *cctx;
 	struct ssh_digest_ctx *dgctx;
 	uint8_t *iv, *key, *sec, *enc, *plain, *nonce;
@@ -5082,12 +5119,14 @@ piv_box_seal_offline(struct sshkey *pubk, struct piv_ecdh_box *box)
 		return (err);
 	}
 
-	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(pkey->ecdsa));
+	eck = EVP_PKEY_get1_EC_KEY(pkey->pkey);
+	epheck = EVP_PKEY_get1_EC_KEY(pubk->pkey);
+	fieldsz = EC_GROUP_get_degree(EC_KEY_get0_group(eck));
 	seclen = (fieldsz + 7) / 8;
 	sec = calloc(1, seclen);
 	VERIFY(sec != NULL);
 	rv = ECDH_compute_key(sec, seclen,
-	    EC_KEY_get0_public_key(pubk->ecdsa), pkey->ecdsa, NULL);
+	    EC_KEY_get0_public_key(epheck), eck, NULL);
 	if (rv <= 0) {
 		free(sec);
 		make_sslerrf(err, "ECDH_compute_key", "performing ECDH");
@@ -5292,6 +5331,7 @@ sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 	int rc;
 	const char *tname;
 	uint8_t ver;
+	EC_KEY *eck, *epheck;
 
 	if (box->pdb_pub->type != KEY_ECDSA ||
 	    box->pdb_ephem_pub->type != KEY_ECDSA) {
@@ -5345,8 +5385,10 @@ sshbuf_put_piv_box(struct sshbuf *buf, struct piv_ecdh_box *box)
 	VERIFY(tname != NULL);
 	if ((rc = sshbuf_put_cstring8(buf, tname)))
 		return (ssherrf("sshbuf_put_cstring8", rc));
-	if ((rc = sshbuf_put_eckey8(buf, box->pdb_pub->ecdsa)) ||
-	    (rc = sshbuf_put_eckey8(buf, box->pdb_ephem_pub->ecdsa)))
+	eck = EVP_PKEY_get1_EC_KEY(box->pdb_pub->pkey);
+	epheck = EVP_PKEY_get1_EC_KEY(box->pdb_ephem_pub->pkey);
+	if ((rc = sshbuf_put_eckey8(buf, eck)) ||
+	    (rc = sshbuf_put_eckey8(buf, epheck)))
 		return (ssherrf("sshbuf_put_eckey8", rc));
 
 	if ((rc = sshbuf_put_string8(buf, box->pdb_iv.b_data,
@@ -5395,6 +5437,7 @@ sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	size_t len;
 	uint8_t temp;
 	char *tname = NULL;
+	EC_KEY *eck = NULL;
 
 	box = piv_box_new();
 	VERIFY(box != NULL);
@@ -5476,36 +5519,49 @@ sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 		goto out;
 	}
 
-	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY(k->ecdsa != NULL);
+	eck = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(eck != NULL);
 
-	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa))) {
+	if ((rc = sshbuf_get_eckey8(buf, eck))) {
 		err = boxderrf(ssherrf("sshbuf_get_eckey8", rc));
 		goto out;
 	}
-	if ((rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa)))) {
+	if ((rc = sshkey_ec_validate_public(EC_KEY_get0_group(eck),
+	    EC_KEY_get0_public_key(eck)))) {
 		err = boxderrf(ssherrf("sshkey_ec_validate_public", rc));
 		goto out;
 	}
+	EVP_PKEY_free(k->pkey);
+	k->pkey = EVP_PKEY_new();
+	VERIFY(k->pkey != NULL);
+	EVP_PKEY_assign_EC_KEY(k->pkey, eck);
+	eck = NULL;
+
 	box->pdb_pub = k;
 	k = NULL;
 
 	k = sshkey_new(KEY_ECDSA);
 	k->ecdsa_nid = box->pdb_pub->ecdsa_nid;
 
-	k->ecdsa = EC_KEY_new_by_curve_name(k->ecdsa_nid);
-	VERIFY(k->ecdsa != NULL);
+	eck = EC_KEY_new_by_curve_name(k->ecdsa_nid);
+	VERIFY(eck != NULL);
 
-	if ((rc = sshbuf_get_eckey8(buf, k->ecdsa))) {
+	if ((rc = sshbuf_get_eckey8(buf, eck))) {
 		err = boxderrf(ssherrf("sshbuf_get_eckey8", rc));
 		goto out;
 	}
-	if ((rc = sshkey_ec_validate_public(EC_KEY_get0_group(k->ecdsa),
-	    EC_KEY_get0_public_key(k->ecdsa)))) {
+	if ((rc = sshkey_ec_validate_public(EC_KEY_get0_group(eck),
+	    EC_KEY_get0_public_key(eck)))) {
 		err = boxderrf(ssherrf("sshkey_ec_validate_public", rc));
 		goto out;
 	}
+
+	EVP_PKEY_free(k->pkey);
+	k->pkey = EVP_PKEY_new();
+	VERIFY(k->pkey != NULL);
+	EVP_PKEY_assign_EC_KEY(k->pkey, eck);
+	eck = NULL;
+
 	box->pdb_ephem_pub = k;
 	k = NULL;
 
@@ -5526,6 +5582,7 @@ sshbuf_get_piv_box(struct sshbuf *buf, struct piv_ecdh_box **outbox)
 	box = NULL;
 
 out:
+	EC_KEY_free(eck);
 	piv_box_free(box);
 	if (k != NULL)
 		sshkey_free(k);
