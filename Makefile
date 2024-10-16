@@ -750,7 +750,7 @@ endif
 OPENSSH_CONFIG_ARGS=	\
 	--disable-security-key	\
 	--disable-pkcs11	\
-	--with-ssl-dir=$(shell dirname $(LIBCRYPTO))
+	--without-openssl-header-check
 
 .openssh.configure: .openssh.patch $(LIBCRYPTO)
 	cd openssh && \
