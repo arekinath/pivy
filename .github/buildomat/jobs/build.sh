@@ -2,7 +2,7 @@
 #:
 #: name = "build"
 #: variety = "basic"
-#: target = "omnios-r151038"
+#: target = "omnios-r151046"
 #: output_rules = [
 #:	"/work/tarballs/*",
 #: ]

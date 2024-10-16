@@ -2,7 +2,7 @@ name: build-macos
 on: [push]
 
 jobs:
-  build-macos11:
+  build-macos12:
     runs-on: macos-12
     steps:
       - uses: actions/checkout@v2

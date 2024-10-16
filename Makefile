@@ -748,7 +748,7 @@ endif
 	    touch $(CURDIR)/$@
 
 OPENSSH_CONFIG_ARGS=	\
-	--disable-security-key \
+	--disable-security-key	\
 	--disable-pkcs11
 
 .openssh.configure: .openssh.patch $(LIBCRYPTO)
