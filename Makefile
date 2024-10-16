@@ -748,8 +748,9 @@ endif
 	    touch $(CURDIR)/$@
 
 OPENSSH_CONFIG_ARGS=	\
-	--disable-security-key \
-	--disable-pkcs11
+	--disable-security-key	\
+	--disable-pkcs11	\
+	--with-ssl-dir=$(shell dirname $(LIBCRYPTO))
 
 .openssh.configure: .openssh.patch $(LIBCRYPTO)
 	cd openssh && \
