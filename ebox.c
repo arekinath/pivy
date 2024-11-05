@@ -2069,9 +2069,9 @@ sshbuf_get_ebox_ephem_key(struct sshbuf *buf, struct ebox_ephem_key **peek)
 		err = ssherrf("sshbuf_get_cstring8", rc);
 		goto out;
 	}
+	eek->eek_nid = sshkey_curve_name_to_nid(tname);
 
-	err = sshbuf_get_eckey8_sshkey(buf,
-	    sshkey_curve_name_to_nid(tname), &eek->eek_ephem);
+	err = sshbuf_get_eckey8_sshkey(buf, eek->eek_nid, &eek->eek_ephem);
 	if (err != ERRF_OK) {
 		err = errf("ParseError", err, "failed to parse "
 		    "ebox ephemeral key");
