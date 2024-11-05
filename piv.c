@@ -2547,6 +2547,10 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 				EVP_PKEY_assign_RSA(pkey, rsa);
 				rsa = NULL;
 
+				EVP_PKEY_free(k->pkey);
+				k->pkey = pkey;
+				pkey = NULL;
+
 				tlv_skip(tlv);
 				continue;
 			} else if (alg == PIV_ALG_ECCP256 ||
