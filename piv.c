@@ -3135,17 +3135,21 @@ piv_write_cert(struct piv_token *pk, enum piv_slotid slotid,
 		    "%02x", slotid));
 	}
 
-	tlv = tlv_init_write();
-	tlv_push(tlv, 0x70);
-	tlv_write(tlv, data, datalen);
-	tlv_pop(tlv);
-	tlv_push(tlv, 0x71);
-	tlv_write_byte(tlv, (uint8_t)flags);
-	tlv_pop(tlv);
+	if (data != NULL && datalen > 0) {
+		tlv = tlv_init_write();
+		tlv_push(tlv, 0x70);
+		tlv_write(tlv, data, datalen);
+		tlv_pop(tlv);
+		tlv_push(tlv, 0x71);
+		tlv_write_byte(tlv, (uint8_t)flags);
+		tlv_pop(tlv);
 
-	err = piv_write_file(pk, tag, tlv_buf(tlv), tlv_len(tlv));
+		err = piv_write_file(pk, tag, tlv_buf(tlv), tlv_len(tlv));
 
-	tlv_free(tlv);
+		tlv_free(tlv);
+	} else {
+		err = piv_write_file(pk, tag, NULL, 0);
+	}
 
 	return (err);
 }

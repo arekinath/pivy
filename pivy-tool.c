@@ -1735,6 +1735,62 @@ cmd_cert(uint slotid)
 }
 
 static errf_t *
+cmd_delete_cert(uint slotid)
+{
+	errf_t *err;
+
+	assert_slotid(slotid);
+
+	if ((err = piv_txn_begin(selk)))
+		errfx(1, err, "failed to open transaction");
+	assert_select(selk);
+admin_again:
+	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
+	if (err && (errf_caused_by(err, "PermissionError") ||
+	    errf_caused_by(err, "ArgumentError")) &&
+	    admin_key == DEFAULT_ADMIN_KEY) {
+		errf_free(err);
+		err = try_pinfo_admin_key(selk);
+		if (err == ERRF_OK)
+			goto admin_again;
+	}
+
+	if (err == ERRF_OK)
+		err = piv_write_cert(selk, slotid, NULL, 0, PIV_COMP_NONE);
+
+	if (err == ERRF_OK && slotid >= 0x82 && slotid <= 0x95 &&
+	    piv_token_keyhistory_oncard(selk) >= slotid - 0x82) {
+		uint oncard, offcard;
+		const char *url;
+
+		oncard = piv_token_keyhistory_oncard(selk);
+		offcard = piv_token_keyhistory_offcard(selk);
+		url = piv_token_offcard_url(selk);
+
+		if (oncard > 0)
+			--oncard;
+
+		err = piv_write_keyhistory(selk, oncard, offcard, url);
+
+		if (err) {
+			warnfx(err, "failed to update key "
+			    "history object with new cert, trying to "
+			    "continue anyway...");
+			err = ERRF_OK;
+		}
+	}
+
+	piv_txn_end(selk);
+
+	if (err) {
+		err = errf("write_cert", err, "failed to delete cert");
+		return (err);
+	}
+
+	return (ERRF_OK);
+}
+
+static errf_t *
 cmd_write_cert(uint slotid)
 {
 	errf_t *err;
@@ -2784,6 +2840,7 @@ usage(void)
 	    "                         and replaces the cert in the given slot\n"
 	    "  req-cert <slot>        Generates an X.509 CSR for the key in\n"
 	    "                         the given slot (for user auth)\n"
+	    "  delete-cert <slot>     Clears the certificate from the given slot\n"
 	    "  change-pin             Changes the PIV PIN\n"
 	    "  change-puk             Changes the PIV PUK\n"
 	    "  reset-pin              Resets the PIN using the PUK\n"
@@ -3429,6 +3486,28 @@ main(int argc, char *argv[])
 		if (hasover)
 			override = piv_force_slot(selk, slotid, overalg);
 		err = cmd_write_cert(slotid);
+
+	} else if (strcmp(op, "delete-cert") == 0) {
+		enum piv_slotid slotid;
+
+		if (optind >= argc) {
+			warnx("not enough arguments for %s (slot required)",
+			    op);
+			usage();
+		}
+		err = piv_slotid_from_string(argv[optind++], &slotid);
+		if (err != ERRF_OK)
+			errfx(EXIT_BAD_ARGS, err, "failed to parse slot id");
+
+		if (optind < argc) {
+			warnx("too many arguments for %s", op);
+			usage();
+		}
+
+		check_select_key();
+		if (hasover)
+			override = piv_force_slot(selk, slotid, overalg);
+		err = cmd_delete_cert(slotid);
 
 	} else if (strcmp(op, "req-cert") == 0) {
 		enum piv_slotid slotid;
