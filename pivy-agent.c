@@ -910,6 +910,12 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		free(tmp);
 	}
 
+	bunyan_log(BNY_INFO, "requesting user confirmation",
+	    "exec", BNY_STRING, confirm,
+	    "zenity", BNY_INT, add_zenity_args,
+	    "notify-send", BNY_INT, add_notify_send_args,
+	    NULL);
+
 	guid = piv_token_shortid(selk);
 	snprintf(prompt, sizeof (prompt),
 	    "%sA new client is trying to use PIV token %s\r\n\r\n"
