@@ -109,6 +109,8 @@ errf_t *validate_cstring(const char *buf, size_t len, size_t maxlen);
 #define	PARAM_AD_SID	{ "ad_sid", 0, "MS AD SID (see KB5014754). Accepts " \
     "string format (S-1-5-...) or base64-encoded " \
     "(AQUAAAA...) SIDs." }
+#define PARAM_POLICIES	{ "cert_policies", 0, \
+    "Certificate policies to apply (as an OpenSSL config expression)" }
 
 static errf_t *populate_user_auth(struct cert_var_scope *, X509 *);
 static errf_t *populate_user_key_mgmt(struct cert_var_scope *, X509 *);
@@ -133,6 +135,7 @@ struct cert_tpl cert_templates[] = {
 		.ct_params = {
 			PARAM_DN,
 			PARAM_LIFETIME,
+			PARAM_POLICIES,
 			PARAM_AD_UPN,
 			PARAM_KRB5_PN,
 			PARAM_AD_SID,
@@ -152,6 +155,7 @@ struct cert_tpl cert_templates[] = {
 		.ct_params = {
 			PARAM_DN,
 			PARAM_LIFETIME,
+			PARAM_POLICIES,
 			PARAM_AD_UPN,
 			PARAM_AD_SID,
 			{ NULL }
@@ -166,6 +170,7 @@ struct cert_tpl cert_templates[] = {
 		.ct_params = {
 			PARAM_DN,
 			PARAM_LIFETIME,
+			PARAM_POLICIES,
 			{ "email", RQF_CERT | RQF_CERT_REQ, "E-mail address" },
 			{ NULL }
 		},
@@ -179,6 +184,7 @@ struct cert_tpl cert_templates[] = {
 		.ct_params = {
 			PARAM_DN,
 			PARAM_LIFETIME,
+			PARAM_POLICIES,
 			{ "dns_name", RQF_CERT | RQF_CERT_REQ, "DNS domain name" },
 			PARAM_AD_UPN,
 			PARAM_KRB5_PN,
@@ -197,6 +203,7 @@ struct cert_tpl cert_templates[] = {
 		.ct_params = {
 			PARAM_DN,
 			PARAM_LIFETIME,
+			PARAM_POLICIES,
 			PARAM_AD_UPN,
 			PARAM_KRB5_PN,
 			{ "email", 0, "E-mail address" },
@@ -211,6 +218,7 @@ struct cert_tpl cert_templates[] = {
 		.ct_params = {
 			PARAM_DN,
 			PARAM_LIFETIME,
+			PARAM_POLICIES,
 			{ "ext_key_usage", 0, "Extended key usage constraint" },
 			{ "path_len", 0, "Maximum CA path length" },
 			{ "name_constraints", 0,
@@ -1219,11 +1227,12 @@ populate_common(struct cert_var_scope *cs, X509 *cert, char *basic, char *ku,
     char *eku)
 {
 	errf_t *err;
-	char *lifetime, *dnstr;
+	char *lifetime, *dnstr, *policies = NULL;
 	unsigned long lifetime_secs;
 	X509_EXTENSION *ext;
 	X509V3_CTX x509ctx;
 	X509_NAME *subj;
+	CONF *config = NULL;
 
 	err = scope_eval(cs, "lifetime", &lifetime);
 	if (err != ERRF_OK) {
@@ -1259,13 +1268,28 @@ populate_common(struct cert_var_scope *cs, X509 *cert, char *basic, char *ku,
 	VERIFY(X509_set_subject_name(cert, subj) == 1);
 	X509_NAME_free(subj);
 
-	X509V3_set_ctx_nodb(&x509ctx);
+	err = scope_eval(cs, "cert_policies", &policies);
+	if (err == ERRF_OK) {
+		OPENSSL_load_builtin_modules();
+
+		err = load_ossl_config("piv_ca", cs, &config);
+		if (err != ERRF_OK)
+			return (err);
+
+		X509V3_set_nconf(&x509ctx, config);
+	} else {
+		X509V3_set_ctx_nodb(&x509ctx);
+	}
 	X509V3_set_ctx(&x509ctx, cert, cert, NULL, NULL, 0);
 
 	if (basic != NULL) {
 		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_basic_constraints,
 		    (char *)basic);
-		VERIFY(ext != NULL);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing basicConstraints extension");
+			return (err);
+		}
 		X509_add_ext(cert, ext, -1);
 		X509_EXTENSION_free(ext);
 	}
@@ -1273,7 +1297,11 @@ populate_common(struct cert_var_scope *cs, X509 *cert, char *basic, char *ku,
 	if (ku != NULL) {
 		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_key_usage,
 		    (char *)ku);
-		VERIFY(ext != NULL);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing keyUsage extension");
+			return (err);
+		}
 		X509_add_ext(cert, ext, -1);
 		X509_EXTENSION_free(ext);
 	}
@@ -1281,9 +1309,26 @@ populate_common(struct cert_var_scope *cs, X509 *cert, char *basic, char *ku,
 	if (eku != NULL) {
 		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_ext_key_usage,
 		    (char *)eku);
-		VERIFY(ext != NULL);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing extKeyUsage extension");
+			return (err);
+		}
 		X509_add_ext(cert, ext, -1);
 		X509_EXTENSION_free(ext);
+	}
+
+	if (policies != NULL) {
+		ext = X509V3_EXT_conf_nid(NULL, &x509ctx,
+		    NID_certificate_policies, (char *)policies);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing certificatePolicies extension");
+			return (err);
+		}
+		X509_add_ext(cert, ext, -1);
+		X509_EXTENSION_free(ext);
+		free(policies);
 	}
 
 	return (ERRF_OK);
@@ -2138,10 +2183,11 @@ rpopulate_common(struct cert_var_scope *cs, X509_REQ *req,
     STACK_OF(X509_EXTENSION) *exts, char *basic, char *ku, char *eku)
 {
 	errf_t *err;
-	char *dnstr;
+	char *dnstr, *policies = NULL;
 	X509_EXTENSION *ext;
 	X509V3_CTX x509ctx;
 	X509_NAME *subj;
+	CONF *config = NULL;
 
 	subj = X509_NAME_new();
 	VERIFY(subj != NULL);
@@ -2164,28 +2210,63 @@ rpopulate_common(struct cert_var_scope *cs, X509_REQ *req,
 	VERIFY(X509_REQ_set_subject_name(req, subj) == 1);
 	X509_NAME_free(subj);
 
-	X509V3_set_ctx_nodb(&x509ctx);
+	err = scope_eval(cs, "cert_policies", &policies);
+	if (err == ERRF_OK) {
+		OPENSSL_load_builtin_modules();
+
+		err = load_ossl_config("piv_ca", cs, &config);
+		if (err != ERRF_OK)
+			return (err);
+
+		X509V3_set_nconf(&x509ctx, config);
+	} else {
+		X509V3_set_ctx_nodb(&x509ctx);
+	}
 	X509V3_set_ctx(&x509ctx, NULL, NULL, req, NULL, 0);
 
 	if (basic != NULL) {
 		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_basic_constraints,
 		    (char *)basic);
-		VERIFY(ext != NULL);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing basicConstraints extension");
+			return (err);
+		}
 		VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
 	}
 
 	if (ku != NULL) {
 		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_key_usage,
 		    (char *)ku);
-		VERIFY(ext != NULL);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing keyUsage extension");
+			return (err);
+		}
 		VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
 	}
 
 	if (eku != NULL) {
 		ext = X509V3_EXT_conf_nid(NULL, &x509ctx, NID_ext_key_usage,
 		    (char *)eku);
-		VERIFY(ext != NULL);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing extKeyUsage extension");
+			return (err);
+		}
 		VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
+	}
+
+	if (policies != NULL) {
+		ext = X509V3_EXT_conf_nid(NULL, &x509ctx,
+		    NID_certificate_policies, (char *)policies);
+		if (ext == NULL) {
+			make_sslerrf(err, "X509V3_EXT_conf_nid",
+			    "parsing certificatePolicies extension");
+			return (err);
+		}
+		VERIFY(sk_X509_EXTENSION_push(exts, ext) != 0);
+		free(policies);
 	}
 
 	return (ERRF_OK);
