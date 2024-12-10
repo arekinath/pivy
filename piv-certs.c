@@ -1359,22 +1359,28 @@ add_common_princs(struct cert_var_scope *cs, STACK_OF(GENERAL_NAME) *gns)
 
 	if (upn != NULL) {
 		ASN1_UTF8STRING *str;
+		char *saveptr = NULL, *token;
 
-		obj = OBJ_txt2obj("1.3.6.1.4.1.311.20.2.3", 1);
-		VERIFY(obj != NULL);
+		token = strtok_r(upn, ",; ", &saveptr);
+		while (token != NULL) {
+			obj = OBJ_txt2obj("1.3.6.1.4.1.311.20.2.3", 1);
+			VERIFY(obj != NULL);
 
-		str = ASN1_UTF8STRING_new();
-		VERIFY(str != NULL);
-		VERIFY(ASN1_STRING_set(str, upn, -1) == 1);
+			str = ASN1_UTF8STRING_new();
+			VERIFY(str != NULL);
+			VERIFY(ASN1_STRING_set(str, token, -1) == 1);
 
-		typ = ASN1_TYPE_new();
-		VERIFY(typ != NULL);
-		ASN1_TYPE_set(typ, V_ASN1_UTF8STRING, str);
+			typ = ASN1_TYPE_new();
+			VERIFY(typ != NULL);
+			ASN1_TYPE_set(typ, V_ASN1_UTF8STRING, str);
 
-		gn = GENERAL_NAME_new();
-		VERIFY(gn != NULL);
-		VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
-		VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
+			gn = GENERAL_NAME_new();
+			VERIFY(gn != NULL);
+			VERIFY(GENERAL_NAME_set0_othername(gn, obj, typ) == 1);
+			VERIFY(sk_GENERAL_NAME_push(gns, gn) != 0);
+
+			token = strtok_r(NULL, ",; ", &saveptr);
+		}
 	}
 	free(upn);
 
