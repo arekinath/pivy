@@ -84,7 +84,7 @@ slotspec_clear_all(struct slotspec *spec)
 }
 
 
-#line 88 "slot-spec.c"
+#line 83 "slot-spec.c"
 static const char _slotspec_actions[] = {
 	0, 1, 3, 1, 6, 2, 0, 3, 
 	2, 2, 5, 2, 4, 5, 2, 6, 
@@ -179,14 +179,14 @@ slotspec_parse_pe(struct slotspec *spec, const char *p, const char *pe)
 	int cs;
 
 	
-#line 183 "slot-spec.c"
+#line 174 "slot-spec.c"
 	{
 	cs = slotspec_start;
 	}
 
 #line 150 "slot-spec.rl"
 	
-#line 190 "slot-spec.c"
+#line 177 "slot-spec.c"
 	{
 	int _klen;
 	unsigned int _trans;
@@ -325,7 +325,7 @@ _match:
 	    "(expected '!' and then a slot)", p - 1));
 }
 	break;
-#line 329 "slot-spec.c"
+#line 307 "slot-spec.c"
 		}
 	}
 
@@ -398,7 +398,7 @@ _again:
 	    "(expected '!' and then a slot)", p - 1));
 }
 	break;
-#line 402 "slot-spec.c"
+#line 373 "slot-spec.c"
 		}
 	}
 	}

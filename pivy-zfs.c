@@ -55,6 +55,7 @@
 
 #include <libzfs.h>
 #include <libzfs_core.h>
+#include <sys/fs/zfs.h>
 #include <sys/spa_impl.h>
 #include <libnvpair.h>
 #include <sys/dmu.h>
@@ -84,6 +85,22 @@ const char *PROP_RFD77_TEMP = "rfd77:ebox.new";
 const char *PROP_JOYENT = "com.joyent.kbm:ebox";
 
 static void usage(void);
+
+static int zprop_keystatus;
+static uint64_t keystatus_available;
+
+static void
+load_keystatus(void)
+{
+	int rc;
+	zprop_keystatus = zfs_name_to_prop("keystatus");
+	rc = zfs_prop_string_to_index(zprop_keystatus, "available",
+	    &keystatus_available);
+#if defined(DMU_OT_ENCRYPTED)
+	VERIFY(zprop_keystatus != ZPROP_INVAL);
+	VERIFY(rc != -1);
+#endif
+}
 
 static errf_t *
 unlock_or_recover(struct ebox *ebox, const char *descr, boolean_t *recovered)
@@ -235,6 +252,8 @@ cmd_unlock(const char *fsname)
 	uint64_t kstatus;
 #endif
 
+	load_keystatus();
+
 	ds = zfs_open(zfshdl, fsname, ZFS_TYPE_DATASET);
 	if (ds == NULL)
 		err(EXIT_ERROR, "failed to open dataset %s", fsname);
@@ -243,9 +262,9 @@ cmd_unlock(const char *fsname)
 	VERIFY(props != NULL);
 
 #if defined(DMU_OT_ENCRYPTED)
-	kstatus = zfs_prop_get_int(ds, ZFS_PROP_KEYSTATUS);
+	kstatus = zfs_prop_get_int(ds, zprop_keystatus);
 
-	if (kstatus == ZFS_KEYSTATUS_AVAILABLE) {
+	if (kstatus == keystatus_available) {
 		errx(EXIT_ALREADY_UNLOCKED, "key already loaded for %s",
 		    fsname);
 	}
@@ -420,6 +439,8 @@ cmd_rekey(const char *fsname)
 	nvlist_t *nprops;
 #endif
 
+	load_keystatus();
+
 	ds = zfs_open(zfshdl, fsname, ZFS_TYPE_DATASET);
 	if (ds == NULL)
 		err(EXIT_ERROR, "failed to open dataset %s", fsname);
@@ -468,9 +489,9 @@ cmd_rekey(const char *fsname)
 	}
 
 #if defined(DMU_OT_ENCRYPTED)
-	kstatus = zfs_prop_get_int(ds, ZFS_PROP_KEYSTATUS);
+	kstatus = zfs_prop_get_int(ds, zprop_keystatus);
 
-	if (kstatus != ZFS_KEYSTATUS_AVAILABLE) {
+	if (kstatus != keystatus_available) {
 #endif
 		(void) mlockall(MCL_CURRENT | MCL_FUTURE);
 		if ((error = unlock_or_recover(ebox, description, &recovered)))
@@ -480,7 +501,7 @@ cmd_rekey(const char *fsname)
 
 #if defined(DMU_OT_ENCRYPTED)
 		rc = lzc_load_key(fsname, B_FALSE, (uint8_t *)key, keylen);
-		if (rc != 0) {
+		if (rc != 0 && rc != EEXIST) {
 			errno = rc;
 			err(EXIT_ERROR, "failed to load key material into "
 			    "ZFS for %s", fsname);
