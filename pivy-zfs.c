@@ -332,7 +332,18 @@ cmd_unlock(const char *fsname)
 		zpool_handle_t *pool;
 		pool = zpool_open_canfail(zfshdl, fsname);
 		if (pool != NULL) {
+#if (defined(__linux__) || defined(__FreeBSD__)) && defined(DMU_DIRECTIO)
+			/*
+			 * As of OpenZFS 2.3.x this function now has a new
+			 * argument. We don't have a good way to sniff the
+			 * actual version of OpenZFS we're building against,
+			 * so assume if there's DIRECTIO support that it's
+			 * got this change to libzfs as well.
+			 */
+			(void) zpool_enable_datasets(pool, NULL, 0, 512);
+#else
 			(void) zpool_enable_datasets(pool, NULL, 0);
+#endif
 			zpool_close(pool);
 		}
 	}
