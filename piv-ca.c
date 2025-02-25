@@ -4236,6 +4236,9 @@ ca_log_cert_action(struct ca *ca, struct ca_session *sess, const char *action,
 	ASN1_INTEGER *serialasn1;
 	BIGNUM *serial = NULL;
 	char *serialhex = NULL;
+	const ASN1_TIME *asn1time;
+	struct tm tmv;
+	time_t t;
 
 	err = ca_log_verify(ca, &prev_hash, NULL, NULL);
 	if (err != ERRF_OK) {
@@ -4313,6 +4316,16 @@ ca_log_cert_action(struct ca *ca, struct ca_session *sess, const char *action,
 	VERIFY(obj != NULL);
 	json_object_object_add(robj, "serial", obj);
 	obj = NULL;
+
+	bzero(&tmv, sizeof (tmv));
+	asn1time = X509_get0_notAfter(cert);
+	if (asn1time && ASN1_TIME_to_tm(asn1time, &tmv) == 1) {
+		t = timegm(&tmv);
+		obj = json_object_new_int64(t);
+		VERIFY(obj != NULL);
+		json_object_object_add(robj, "expiry", obj);
+		obj = NULL;
+	}
 
 	err = ca_sign_json(ca, sess, robj);
 	if (err != ERRF_OK) {
