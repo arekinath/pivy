@@ -8,7 +8,7 @@ jobs:
       - uses: actions/checkout@v2
       - run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libpcsclite1 libbsd-dev libbsd0 libedit-dev libreadline-dev libcryptsetup-dev libjson-c-dev libpam-dev build-essential devscripts fakeroot debhelper ragel
       - run: make && make deb && mv ../*.deb ./
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: ubuntu-2404
           path: '*.deb'
@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v2
       - run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libpcsclite1 libbsd-dev libbsd0 libedit-dev libreadline-dev libcryptsetup-dev libjson-c-dev libpam-dev build-essential devscripts fakeroot debhelper ragel
       - run: make && make deb && mv ../*.deb ./
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: ubuntu-2204
           path: '*.deb'
