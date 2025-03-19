@@ -681,23 +681,23 @@ main(int argc, char *argv[])
 	tlv = tlv_init(buf, 0, sizeof (buf));
 	VERIFYN(tlv);
 
-	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
-		errfx(1, err, "reading tag");
+	err = tlv_read_tag(tlv, &tag);
+	assert(err == NULL || err == ERRF_NOMEM);
+	if (err != NULL)
 		return (1);
-	}
 	assert(tag == 0x01);
 
-	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
-		errfx(1, err, "reading tag");
+	err = tlv_read_tag(tlv, &tag);
+	assert(err == NULL || err == ERRF_NOMEM);
+	if (err != NULL)
 		return (1);
-	}
 	assert(tag == 0xa1);
 	tlv_skip(tlv);
 
-	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
-		errfx(1, err, "reading tag");
+	err = tlv_read_tag(tlv, &tag);
+	assert(err == NULL || err == ERRF_NOMEM);
+	if (err != NULL)
 		return (1);
-	}
 	assert(tag == 0xa2);
 	tlv_skip(tlv);
 
@@ -718,15 +718,15 @@ main(int argc, char *argv[])
 	const uint8_t buf3[] = { 0x01, 0x05, 'h', 'e', 'l', 'l', 'o' };
 	tlv = tlv_init(buf3, 0, sizeof (buf3));
 	VERIFYN(tlv);
-	if ((err = tlv_read_tag(tlv, &tag)) != NULL) {
-		errfx(1, err, "reading tag");
+	err = tlv_read_tag(tlv, &tag);
+	assert(err == NULL || err == ERRF_NOMEM);
+	if (err != NULL)
 		return (1);
-	}
 	assert(tag == 0x01);
-	if ((err = tlv_read_string(tlv, &str)) != NULL) {
-		errfx(1, err, "reading string");
+	err = tlv_read_string(tlv, &str);
+	assert(err == NULL || err == ERRF_NOMEM);
+	if (err != NULL)
 		return (1);
-	}
 	assert(strlen(str) == 5);
 	assert(strcmp(str, "hello") == 0);
 	tlv_abort(tlv);

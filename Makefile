@@ -938,7 +938,6 @@ CBMC_OPTS=	-D__CPROVER \
 		--div-by-zero-check \
 		--trace \
 		--drop-unused-functions \
-		--string-abstraction \
 		-I. -Iopenssh/ \
 		$(SYSTEM_CBMCFLAGS) \
 		$(PCSC_CBMCFLAGS) \
@@ -997,6 +996,7 @@ CBMC_AUX=	cbmc-aux.c
 
 .tlv.c.cbmc:		CBMC_AUX+=
 .tlv.c.cbmc:		CBMC_OPTS+=	--unwind 10
+.tlv.c.cbmc:		CBMC_OPTS+=	--object-bits 12
 .tlv.c.cbmc:		CBMC_OPTS+=	--unwinding-assertions
 
 .utils.c.cbmc:		CBMC_AUX+=
