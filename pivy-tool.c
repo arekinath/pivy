@@ -2639,6 +2639,14 @@ check_select_key(void)
 	if (err)
 		errfx(EXIT_IO_ERROR, err, "while finding PIV token with GUID");
 	selk = (ks = t);
+
+	/* YubicoPIV 5.7 and later default to AES192 admin key. */
+	if (piv_token_is_ykpiv(selk) &&
+	    ykpiv_version_compare(selk, 5, 7, 0) >= 0 &&
+	    admin_key == DEFAULT_ADMIN_KEY &&
+	    key_alg == PIV_ALG_3DES) {
+		key_alg = PIV_ALG_AES192;
+	}
 }
 
 static errf_t *
