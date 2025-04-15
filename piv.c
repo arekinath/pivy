@@ -4713,8 +4713,10 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 		break;
 	case PIV_ALG_ED25519:
 		inplen = 32;
+		dglen = 64;
 		cardhash = B_TRUE;
 		*hashalgo = SSH_DIGEST_SHA512;
+		oldalg = slot->ps_alg;
 		break;
 	default:
 		return (errf("NotSupportedError", NULL, "Unsupported key "
