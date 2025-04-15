@@ -16,7 +16,7 @@
 #include <strings.h>
 #include "errf.h"
 
-#define	MAX_APDU_SIZE	16384
+#define	MAX_APDU_SIZE	0xFFFF
 
 /*
  * This is a parser and generator for ISO7816 BER-TLV, a limited subset of

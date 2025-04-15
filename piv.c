@@ -80,6 +80,7 @@ struct apdu {
 	uint8_t a_p1;
 	uint8_t a_p2;
 	uint8_t a_le;
+	boolean_t a_xlen;
 
 	struct apdubuf a_cmd;
 	uint16_t a_sw;
@@ -146,6 +147,11 @@ struct piv_token {
 	 * this txn?
 	 */
 	enum piv_pin pt_used_pin;
+
+	/*
+	 * Are extended length APDUs working?
+	 */
+	boolean_t pt_xapdu;
 
 	/*
 	 * Our GUID. This can either be the GUID from our CHUID file, or if
@@ -1648,17 +1654,35 @@ static uint8_t *
 apdu_to_buffer(struct apdu *apdu, uint *outlen)
 {
 	struct apdubuf *d = &(apdu->a_cmd);
-	uint8_t *buf = calloc(1, 6 + d->b_len);
+	uint8_t *buf = calloc(1, 10 + d->b_len);
 	buf[0] = apdu->a_cls;
 	buf[1] = apdu->a_ins;
 	buf[2] = apdu->a_p1;
 	buf[3] = apdu->a_p2;
-	if (d->b_data == NULL) {
+	if (d->b_data == NULL && apdu->a_xlen) {
+		buf[4] = (apdu->a_le & 0xFF00) >> 8;
+		buf[5] = apdu->a_le & 0xFF;
+		*outlen = 6;
+		return (buf);
+	} else if (d->b_data == NULL) {
 		buf[4] = apdu->a_le;
 		*outlen = 5;
 		return (buf);
+	} else if (apdu->a_xlen || d->b_len > 256) {
+		VERIFY(d->b_len <= 65536 && d->b_len > 0);
+		buf[4] = 0;
+		buf[5] = (d->b_len & 0xFF00) >> 8;
+		buf[6] = d->b_len & 0xFF;
+		bcopy(d->b_data + d->b_offset, buf + 7, d->b_len);
+		if (apdu->a_cls & CLA_CHAIN) {
+			*outlen = d->b_len + 7;
+		} else {
+			buf[d->b_len + 7] = (apdu->a_le & 0xFF00) >> 8;
+			buf[d->b_len + 8] = apdu->a_le & 0xFF;
+			*outlen = d->b_len + 9;
+		}
+		return (buf);
 	} else {
-		/* TODO: maybe look at handling ext APDUs? */
 		VERIFY(d->b_len < 256 && d->b_len > 0);
 		buf[4] = d->b_len;
 		bcopy(d->b_data + d->b_offset, buf + 5, d->b_len);
@@ -1806,24 +1830,38 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	size_t offset;
 	size_t rem;
 	boolean_t gotok = B_FALSE;
+	size_t max = 0xFF;
 
 	VERIFY(pk->pt_intxn == B_TRUE);
+
+	apdu->a_xlen = pk->pt_xapdu;
+	if (apdu->a_xlen)
+		max = 0xFFFF;
 
 	/* First, send the command. */
 	rem = apdu->a_cmd.b_len;
 	do {
 		/* Is there another block needed in the chain? */
-		if (rem > 0xFF) {
+		if (rem > max) {
 			apdu->a_cls |= CLA_CHAIN;
-			apdu->a_cmd.b_len = 0xFF;
+			apdu->a_cmd.b_len = max;
 		} else {
 			apdu->a_cls &= ~CLA_CHAIN;
 			apdu->a_cmd.b_len = rem;
+			apdu->a_le = max;
 		}
 again:
 		rv = piv_apdu_transceive(pk, apdu);
-		if (rv)
+		if (errf_caused_by(rv, "PCSCError") &&
+		    apdu->a_xlen && max > 256) {
+			max >>= 1;
+			bunyan_log(BNY_DEBUG, "got an error on a large xlen"
+			    "apdu, shrinking max cmd apdu len",
+			    "new_max", BNY_SIZE_T, max, NULL);
+			continue;
+		} else if (rv) {
 			return (rv);
+		}
 		if ((apdu->a_sw & 0xFF00) == SW_CORRECT_LE_00) {
 			apdu->a_le = apdu->a_sw & 0x00FF;
 			/*
@@ -1862,7 +1900,7 @@ again:
 	 * and don't always give us SW_BYTES_REMAINING.
 	 */
 	while ((apdu->a_sw & 0xFF00) == SW_BYTES_REMAINING_00 ||
-	    (apdu->a_sw == SW_NO_ERROR && apdu->a_reply.b_len >= 0xFF)) {
+	    (apdu->a_sw == SW_NO_ERROR && apdu->a_reply.b_len >= max)) {
 		if (apdu->a_sw == SW_NO_ERROR)
 			gotok = B_TRUE;
 		apdu->a_cls = CLA_ISO;
@@ -2010,6 +2048,11 @@ piv_select(struct piv_token *tk)
 	apdu->a_cmd.b_data = (uint8_t *)AID_PIV;
 	apdu->a_cmd.b_len = sizeof (AID_PIV);
 
+	/* If this is a T=1 card, try ext len APDUs and see if they work. */
+	if (tk->pt_proto == SCARD_PROTOCOL_T1)
+		tk->pt_xapdu = B_TRUE;
+
+again:
 	rv = piv_apdu_transceive_chain(tk, apdu);
 	if (rv) {
 		rv = ioerrf(rv, tk->pt_rdrname);
@@ -2029,6 +2072,14 @@ piv_select(struct piv_token *tk)
 		tk->pt_alg_count = rts.pr_alg_count;
 		bcopy(rts.pr_algs, tk->pt_algs, sizeof (tk->pt_algs));
 		rv = ERRF_OK;
+
+	} else if (tk->pt_xapdu == B_TRUE && (apdu->a_sw == SW_WRONG_LENGTH ||
+	    apdu->a_sw == SW_INS_NOT_SUP)) {
+		bunyan_log(BNY_DEBUG, "card does not seem to support extended"
+		    " length APDUs, disabling", NULL);
+		tk->pt_xapdu = B_FALSE;
+		goto again;
+
 	} else {
 		rv = errf("NotFoundError", swerrf("INS_SELECT", apdu->a_sw),
 		    "PIV applet was not found on device '%s'", tk->pt_rdrname);
