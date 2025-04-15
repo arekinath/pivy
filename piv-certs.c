@@ -2818,6 +2818,9 @@ sshkey_to_evp_pkey(const struct sshkey *pubkey, EVP_PKEY **ppkey)
 	} else if (pubkey->type == KEY_ECDSA) {
 		ec = EVP_PKEY_get1_EC_KEY(pubkey->pkey);
 		EVP_PKEY_set1_EC_KEY(pkey, ec);
+	} else if (pubkey->type == KEY_ED25519) {
+		pkey = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519,
+		    NULL, pubkey->ed25519_pk, 32);
 	} else {
 		err = errf("InvalidKeyType", NULL, "invalid key type: %d",
 		    pubkey->type);
@@ -2868,6 +2871,10 @@ set_pkey_from_sshkey(struct sshkey *pubkey, struct piv_token *tkn,
 			*nid = NID_ecdsa_with_SHA256;
 			*wantalg = SSH_DIGEST_SHA256;
 		}
+
+	} else if (pubkey->type == KEY_ED25519) {
+		*nid = NID_ED25519;
+		*wantalg = SSH_DIGEST_SHA512;
 
 	} else {
 		err = errf("InvalidKeyType", NULL, "invalid key type: %d",

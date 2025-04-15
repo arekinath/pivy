@@ -1,4 +1,4 @@
-From 9aefd8306f793f0d82c70bbdd632f28f43f16ab5 Mon Sep 17 00:00:00 2001
+From 63befdde147c45a93af5db5826fa7c267bf454bc Mon Sep 17 00:00:00 2001
 From: Alex Wilson <alex@cooperi.net>
 Date: Wed, 9 Mar 2022 14:38:30 +1000
 Subject: [PATCH] xxx: pivy changes
@@ -13,18 +13,18 @@ Subject: [PATCH] xxx: pivy changes
  openbsd-compat/arc4random.c     |   7 +
  openbsd-compat/bcrypt_pbkdf.c   |   2 +-
  openbsd-compat/openbsd-compat.h |   4 +-
- sshbuf-getput-basic.c           | 198 ++++++++++++++++
+ sshbuf-getput-basic.c           | 198 +++++++++++++++
  sshbuf-getput-crypto.c          |  72 +++++-
  sshbuf.c                        |  18 ++
  sshbuf.h                        |  19 ++
- ssherr.h                        |  26 +++
- sshkey.c                        | 396 +++++++++++++++++++++++++++++++-
+ ssherr.h                        |  26 ++
+ sshkey.c                        | 416 +++++++++++++++++++++++++++++++-
  sshkey.h                        |  12 +
- 16 files changed, 768 insertions(+), 16 deletions(-)
+ 16 files changed, 788 insertions(+), 16 deletions(-)
 
 diff --git a/authfd.c b/authfd.c
 index e04ad0cf2..d5a6a5c8f 100644
---- a/authfd.c
++++ openssh/authfd.c
 +++ openssh/authfd.c
 @@ -134,7 +134,7 @@ ssh_get_authentication_socket(int *fdp)
  }
@@ -37,7 +37,7 @@ index e04ad0cf2..d5a6a5c8f 100644
  	int r;
 diff --git a/authfd.h b/authfd.h
 index c1e4b405c..251c74a06 100644
---- a/authfd.h
++++ openssh/authfd.h
 +++ openssh/authfd.h
 @@ -60,6 +60,8 @@ int	ssh_update_card(int sock, int add, const char *reader_id,
  	    int cert_only, struct sshkey **certs, size_t ncerts);
@@ -59,7 +59,7 @@ index c1e4b405c..251c74a06 100644
  #define	SSH_AGENT_CONSTRAIN_MAXSIGN		3
 diff --git a/cipher.c b/cipher.c
 index 7d6e7d8c6..fd130b394 100644
---- a/cipher.c
++++ openssh/cipher.c
 +++ openssh/cipher.c
 @@ -94,16 +94,16 @@ static const struct sshcipher ciphers[] = {
  	{ "aes128-ctr",		16, 16, 0, 0, 0, EVP_aes_128_ctr },
@@ -83,7 +83,7 @@ index 7d6e7d8c6..fd130b394 100644
  
 diff --git a/defines.h b/defines.h
 index ed860e78b..c645f7788 100644
---- a/defines.h
++++ openssh/defines.h
 +++ openssh/defines.h
 @@ -906,7 +906,7 @@ struct winsize {
   */
@@ -96,7 +96,7 @@ index ed860e78b..c645f7788 100644
  #ifndef HAVE_VA_COPY
 diff --git a/digest.h b/digest.h
 index 274574d0e..4b569962f 100644
---- a/digest.h
++++ openssh/digest.h
 +++ openssh/digest.h
 @@ -22,12 +22,14 @@
  #define SSH_DIGEST_MAX_LENGTH	64
@@ -121,7 +121,7 @@ index 274574d0e..4b569962f 100644
  struct ssh_digest_ctx;
 diff --git a/misc.c b/misc.c
 index afdf5142e..4d5c38b79 100644
---- a/misc.c
++++ openssh/misc.c
 +++ openssh/misc.c
 @@ -2843,7 +2843,9 @@ subprocess(const char *tag, const char *command,
  			error("%s: dup2: %s", tag, strerror(errno));
@@ -135,7 +135,7 @@ index afdf5142e..4d5c38b79 100644
  		    initgroups(pw->pw_name, pw->pw_gid) == -1) {
 diff --git a/openbsd-compat/arc4random.c b/openbsd-compat/arc4random.c
 index ffd33734d..b4d67b7fc 100644
---- a/openbsd-compat/arc4random.c
++++ openssh/openbsd-compat/arc4random.c
 +++ openssh/openbsd-compat/arc4random.c
 @@ -231,6 +231,13 @@ arc4random_buf(void *buf, size_t n)
  }
@@ -153,7 +153,7 @@ index ffd33734d..b4d67b7fc 100644
  /* arc4random_buf() that uses platform arc4random() */
 diff --git a/openbsd-compat/bcrypt_pbkdf.c b/openbsd-compat/bcrypt_pbkdf.c
 index 5a22ba3b4..f006b14cc 100644
---- a/openbsd-compat/bcrypt_pbkdf.c
++++ openssh/openbsd-compat/bcrypt_pbkdf.c
 +++ openssh/openbsd-compat/bcrypt_pbkdf.c
 @@ -137,7 +137,7 @@ bcrypt_pbkdf(const char *pass, size_t passlen, const uint8_t *salt, size_t saltl
  	memcpy(countsalt, salt, saltlen);
@@ -166,7 +166,7 @@ index 5a22ba3b4..f006b14cc 100644
  	for (count = 1; keylen > 0; count++) {
 diff --git a/openbsd-compat/openbsd-compat.h b/openbsd-compat/openbsd-compat.h
 index 0823d6a83..4d6fdaefc 100644
---- a/openbsd-compat/openbsd-compat.h
++++ openssh/openbsd-compat/openbsd-compat.h
 +++ openssh/openbsd-compat/openbsd-compat.h
 @@ -233,8 +233,8 @@ uint32_t arc4random(void);
  void arc4random_buf(void *, size_t);
@@ -181,7 +181,7 @@ index 0823d6a83..4d6fdaefc 100644
  #ifndef HAVE_ARC4RANDOM_UNIFORM
 diff --git a/sshbuf-getput-basic.c b/sshbuf-getput-basic.c
 index 5c71b0e53..3305d52f7 100644
---- a/sshbuf-getput-basic.c
++++ openssh/sshbuf-getput-basic.c
 +++ openssh/sshbuf-getput-basic.c
 @@ -302,6 +302,41 @@ sshbuf_get_cstring(struct sshbuf *buf, char **valp, size_t *lenp)
  	return 0;
@@ -421,7 +421,7 @@ index 5c71b0e53..3305d52f7 100644
 +}
 diff --git a/sshbuf-getput-crypto.c b/sshbuf-getput-crypto.c
 index e7bffe225..2d59296fa 100644
---- a/sshbuf-getput-crypto.c
++++ openssh/sshbuf-getput-crypto.c
 +++ openssh/sshbuf-getput-crypto.c
 @@ -63,8 +63,10 @@ get_ec(const u_char *d, size_t len, EC_POINT *v, const EC_GROUP *g)
  	if (len == 0 || len > SSHBUF_MAX_ECPOINT)
@@ -518,7 +518,7 @@ index e7bffe225..2d59296fa 100644
  #endif /* WITH_OPENSSL */
 diff --git a/sshbuf.c b/sshbuf.c
 index 1b714e5f9..765b72380 100644
---- a/sshbuf.c
++++ openssh/sshbuf.c
 +++ openssh/sshbuf.c
 @@ -425,3 +425,21 @@ sshbuf_consume_end(struct sshbuf *buf, size_t len)
  	return 0;
@@ -544,7 +544,7 @@ index 1b714e5f9..765b72380 100644
 +}
 diff --git a/sshbuf.h b/sshbuf.h
 index 49c32af8f..9d9b3d955 100644
---- a/sshbuf.h
++++ openssh/sshbuf.h
 +++ openssh/sshbuf.h
 @@ -194,6 +194,14 @@ int	sshbuf_put_string(struct sshbuf *buf, const void *v, size_t len);
  int	sshbuf_put_cstring(struct sshbuf *buf, const char *v);
@@ -602,7 +602,7 @@ index 49c32af8f..9d9b3d955 100644
  
 diff --git a/ssherr.h b/ssherr.h
 index 085e75274..e97c45771 100644
---- a/ssherr.h
++++ openssh/ssherr.h
 +++ openssh/ssherr.h
 @@ -86,4 +86,30 @@
  /* Translate a numeric error code to a human-readable error string */
@@ -636,8 +636,8 @@ index 085e75274..e97c45771 100644
 +
  #endif /* _SSHERR_H */
 diff --git a/sshkey.c b/sshkey.c
-index 1db83788d..de597d818 100644
---- a/sshkey.c
+index 1db83788d..9c1b8bcc4 100644
++++ openssh/sshkey.c
 +++ openssh/sshkey.c
 @@ -2212,17 +2212,21 @@ sshkey_sign(struct sshkey *key,
  		return SSH_ERR_KEY_TYPE_UNKNOWN;
@@ -662,7 +662,7 @@ index 1db83788d..de597d818 100644
  	if (was_shielded && (r2 = sshkey_shield_private(key)) != 0)
  		return r2;
  	return r;
-@@ -3842,3 +3846,393 @@ sshkey_set_filename(struct sshkey *k, const char *filename)
+@@ -3842,3 +3846,413 @@ sshkey_set_filename(struct sshkey *k, const char *filename)
  	return 0;
  }
  #endif /* WITH_XMSS */
@@ -718,6 +718,26 @@ index 1db83788d..de597d818 100644
 +			goto out;
 +		}
 +		EVP_PKEY_set1_EC_KEY(pkey, eck);
++
++	} else if (pktype == EVP_PKEY_ED25519 &&
++	    (type == KEY_UNSPEC || type == KEY_ED25519)) {
++		size_t n = ED25519_PK_SZ;
++		if ((prv = sshkey_new(KEY_ED25519)) == NULL) {
++			r = SSH_ERR_ALLOC_FAIL;
++			goto out;
++		}
++		prv->ed25519_pk = malloc(n);
++		if (prv->ed25519_pk == NULL) {
++			r = SSH_ERR_ALLOC_FAIL;
++			goto out;
++		}
++		r = EVP_PKEY_get_raw_public_key(pk, prv->ed25519_pk, &n);
++		if (r != 1 || n != ED25519_PK_SZ) {
++			r = SSH_ERR_LIBCRYPTO_ERROR;
++			goto out;
++		}
++
++		pkey = NULL;
 +
 +	} else {
 +		r = SSH_ERR_INVALID_FORMAT;
@@ -1058,7 +1078,7 @@ index 1db83788d..de597d818 100644
 +}
 diff --git a/sshkey.h b/sshkey.h
 index d0cdea0ce..71d86b2f8 100644
---- a/sshkey.h
++++ openssh/sshkey.h
 +++ openssh/sshkey.h
 @@ -26,6 +26,8 @@
  #ifndef SSHKEY_H
@@ -1094,5 +1114,5 @@ index d0cdea0ce..71d86b2f8 100644
  int	sshkey_sk_fields_equal(const struct sshkey *a, const struct sshkey *b);
  void	sshkey_sk_cleanup(struct sshkey *k);
 -- 
-2.46.2
+2.49.0
 

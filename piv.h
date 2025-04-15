@@ -184,11 +184,17 @@ enum piv_alg {
 
 	PIV_ALG_RSA1024 = 0x06,
 	PIV_ALG_RSA2048 = 0x07,
+	PIV_ALG_RSA3072 = 0x05,
+	PIV_ALG_RSA4096 = 0x16,
 	PIV_ALG_ECCP256 = 0x11,
 	PIV_ALG_ECCP384 = 0x14,
 
 	PIV_ALG_SM_ECCP256 = 0x27,
 	PIV_ALG_SM_ECCP384 = 0x2E,
+
+	/* These are YubicoPIV proprietary */
+	PIV_ALG_ED25519 = 0xE0,
+	PIV_ALG_X25519 = 0xE1,
 
 	/*
 	 * Proprietary hack for Javacards running PivApplet -- they don't
@@ -914,6 +920,31 @@ MUST_CHECK
 errf_t *ykpiv_set_pin_retries(struct piv_token *tk, uint pintries, uint puktries);
 
 /*
+ * YubicoPIV only: moves a private key from one slot to another. To execute it
+ * you must have called piv_auth_admin() in this transaction.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - NotSupportedError: the MANAGE KEY command isn't supported
+ *  - APDUError: other card error
+ */
+MUST_CHECK
+errf_t *ykpiv_move_key(struct piv_token *tk, struct piv_slot *src,
+    enum piv_slotid dest);
+
+/*
+ * YubicoPIV only: destroys a private key. To execute it you must have called
+ * piv_auth_admin() in this transaction.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - NotSupportedError: the MANAGE KEY command isn't supported
+ *  - APDUError: other card error
+ */
+MUST_CHECK
+errf_t *ykpiv_delete_key(struct piv_token *tk, struct piv_slot *slot);
+
+/*
  * Authenticates a PIV key slot by matching its public key against the given
  * public key, and then asking it to sign randomly generated data to validate
  * that the key does match.
@@ -1101,6 +1132,7 @@ enum iso_ins {
 	INS_GET_VER = 0xFD,
 	INS_SET_PIN_RETRIES = 0xFA,
 	INS_RESET = 0xFB,
+	INS_MANAGE_KEY = 0xF6,
 	INS_GET_METADATA = 0xF7,
 	INS_GET_SERIAL = 0xF8,
 	INS_ATTEST = 0xF9,

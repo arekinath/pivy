@@ -1429,6 +1429,10 @@ pin_again:
 		default:
 			hashalg = SSH_DIGEST_SHA256;
 		}
+	} else if (key->type == KEY_ED25519) {
+		hashalg = SSH_DIGEST_SHA512;
+	} else {
+		VERIFY(0);
 	}
 	ohashalg = hashalg;
 	err = piv_sign(selk, slot, data, dlen, &hashalg, &rawsig, &rslen);

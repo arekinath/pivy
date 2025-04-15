@@ -1738,12 +1738,22 @@ static errf_t *
 cmd_delete_cert(uint slotid)
 {
 	errf_t *err;
+	struct piv_slot *slot;
 
 	assert_slotid(slotid);
 
 	if ((err = piv_txn_begin(selk)))
 		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
+
+	err = piv_read_cert(selk, slotid);
+	if (err)
+		errf_free(err);
+
+	slot = piv_get_slot(selk, slotid);
+	if (slot == NULL)
+		slot = piv_force_slot(selk, slotid, PIV_ALG_3DES);
+
 admin_again:
 	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
 	if (err && (errf_caused_by(err, "PermissionError") ||
@@ -1753,6 +1763,17 @@ admin_again:
 		err = try_pinfo_admin_key(selk);
 		if (err == ERRF_OK)
 			goto admin_again;
+	}
+
+	if (piv_token_is_ykpiv(selk) &&
+	    ykpiv_version_compare(selk, 5, 7, 0) >= 0) {
+		err = ykpiv_delete_key(selk, slot);
+		if (err != ERRF_OK) {
+			warnfx(err, "failed to delete private key, "
+			    "will just clear cert");
+			errf_free(err);
+			err = ERRF_OK;
+		}
 	}
 
 	if (err == ERRF_OK)

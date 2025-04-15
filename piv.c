@@ -2483,7 +2483,8 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 			err = tagerrf("INS_GEN_ASYM", tag);
 			goto invdata;
 		}
-		if (alg == PIV_ALG_RSA1024 || alg == PIV_ALG_RSA2048) {
+		if (alg == PIV_ALG_RSA1024 || alg == PIV_ALG_RSA2048 ||
+		    alg == PIV_ALG_RSA3072 || alg == PIV_ALG_RSA4096) {
 			k = sshkey_new(KEY_RSA);
 			VERIFY(k != NULL);
 
@@ -2497,6 +2498,10 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 			VERIFY(k != NULL);
 			k->ecdsa_nid = NID_secp384r1;
 
+		} else if (alg == PIV_ALG_ED25519) {
+			k = sshkey_new(KEY_ED25519);
+			VERIFY(k != NULL);
+
 		} else {
 			err = argerrf("alg", "a supported algorithm", "%d", alg);
 			tlv_abort(tlv);
@@ -2505,7 +2510,8 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 		while (!tlv_at_end(tlv)) {
 			if ((err = tlv_read_tag(tlv, &tag)))
 				goto invdata;
-			if (alg == PIV_ALG_RSA1024 || alg == PIV_ALG_RSA2048) {
+			if (alg == PIV_ALG_RSA1024 || alg == PIV_ALG_RSA2048 ||
+			    alg == PIV_ALG_RSA3072 || alg == PIV_ALG_RSA4096) {
 				if (tag == 0x81) {		/* Modulus */
 					mod = BN_bin2bn(tlv_ptr(tlv),
 					    tlv_rem(tlv), NULL);
@@ -2606,6 +2612,35 @@ piv_generate_common(struct piv_token *pt, struct apdu *apdu,
 
 					tlv_skip(tlv);
 					continue;
+				} else {
+					err = tagerrf("INS_GEN_ASYM", tag);
+					goto invdata;
+				}
+			} else if (alg == PIV_ALG_ED25519 ||
+			    alg == PIV_ALG_X25519) {
+				if (tag == 0x86) {
+					uint8_t *buf;
+					size_t len;
+
+					err = tlv_read_alloc(tlv, &buf, &len);
+					if (err)
+						goto invdata;
+					if (len != 32) {
+						free(buf);
+						err = errf("LengthError", NULL,
+						    "ed25519/x25519 key wrong"
+						    "length: %lld", len);
+						goto invdata;
+					}
+					k->ed25519_pk = buf;
+
+					if ((err = tlv_end(tlv)))
+						goto invdata;
+
+					continue;
+				} else {
+					err = tagerrf("INS_GEN_ASYM", tag);
+					goto invdata;
 				}
 			}
 			err = tagerrf("INS_GEN_ASYM", tag);
@@ -2668,6 +2703,99 @@ piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
 	apdu->a_cmd.b_len = tlv_len(tlv);
 
 	return (piv_generate_common(pt, apdu, tlv, alg, slotid, pubkey));
+}
+
+errf_t *
+ykpiv_move_key(struct piv_token *pt, struct piv_slot *src,
+    enum piv_slotid dest)
+{
+	struct apdu *apdu;
+	errf_t *err;
+
+	VERIFY(pt->pt_intxn);
+
+	/* Reject if this isn't a YubicoPIV card. */
+	if (!pt->pt_ykpiv)
+		return (argerrf("pt", "a YubicoPIV-compatible token", "not"));
+	if (ykpiv_version_compare(pt, 5, 7, 0) == -1) {
+		return (argerrf("pt", "MANAGE_KEY only on YubicoPIV "
+		    "version >=5.7", "not supported by this device (v%d.%d.%d)",
+		    pt->pt_ykver[0], pt->pt_ykver[1], pt->pt_ykver[2]));
+	}
+
+	apdu = piv_apdu_make(CLA_ISO, INS_MANAGE_KEY, dest, src->ps_slot);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		goto out;
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+		err = ERRF_OK;
+
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("YK_INS_MANAGE_KEY", apdu->a_sw),
+		    pt->pt_rdrname, "key slot 0x%02X", src->ps_slot);
+
+	} else {
+		err = swerrf("YK_INS_MANAGE_KEY", apdu->a_sw);
+		bunyan_log(BNY_DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pt->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
+	}
+
+out:
+	piv_apdu_free(apdu);
+	return (err);
+}
+
+errf_t *
+ykpiv_delete_key(struct piv_token *pt, struct piv_slot *slot)
+{
+	struct apdu *apdu;
+	errf_t *err;
+
+	VERIFY(pt->pt_intxn);
+
+	/* Reject if this isn't a YubicoPIV card. */
+	if (!pt->pt_ykpiv)
+		return (argerrf("pt", "a YubicoPIV-compatible token", "not"));
+	if (ykpiv_version_compare(pt, 5, 7, 0) == -1) {
+		return (argerrf("pt", "MANAGE_KEY only on YubicoPIV "
+		    "version >=5.7", "not supported by this device (v%d.%d.%d)",
+		    pt->pt_ykver[0], pt->pt_ykver[1], pt->pt_ykver[2]));
+	}
+
+	apdu = piv_apdu_make(CLA_ISO, INS_MANAGE_KEY, 0xFF, slot->ps_slot);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		goto out;
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+		err = ERRF_OK;
+
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("YK_INS_MANAGE_KEY", apdu->a_sw),
+		    pt->pt_rdrname, "key slot 0x%02X", slot->ps_slot);
+
+	} else {
+		err = swerrf("YK_INS_MANAGE_KEY", apdu->a_sw);
+		bunyan_log(BNY_DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pt->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
+	}
+
+out:
+	piv_apdu_free(apdu);
+	return (err);
 }
 
 errf_t *
@@ -3100,6 +3228,12 @@ ykpiv_import(struct piv_token *pt, enum piv_slotid slotid, struct sshkey *key,
 			break;
 		case 2048:
 			alg = PIV_ALG_RSA2048;
+			break;
+		case 3072:
+			alg = PIV_ALG_RSA3072;
+			break;
+		case 4096:
+			alg = PIV_ALG_RSA4096;
 			break;
 		default:
 			err = argerrf("privkey", "an RSA private key of "
@@ -3693,6 +3827,12 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 			case 2048:
 				pc->ps_alg = PIV_ALG_RSA2048;
 				break;
+			case 3072:
+				pc->ps_alg = PIV_ALG_RSA3072;
+				break;
+			case 4096:
+				pc->ps_alg = PIV_ALG_RSA4096;
+				break;
 			default:
 				err = invderrf(errf("BadAlgorithmError", NULL,
 				    "Cert subj is RSA key of size %u, not "
@@ -3700,6 +3840,9 @@ piv_read_cert(struct piv_token *pk, enum piv_slotid slotid)
 				    sshkey_size(pc->ps_pubkey)),
 				    pk->pt_rdrname);
 			}
+			break;
+		case KEY_ED25519:
+			pc->ps_alg = PIV_ALG_ED25519;
 			break;
 		default:
 			err = invderrf(errf("BadAlgorithmError", NULL,
@@ -4393,6 +4536,28 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 			dglen = 32;
 		}
 		break;
+	case PIV_ALG_RSA3072:
+		inplen = 384;
+		if (*hashalgo == SSH_DIGEST_SHA1) {
+			dglen = 20;
+		} else if (*hashalgo == SSH_DIGEST_SHA512) {
+			dglen = 64;
+		} else {
+			*hashalgo = SSH_DIGEST_SHA256;
+			dglen = 32;
+		}
+		break;
+	case PIV_ALG_RSA4096:
+		inplen = 512;
+		if (*hashalgo == SSH_DIGEST_SHA1) {
+			dglen = 20;
+		} else if (*hashalgo == SSH_DIGEST_SHA512) {
+			dglen = 64;
+		} else {
+			*hashalgo = SSH_DIGEST_SHA256;
+			dglen = 32;
+		}
+		break;
 	case PIV_ALG_ECCP256:
 		inplen = 32;
 		/*
@@ -4495,6 +4660,11 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 			}
 		}
 		break;
+	case PIV_ALG_ED25519:
+		inplen = 32;
+		cardhash = B_TRUE;
+		*hashalgo = SSH_DIGEST_SHA512;
+		break;
 	default:
 		return (errf("NotSupportedError", NULL, "Unsupported key "
 		    "algorithm used in slot %x (%d) of PIV device '%s'",
@@ -4528,7 +4698,9 @@ piv_sign(struct piv_token *tk, struct piv_slot *slot, const uint8_t *data,
 	 * because Java ruined everything. Right.
 	 */
 	if (slot->ps_alg == PIV_ALG_RSA1024 ||
-	    slot->ps_alg == PIV_ALG_RSA2048) {
+	    slot->ps_alg == PIV_ALG_RSA2048 ||
+	    slot->ps_alg == PIV_ALG_RSA3072 ||
+	    slot->ps_alg == PIV_ALG_RSA4096) {
 		int nid;
 		/*
 		 * Roll up your sleeves, folks, we're going in (to the dank
@@ -5994,6 +6166,14 @@ piv_alg_from_string(const char *str, enum piv_alg *out)
 		*out = PIV_ALG_RSA2048;
 		return (ERRF_OK);
 	}
+	if (strcasecmp(str, "rsa3072") == 0) {
+		*out = PIV_ALG_RSA3072;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "rsa4096") == 0) {
+		*out = PIV_ALG_RSA4096;
+		return (ERRF_OK);
+	}
 	if (strcasecmp(str, "eccp256") == 0) {
 		*out = PIV_ALG_ECCP256;
 		return (ERRF_OK);
@@ -6012,6 +6192,14 @@ piv_alg_from_string(const char *str, enum piv_alg *out)
 		*out = PIV_ALG_SM_ECCP384;
 		return (ERRF_OK);
 	}
+	if (strcasecmp(str, "ed25519") == 0) {
+		*out = PIV_ALG_ED25519;
+		return (ERRF_OK);
+	}
+	if (strcasecmp(str, "x25519") == 0) {
+		*out = PIV_ALG_X25519;
+		return (ERRF_OK);
+	}
 	return (errf("InvalidAlgorithm", NULL, "Invalid/unknown algorithm "
 	    "name: '%s'", str));
 }
@@ -6026,6 +6214,10 @@ piv_alg_to_string(enum piv_alg alg)
 		return ("RSA1024");
 	case PIV_ALG_RSA2048:
 		return ("RSA2048");
+	case PIV_ALG_RSA3072:
+		return ("RSA3072");
+	case PIV_ALG_RSA4096:
+		return ("RSA4096");
 	case PIV_ALG_AES128:
 		return ("AES128");
 	case PIV_ALG_AES192:
@@ -6050,6 +6242,10 @@ piv_alg_to_string(enum piv_alg alg)
 		return ("SM-CS2-ECCP256");
 	case PIV_ALG_SM_ECCP384:
 		return ("SM-CS7-ECCP384");
+	case PIV_ALG_ED25519:
+		return ("ED25519");
+	case PIV_ALG_X25519:
+		return ("X25519");
 	default:
 		return (NULL);
 	}
