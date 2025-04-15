@@ -2642,10 +2642,26 @@ check_select_key(void)
 
 	/* YubicoPIV 5.7 and later default to AES192 admin key. */
 	if (piv_token_is_ykpiv(selk) &&
-	    ykpiv_version_compare(selk, 5, 7, 0) >= 0 &&
-	    admin_key == DEFAULT_ADMIN_KEY &&
-	    key_alg == PIV_ALG_3DES) {
-		key_alg = PIV_ALG_AES192;
+	    ykpiv_version_compare(selk, 5, 4, 0) >= 0) {
+		enum piv_alg alg;
+		boolean_t is_default;
+
+		if ((err = piv_txn_begin(selk)))
+			return;
+		assert_select(selk);
+
+		err = ykpiv_admin_auth_info(selk, &alg, &is_default, NULL);
+		if (err == ERRF_OK) {
+			key_alg = alg;
+			if (is_default) {
+				admin_key = DEFAULT_ADMIN_KEY;
+				key_length = DEFAULT_KEY_LENGTH;
+			}
+		} else {
+			errf_free(err);
+		}
+
+		piv_txn_end(selk);
 	}
 }
 
@@ -3105,9 +3121,6 @@ main(int argc, char *argv[])
 		usage();
 	}
 
-	if (key_new_alg == 0)
-		key_new_alg = key_alg;
-
 	const char *op = argv[optind++];
 
 	piv_ctx = piv_open();
@@ -3120,6 +3133,9 @@ main(int argc, char *argv[])
 	} else if (err) {
 		errfx(EXIT_IO_ERROR, err, "failed to initialise libpcsc");
 	}
+
+	if (key_new_alg == 0)
+		key_new_alg = key_alg;
 
 	if (strcmp(op, "list") == 0) {
 		err = piv_enumerate(piv_ctx, &ks);

@@ -666,6 +666,23 @@ errf_t *piv_write_cert(struct piv_token *tk, enum piv_slotid slotid,
     const uint8_t *data, size_t datalen, uint flags);
 
 /*
+ * Uses the YubicoPIV GET METADATA extension command to request the state of the
+ * admin key slot (9b), including which algorithm it uses and whether it is set
+ * to the default value.
+ *
+ * This is particularly useful on YubicoPIV > 5.7.x where the default admin key
+ * algorithm has changed to AES-192.
+ *
+ * Errors:
+ *  - IOError: general card communication failure
+ *  - NotSupportedError: the GET METADATA command isn't supported
+ *  - APDUError: other card error
+ */
+MUST_CHECK
+errf_t *ykpiv_admin_auth_info(struct piv_token *tk, enum piv_alg *alg,
+    boolean_t *is_default, enum ykpiv_touch_policy *touchpol);
+
+/*
  * Writes a file object on the PIV token by its bare tag number.
  *
  * The "data" buffer should contain everything that goes inside the '53' tag

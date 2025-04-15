@@ -2670,6 +2670,133 @@ piv_generate(struct piv_token *pt, enum piv_slotid slotid, enum piv_alg alg,
 	return (piv_generate_common(pt, apdu, tlv, alg, slotid, pubkey));
 }
 
+errf_t *
+ykpiv_admin_auth_info(struct piv_token *pt, enum piv_alg *palg,
+    boolean_t *pis_default, enum ykpiv_touch_policy *ptouchpol)
+{
+	struct apdu *apdu;
+	struct tlv_state *tlv = NULL;
+	errf_t *err;
+	uint tag;
+	enum piv_alg alg = PIV_ALG_3DES;
+	enum ykpiv_touch_policy touchpol = YKPIV_TOUCH_DEFAULT;
+	boolean_t is_default = B_FALSE;
+	uint8_t v;
+
+	VERIFY(pt->pt_intxn);
+
+	/* Reject if this isn't a YubicoPIV card. */
+	if (!pt->pt_ykpiv)
+		return (argerrf("pt", "a YubicoPIV-compatible token", "not"));
+	if (ykpiv_version_compare(pt, 5, 3, 0) == -1) {
+		return (argerrf("pt", "GET_METADATA only on YubicoPIV "
+		    "version >=5.3", "not supported by this device (v%d.%d.%d)",
+		    pt->pt_ykver[0], pt->pt_ykver[1], pt->pt_ykver[2]));
+	}
+
+	apdu = piv_apdu_make(CLA_ISO, INS_GET_METADATA, 0x00, PIV_SLOT_ADMIN);
+
+	err = piv_apdu_transceive_chain(pt, apdu);
+	if (err) {
+		err = ioerrf(err, pt->pt_rdrname);
+		goto out;
+	}
+
+	if (apdu->a_sw == SW_NO_ERROR ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_NO_CHANGE_00 ||
+	    (apdu->a_sw & 0xFF00) == SW_WARNING_00) {
+		tlv = tlv_init(apdu->a_reply.b_data, apdu->a_reply.b_offset,
+		    apdu->a_reply.b_len);
+		while (!tlv_at_end(tlv)) {
+			if ((err = tlv_read_tag(tlv, &tag)))
+				goto invdata;
+			switch (tag) {
+			case 0x01:
+				if (tlv_rem(tlv) != 1) {
+					err = errf("LengthError", NULL,
+					    "ykpiv metadata tag 0x%02x has "
+					    "incorrect length: %d", tag,
+					    tlv_rem(tlv));
+					goto invdata;
+				}
+				if ((err = tlv_read_u8(tlv, &v)))
+					goto invdata;
+				alg = v;
+				if ((err = tlv_end(tlv)))
+					goto invdata;
+				break;
+			case 0x02:
+				if (tlv_rem(tlv) != 2) {
+					err = errf("LengthError", NULL,
+					    "ykpiv metadata tag 0x%02x has "
+					    "incorrect length: %d", tag,
+					    tlv_rem(tlv));
+					goto invdata;
+				}
+				if ((err = tlv_read_u8(tlv, &v)))
+					goto invdata;
+				if ((err = tlv_read_u8(tlv, &v)))
+					goto invdata;
+				touchpol = v;
+				if ((err = tlv_end(tlv)))
+					goto invdata;
+				break;
+			case 0x05:
+				if (tlv_rem(tlv) != 1) {
+					err = errf("LengthError", NULL,
+					    "ykpiv metadata tag 0x%02x has "
+					    "incorrect length: %d", tag,
+					    tlv_rem(tlv));
+					goto invdata;
+				}
+				if ((err = tlv_read_u8(tlv, &v)))
+					goto invdata;
+				if (v != 0 && v != 1) {
+					err = errf("ValueError", NULL,
+					    "ykpiv metadata tag 0x%02x has "
+					    "invalid value: %d", tag, v);
+					goto invdata;
+				}
+				is_default = v;
+				if ((err = tlv_end(tlv)))
+					goto invdata;
+				break;
+			default:
+				tlv_skip(tlv);
+			}
+		}
+		err = NULL;
+
+	} else if (apdu->a_sw == SW_FUNC_NOT_SUPPORTED) {
+		err = notsuperrf(swerrf("YK_INS_GET_METADATA", apdu->a_sw),
+		    pt->pt_rdrname, "key slot 0x9B");
+
+	} else {
+		err = swerrf("YK_INS_GET_METADATA", apdu->a_sw);
+		bunyan_log(BNY_DEBUG, "unexpected card error",
+		    "reader", BNY_STRING, pt->pt_rdrname,
+		    "error", BNY_ERF, err, NULL);
+	}
+
+	if (palg != NULL)
+		*palg = alg;
+	if (pis_default != NULL)
+		*pis_default = is_default;
+	if (ptouchpol != NULL)
+		*ptouchpol = touchpol;
+
+out:
+	tlv_free(tlv);
+	piv_apdu_free(apdu);
+	return (err);
+
+invdata:
+	tlv_abort(tlv);
+	err = invderrf(err, pt->pt_rdrname);
+	debug_dump(err, apdu);
+	goto out;
+}
+
 /*
  * Documented at
  * https://developers.yubico.com/PIV/Introduction/Yubico_extensions.html
