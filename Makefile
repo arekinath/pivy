@@ -31,7 +31,7 @@ libdir		?= $(prefix)/lib
 binowner	?= root
 bingroup	?= wheel
 
-VERSION		= 0.11.2
+VERSION		= 0.12.0
 
 CBMC		?= cbmc
 

@@ -1,3 +1,24 @@
+pivy (0.12.0-1) UNRELEASED; urgency=medium
+
+  * piv: add support for extended-length APDUs
+  * piv: add support for Ed25519 keys, RSA3072/4096 with YubicoPIV 5.7.x
+  * pivy-tool: better support new AES-192 default admin key in YubicoPIV 5.7
+  * pivy-tool: add delete-cert command
+  * pivy-box: stop -b batch mode prompting for PIN
+  * pivy-box, pivy-agent: better logging of ecdh operations for audit
+  * pivy-agent: fix notify-send options and newlines for GNOME 46+
+  * pivy-zfs, pivy-ca: exit cleanly on invalid options
+  * pivy-zfs: compatibility with openzfs 2.3.x
+  * pivy-tool: init command crash on error
+  * pivy-ca: include SPKI extension on subordinate CAs
+  * pivy-ca: add supprot for cert policies extension
+  * certs: add keyEncipherment to RSA computer certs, support for IKE EKU
+  * certs: support for multiple UPN SANs
+  * update bundled libressl to 3.9.2, openssh to 9.9p1
+  * CBMC formal verification of some components (TLV parser, PIV RTS, cardcap, CHUID, FASC-N parser)
+
+ -- Alex Wilson <alex@cooperi.net>  Wed, 16 Apr 2025 06:12:06 +0000
+
 pivy (0.11.2-1) UNRELEASED; urgency=medium
 
   * piv: better error messages on invalid PIN cowardice
