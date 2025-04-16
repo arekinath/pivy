@@ -389,6 +389,11 @@ boolean_t piv_token_has_auth(const struct piv_token *token, enum piv_pin auth);
 boolean_t piv_token_has_vci(const struct piv_token *token);
 
 /*
+ * Returns true if the card is using extended length APDUs with T=1.
+ */
+boolean_t piv_token_has_xlen_apdu(const struct piv_token *token);
+
+/*
  * Returns the number of key history slots in use on the token which have
  * certs stored on the actual card itself.
  */

@@ -661,6 +661,10 @@ cmd_list(void)
 			    temp[0], temp[1], temp[2], temp[3],
 			    temp[4], temp[5], temp[6], temp[7]);
 		}
+		if (piv_token_has_xlen_apdu(pk)) {
+			printf("%10s: supports extended-length APDUs\n",
+			    "xapdu");
+		}
 		if (piv_token_is_ykpiv(pk)) {
 			temp = ykpiv_token_version(pk);
 			printf("%10s: implements YubicoPIV extensions "
@@ -757,11 +761,11 @@ cmd_list(void)
 		}
 
 		printf("%10s:\n", "slots");
-		printf("%10s %-3s  %-6s  %-4s  %-30s\n", "", "ID", "TYPE",
+		printf("%10s %-3s  %-7s  %-4s  %-30s\n", "", "ID", "TYPE",
 		    "BITS", "CERTIFICATE");
 		while ((slot = piv_slot_next(pk, slot)) != NULL) {
 			struct sshkey *pubkey = piv_slot_pubkey(slot);
-			printf("%10s %-3x  %-6s  %-4u  %-30s\n", "",
+			printf("%10s %-3x  %-7s  %-4u  %-30s\n", "",
 			    piv_slot_id(slot), sshkey_type(pubkey),
 			    sshkey_size(pubkey), piv_slot_subject(slot));
 		}
@@ -2828,6 +2832,11 @@ again9d:
 		return (err);
 
 	fprintf(stderr, "Generating final admin key...\n");
+	key_new_alg = PIV_ALG_3DES;
+	if (piv_token_is_ykpiv(selk) &&
+	    ykpiv_version_compare(selk, 5, 4, 0) >= 0) {
+		key_new_alg = PIV_ALG_AES192;
+	}
 	size_t admin_key_len = len_for_admin_alg(key_new_alg);
 	uint8_t *admin_key = malloc(admin_key_len);
 	char *hex;
@@ -3155,9 +3164,6 @@ main(int argc, char *argv[])
 		errfx(EXIT_IO_ERROR, err, "failed to initialise libpcsc");
 	}
 
-	if (key_new_alg == 0)
-		key_new_alg = key_alg;
-
 	if (strcmp(op, "list") == 0) {
 		err = piv_enumerate(piv_ctx, &ks);
 		if (err)
@@ -3188,10 +3194,23 @@ main(int argc, char *argv[])
 		if (optind >= argc)
 			usage();
 
+		check_select_key();
+		if (key_new_alg == 0)
+			key_new_alg = key_alg;
+
 		if (strcmp(argv[optind], "default") == 0) {
+			if (piv_token_is_ykpiv(selk) &&
+			    ykpiv_version_compare(selk, 5, 7, 0) >= 0) {
+				key_new_alg = PIV_ALG_AES192;
+			}
 			new_admin = (uint8_t *)DEFAULT_ADMIN_KEY;
 			len = DEFAULT_KEY_LENGTH;
 		} else if (strcmp(argv[optind], "random") == 0) {
+			if (key_new_alg == 0 &&
+			    piv_token_is_ykpiv(selk) &&
+			    ykpiv_version_compare(selk, 5, 7, 0) >= 0) {
+				key_new_alg = PIV_ALG_AES192;
+			}
 			len = len_for_admin_alg(key_new_alg);
 			new_admin = malloc(len);
 			VERIFY(new_admin != NULL);
@@ -3218,7 +3237,7 @@ main(int argc, char *argv[])
 			    "length (%d given)", len_for_admin_alg(key_new_alg),
 			    len);
 		}
-		check_select_key();
+
 		err = cmd_set_admin(new_admin, len);
 
 	} else if (strcmp(op, "change-puk") == 0) {

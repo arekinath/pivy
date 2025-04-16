@@ -474,6 +474,13 @@ piv_token_has_vci(const struct piv_token *token)
 	return (token->pt_vci);
 }
 
+boolean_t
+piv_token_has_xlen_apdu(const struct piv_token *token)
+{
+	return (token->pt_xapdu == XLEN_YES ||
+	    token->pt_xselect == XLEN_YES);
+}
+
 uint
 piv_token_keyhistory_oncard(const struct piv_token *token)
 {
@@ -1354,6 +1361,8 @@ piv_find(struct piv_ctx *ctx, const uint8_t *guid, size_t guidlen,
 			continue;
 		}
 
+		key->pt_xapdu_cmd_max = 0xFF;
+		key->pt_xapdu_resp_max = 0x100;
 		key->pt_ctx = ctx;
 		key->pt_cardhdl = card;
 		key->pt_rdrname = strdup(thisrdr);
