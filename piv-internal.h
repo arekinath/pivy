@@ -215,6 +215,9 @@ struct piv_rts {
 	char 		*pr_app_uri;
 	uint 		 pr_alg_count;
 	enum piv_alg	 pr_algs[PIV_RTS_MAX_ALGS];
+	boolean_t	 pr_has_xlen_info;
+	size_t		 pr_max_cmd_apdu;
+	size_t		 pr_max_resp_apdu;
 };
 
 errf_t *piv_decode_rts(struct piv_rts *, const struct apdubuf *);

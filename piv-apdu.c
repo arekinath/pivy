@@ -60,6 +60,7 @@ enum piv_sel_tag {
 	PIV_TAG_APP_LABEL = 0x50,
 	PIV_TAG_URI = 0x5F50,
 	PIV_TAG_ALGS = 0xAC,
+	ISO_TAG_XLEN = 0x7F66,
 };
 
 errf_t *
@@ -164,6 +165,48 @@ piv_decode_rts(struct piv_rts *rts, const struct apdubuf *buf)
 
 	if ((rv = tlv_end(tlv)))
 		goto out;
+
+	while (!tlv_at_end(tlv)) {
+		if ((rv = tlv_read_tag(tlv, &tag)))
+			goto out;
+		switch (tag) {
+		case ISO_TAG_XLEN:
+			if ((rv = tlv_read_tag(tlv, &tag)))
+				goto out;
+			if (tag != 0x02) {
+				rv = tagerrf("INS_SELECT", tag);
+				goto out;
+			}
+			rv = tlv_read_u8to32(tlv, &uval);
+			if (rv)
+				goto out;
+			if ((rv = tlv_end(tlv)))
+				goto out;
+			rts->pr_max_cmd_apdu = uval;
+
+			if ((rv = tlv_read_tag(tlv, &tag)))
+				goto out;
+			if (tag != 0x02) {
+				rv = tagerrf("INS_SELECT", tag);
+				goto out;
+			}
+			rv = tlv_read_u8to32(tlv, &uval);
+			if (rv)
+				goto out;
+			if ((rv = tlv_end(tlv)))
+				goto out;
+			rts->pr_max_resp_apdu = uval;
+
+			if ((rv = tlv_end(tlv)))
+				goto out;
+
+			rts->pr_has_xlen_info = B_TRUE;
+			break;
+		default:
+			rv = tagerrf("INS_SELECT", tag);
+			goto out;
+		}
+	}
 
 	if (!tlv_at_root_end(tlv)) {
 		rv = errf("LengthError", NULL, "PIV RTS response data "

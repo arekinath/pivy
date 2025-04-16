@@ -79,7 +79,7 @@ struct apdu {
 	enum iso_ins a_ins;
 	uint8_t a_p1;
 	uint8_t a_p2;
-	uint8_t a_le;
+	size_t a_le;
 	boolean_t a_xlen;
 
 	struct apdubuf a_cmd;
@@ -112,6 +112,12 @@ struct piv_slot {
 	enum piv_slot_auth ps_auth;
 
 	boolean_t ps_got_metadata;
+};
+
+enum piv_token_xapdu_state {
+	XLEN_UNKNOWN = 0,
+	XLEN_YES,
+	XLEN_NO,
 };
 
 struct piv_token {
@@ -151,7 +157,11 @@ struct piv_token {
 	/*
 	 * Are extended length APDUs working?
 	 */
-	boolean_t pt_xapdu;
+	enum piv_token_xapdu_state pt_xselect;
+	enum piv_token_xapdu_state pt_xapdu;
+	/* Max length of extended length APDUs */
+	size_t pt_xapdu_cmd_max;
+	size_t pt_xapdu_resp_max;
 
 	/*
 	 * Our GUID. This can either be the GUID from our CHUID file, or if
@@ -656,6 +666,20 @@ ykpiv_get_version(struct piv_token *pk)
 		}
 		pk->pt_ykpiv = B_TRUE;
 		bcopy(reply, pk->pt_ykver, 3);
+
+		if (ykpiv_version_compare(pk, 5, 0, 0) >= 0 &&
+		    pk->pt_app_label == NULL &&
+		    pk->pt_xapdu == XLEN_YES &&
+		    pk->pt_xapdu_cmd_max < 0xB00) {
+			/*
+			 * YubiKeys on 5.x or later lack the xlen APDU info
+			 * in RTS, but they support larger than the
+			 * conservative defaults we set in piv_select().
+			 */
+			pk->pt_xapdu_cmd_max = 0xB00;
+			pk->pt_xapdu_resp_max = 0x10000;
+		}
+
 		err = NULL;
 	} else {
 		err = notsuperrf(swerrf("INS_YK_GET_VER", apdu->a_sw),
@@ -1169,6 +1193,8 @@ piv_enumerate(struct piv_ctx *ctx, struct piv_token **tokens)
 		}
 
 		key = calloc(1, sizeof (struct piv_token));
+		key->pt_xapdu_cmd_max = 0xFF;
+		key->pt_xapdu_resp_max = 0x100;
 		key->pt_ctx = ctx;
 		key->pt_lib_next = ctx->pc_tokens;
 		if (ctx->pc_tokens != NULL)
@@ -1665,11 +1691,11 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 		*outlen = 6;
 		return (buf);
 	} else if (d->b_data == NULL) {
-		buf[4] = apdu->a_le;
+		buf[4] = (apdu->a_le > 0xFF) ? 0x00 : apdu->a_le;
 		*outlen = 5;
 		return (buf);
 	} else if (apdu->a_xlen || d->b_len > 256) {
-		VERIFY(d->b_len <= 65536 && d->b_len > 0);
+		VERIFY(d->b_len <= 0x10000 && d->b_len > 0);
 		buf[4] = 0;
 		buf[5] = (d->b_len & 0xFF00) >> 8;
 		buf[6] = d->b_len & 0xFF;
@@ -1689,7 +1715,8 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 		if (apdu->a_cls & CLA_CHAIN) {
 			*outlen = d->b_len + 5;
 		} else {
-			buf[d->b_len + 5] = apdu->a_le;
+			buf[d->b_len + 5] = (apdu->a_le > 0xFF) ? 0x00 :
+			    apdu->a_le;
 			*outlen = d->b_len + 6;
 		}
 		return (buf);
@@ -1814,6 +1841,7 @@ piv_apdu_transceive(struct piv_token *key, struct apdu *apdu)
 	    "sw", BNY_UINT, (uint)apdu->a_sw,
 	    "sw_name", BNY_STRING, sw_to_name(apdu->a_sw),
 	    "lr", BNY_UINT, (uint)r->b_len,
+	    "xlen", BNY_STRING, apdu->a_xlen ? "true" : "false",
 	    NULL);
 
 	return (ERRF_OK);
@@ -1830,13 +1858,11 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	size_t offset;
 	size_t rem;
 	boolean_t gotok = B_FALSE;
-	size_t max = 0xFF;
+	size_t max = pk->pt_xapdu_cmd_max;
 
 	VERIFY(pk->pt_intxn == B_TRUE);
 
-	apdu->a_xlen = pk->pt_xapdu;
-	if (apdu->a_xlen)
-		max = 0xFFFF;
+	apdu->a_xlen = (pk->pt_xapdu == XLEN_YES);
 
 	/* First, send the command. */
 	rem = apdu->a_cmd.b_len;
@@ -1848,13 +1874,15 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 		} else {
 			apdu->a_cls &= ~CLA_CHAIN;
 			apdu->a_cmd.b_len = rem;
-			apdu->a_le = max;
+			max = pk->pt_xapdu_resp_max;
+			apdu->a_le = 0;
 		}
 again:
 		rv = piv_apdu_transceive(pk, apdu);
 		if (errf_caused_by(rv, "PCSCError") &&
 		    apdu->a_xlen && max > 256) {
 			max >>= 1;
+			pk->pt_xapdu_cmd_max = max;
 			bunyan_log(BNY_DEBUG, "got an error on a large xlen"
 			    "apdu, shrinking max cmd apdu len",
 			    "new_max", BNY_SIZE_T, max, NULL);
@@ -2041,18 +2069,36 @@ piv_select(struct piv_token *tk)
 {
 	errf_t *rv = ERRF_OK;
 	struct apdu *apdu;
+	enum piv_token_xapdu_state xapdu;
 
 	VERIFY(tk->pt_intxn == B_TRUE);
 
 	apdu = piv_apdu_make(CLA_ISO, INS_SELECT, SEL_APP_AID, 0);
+
+	/*
+	 * If this is a T=1 card, and this is the first time we've talked to it,
+	 * try an ext-len SELECT APDU and see if it works.
+	 */
+	xapdu = tk->pt_xapdu;
+	if (tk->pt_xselect == XLEN_UNKNOWN &&
+	    tk->pt_proto == SCARD_PROTOCOL_T1) {
+		bunyan_log(BNY_DEBUG,
+		    "probing card for xlen SELECT apdu support",
+		    "reader", BNY_STRING, tk->pt_rdrname, NULL);
+		tk->pt_xapdu = XLEN_YES;
+	} else if (tk->pt_xselect == XLEN_NO) {
+		tk->pt_xapdu = XLEN_NO;
+	}
+
+again:
+	/*
+	 * Set this up each time, because apdu_transceive_chain can alter
+	 * the cmd buf offset and NULL its data.
+	 */
+	apdu->a_cmd.b_offset = 0;
 	apdu->a_cmd.b_data = (uint8_t *)AID_PIV;
 	apdu->a_cmd.b_len = sizeof (AID_PIV);
 
-	/* If this is a T=1 card, try ext len APDUs and see if they work. */
-	if (tk->pt_proto == SCARD_PROTOCOL_T1)
-		tk->pt_xapdu = B_TRUE;
-
-again:
 	rv = piv_apdu_transceive_chain(tk, apdu);
 	if (rv) {
 		rv = ioerrf(rv, tk->pt_rdrname);
@@ -2065,19 +2111,70 @@ again:
 		struct piv_rts rts;
 		bzero(&rts, sizeof (rts));
 		rv = piv_decode_rts(&rts, &apdu->a_reply);
+		/*
+		 * Some cards will interpret the ext-len SELECT as a zero-length
+		 * SELECT and return an interindustry DO instead (e.g. the 6F
+		 * tagged FCI template).
+		 *
+		 * If we get something strange, reset and try again without xlen.
+		 */
+		if (rv && errf_caused_by(rv, "PIVTagError") &&
+		    tk->pt_xselect != XLEN_NO) {
+			errf_free(rv);
+			tk->pt_xselect = XLEN_NO;
+			tk->pt_xapdu = XLEN_NO;
+			xapdu = XLEN_UNKNOWN;
+			goto again;
+		}
 		if (rv)
 			goto invdata;
 		tk->pt_app_label = rts.pr_app_label;
 		tk->pt_app_uri = rts.pr_app_uri;
 		tk->pt_alg_count = rts.pr_alg_count;
 		bcopy(rts.pr_algs, tk->pt_algs, sizeof (tk->pt_algs));
+
+		if (tk->pt_xapdu == XLEN_YES &&
+		    tk->pt_xselect == XLEN_UNKNOWN) {
+			tk->pt_xselect = XLEN_YES;
+			xapdu = XLEN_YES;
+			/*
+			 * Defaults, chosen to be safe for most JavaCard
+			 * implementations. If a card supports more than this
+			 * they should probably include an ext-len info tag
+			 * in their RTS.
+			 */
+			tk->pt_xapdu_cmd_max = 0x7FF;
+			tk->pt_xapdu_resp_max = 0x800;
+		}
+
+		if (tk->pt_proto != SCARD_PROTOCOL_T1 &&
+		    rts.pr_has_xlen_info) {
+			bunyan_log(BNY_WARN, "piv_select: card advertises "
+			    "extended-length APDU support but we aren't "
+			    "connected with T=1, ignoring",
+			    "reader", BNY_STRING, tk->pt_rdrname, NULL);
+		} else if (tk->pt_proto == SCARD_PROTOCOL_T1 &&
+		    rts.pr_has_xlen_info &&
+		    rts.pr_max_cmd_apdu > 256 &&
+		    rts.pr_max_resp_apdu > 256) {
+			bunyan_log(BNY_DEBUG, "got ext-len apdu info from RTS",
+			    "reader", BNY_STRING, tk->pt_rdrname,
+			    "cmd_max", BNY_SIZE_T, rts.pr_max_cmd_apdu,
+			    "resp_max", BNY_SIZE_T, rts.pr_max_resp_apdu,
+			    NULL);
+			tk->pt_xapdu = (xapdu = XLEN_YES);
+			tk->pt_xapdu_cmd_max = rts.pr_max_cmd_apdu;
+			tk->pt_xapdu_resp_max = rts.pr_max_resp_apdu;
+		}
 		rv = ERRF_OK;
 
-	} else if (tk->pt_xapdu == B_TRUE && (apdu->a_sw == SW_WRONG_LENGTH ||
-	    apdu->a_sw == SW_INS_NOT_SUP)) {
+	} else if (tk->pt_xselect != XLEN_NO &&
+	    (apdu->a_sw == SW_WRONG_LENGTH || apdu->a_sw == SW_INS_NOT_SUP)) {
 		bunyan_log(BNY_DEBUG, "card does not seem to support extended"
-		    " length APDUs, disabling", NULL);
-		tk->pt_xapdu = B_FALSE;
+		    " length select APDUs, trying normal",
+		    "reader", BNY_STRING, tk->pt_rdrname, NULL);
+		tk->pt_xselect = XLEN_NO;
+		tk->pt_xapdu = XLEN_NO;
 		goto again;
 
 	} else {
@@ -2089,6 +2186,7 @@ again:
 
 out:
 	piv_apdu_free(apdu);
+	tk->pt_xapdu = xapdu;
 	return (rv);
 
 invdata:
