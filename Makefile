@@ -1,9 +1,9 @@
 all: pivy-tool pivy-agent pivy-box
 
-LIBRESSL_VER	= 3.9.2
+LIBRESSL_VER	= 4.0.0
 LIBRESSL_URL	= https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$(LIBRESSL_VER).tar.gz
 
-OPENSSH_VER	= 9.9p1
+OPENSSH_VER	= 10.0p1
 OPENSSH_URL	= https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-$(OPENSSH_VER).tar.gz
 
 OPENSSH		= $(CURDIR)/openssh

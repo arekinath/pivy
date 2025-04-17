@@ -2051,7 +2051,7 @@ cmd_req_cert(uint slotid)
 	req = X509_REQ_new();
 	VERIFY(req != NULL);
 
-	VERIFY(X509_REQ_set_version(req, 1) == 1);
+	VERIFY(X509_REQ_set_version(req, 0) == 1);
 
 	if ((err = sshkey_to_evp_pkey(pub, &pkey))) {
 		X509_REQ_free(req);

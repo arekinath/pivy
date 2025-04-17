@@ -1270,7 +1270,7 @@ populate_common(struct cert_var_scope *cs, X509 *cert, char *basic, char *ku,
 
 	err = scope_eval(cs, "cert_policies", &policies);
 	if (err == ERRF_OK) {
-		OPENSSL_load_builtin_modules();
+		OPENSSL_config(NULL);
 
 		err = load_ossl_config("piv_ca", cs, &config);
 		if (err != ERRF_OK)
@@ -2107,7 +2107,7 @@ populate_ca(struct cert_var_scope *cs, X509 *cert)
 	ASN1_OCTET_STRING *kid = NULL;
 	int rc;
 
-	OPENSSL_load_builtin_modules();
+	OPENSSL_config(NULL);
 
 	err = load_ossl_config("piv_ca", cs, &config);
 	if (err != ERRF_OK) {
@@ -2218,7 +2218,7 @@ rpopulate_common(struct cert_var_scope *cs, X509_REQ *req,
 
 	err = scope_eval(cs, "cert_policies", &policies);
 	if (err == ERRF_OK) {
-		OPENSSL_load_builtin_modules();
+		OPENSSL_config(NULL);
 
 		err = load_ossl_config("piv_ca", cs, &config);
 		if (err != ERRF_OK)
@@ -2726,7 +2726,7 @@ rpopulate_ca(struct cert_var_scope *cs, X509_REQ *req)
 	exts = sk_X509_EXTENSION_new_null();
 	VERIFY(exts != NULL);
 
-	OPENSSL_load_builtin_modules();
+	OPENSSL_config(NULL);
 
 	err = load_ossl_config("piv_ca", cs, &config);
 	if (err != ERRF_OK)
