@@ -606,7 +606,7 @@ cmd_list(void)
 			    piv_token_has_chuid(pk) ? "true" : "false",
 			    piv_token_is_ykpiv(pk) ? "true" : "false",
 			    ver[0], ver[1], ver[2],
-			    ykpiv_token_has_serial(pk) ?
+			    piv_token_is_ykpiv(pk) && ykpiv_token_has_serial(pk) ?
 			    ykpiv_token_serial(pk) : 0);
 			for (i = 0; i < piv_token_nalgs(pk); ++i) {
 				enum piv_alg alg = piv_token_alg(pk, i);

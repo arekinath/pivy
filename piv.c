@@ -547,7 +547,8 @@ ykpiv_version_compare(const struct piv_token *token, uint8_t major,
 boolean_t
 ykpiv_token_has_serial(const struct piv_token *token)
 {
-	VERIFY(token->pt_ykpiv);
+	if (!token->pt_ykpiv)
+		return (B_FALSE);
 	return (token->pt_ykserial_valid);
 }
 
@@ -1694,16 +1695,11 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 	buf[1] = apdu->a_ins;
 	buf[2] = apdu->a_p1;
 	buf[3] = apdu->a_p2;
-	if (d->b_data == NULL && apdu->a_xlen) {
-		buf[4] = (apdu->a_le & 0xFF00) >> 8;
-		buf[5] = apdu->a_le & 0xFF;
-		*outlen = 6;
-		return (buf);
-	} else if (d->b_data == NULL) {
+	if (d->b_data == NULL) {
 		buf[4] = (apdu->a_le > 0xFF) ? 0x00 : apdu->a_le;
 		*outlen = 5;
 		return (buf);
-	} else if (apdu->a_xlen || d->b_len > 256) {
+	} else if (d->b_len > 256 || (apdu->a_xlen && d->b_len > 0)) {
 		VERIFY(d->b_len <= 0x10000 && d->b_len > 0);
 		buf[4] = 0;
 		buf[5] = (d->b_len & 0xFF00) >> 8;
@@ -1876,6 +1872,7 @@ piv_apdu_transceive_chain(struct piv_token *pk, struct apdu *apdu)
 	/* First, send the command. */
 	rem = apdu->a_cmd.b_len;
 	do {
+rebuild:
 		/* Is there another block needed in the chain? */
 		if (rem > max) {
 			apdu->a_cls |= CLA_CHAIN;
@@ -1895,7 +1892,7 @@ again:
 			bunyan_log(BNY_DEBUG, "got an error on a large xlen"
 			    "apdu, shrinking max cmd apdu len",
 			    "new_max", BNY_SIZE_T, max, NULL);
-			continue;
+			goto rebuild;
 		} else if (rv) {
 			return (rv);
 		}
