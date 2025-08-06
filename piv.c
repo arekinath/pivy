@@ -1697,7 +1697,18 @@ apdu_to_buffer(struct apdu *apdu, uint *outlen)
 	buf[1] = apdu->a_ins;
 	buf[2] = apdu->a_p1;
 	buf[3] = apdu->a_p2;
-	if (d->b_data == NULL) {
+	if (d->b_data == NULL && apdu->a_xlen) {
+		buf[4] = 0;
+		if (apdu->a_le >= 0xFFFF) {
+			buf[5] = 0;
+			buf[6] = 0;
+		} else {
+			buf[5] = (apdu->a_le & 0xFF00) >> 8;
+			buf[6] = apdu->a_le & 0xFF;
+		}
+		*outlen = 7;
+		return (buf);
+	} else if (d->b_data == NULL) {
 		buf[4] = (apdu->a_le > 0xFF) ? 0x00 : apdu->a_le;
 		*outlen = 5;
 		return (buf);
