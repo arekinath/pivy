@@ -965,6 +965,8 @@ cmd_init(void)
 	chuid = piv_chuid_new();
 
 	fascn = piv_fascn_zero();
+	/* opensc likes this */
+	piv_fascn_set_agency_code(fascn, "9999");
 
 	err = scope_eval(cvroot, "agency_code", &tmp);
 	if (err == ERRF_OK) {
@@ -2677,11 +2679,18 @@ check_select_key(void)
 
 		err = ykpiv_admin_auth_info(selk, &alg, &is_default, NULL);
 		if (err == ERRF_OK) {
-			key_alg = alg;
-			if (is_default) {
-				admin_key = DEFAULT_ADMIN_KEY;
-				key_length = DEFAULT_KEY_LENGTH;
+			if (key_alg != alg) {
+				bunyan_log(BNY_DEBUG, "changing admin key alg "
+				    "based on 9b metadata",
+				    "old_alg", BNY_STRING, piv_alg_to_string(key_alg),
+				    "new_alg", BNY_STRING, piv_alg_to_string(alg),
+				    "is_default", BNY_INT, (int)is_default,
+				    NULL);
 			}
+			key_alg = alg;
+			key_length = len_for_admin_alg(key_alg);
+			if (is_default)
+				admin_key = DEFAULT_ADMIN_KEY;
 		} else {
 			errf_free(err);
 		}
