@@ -675,6 +675,7 @@ ykpiv_get_version(struct piv_token *pk)
 		pk->pt_ykpiv = B_TRUE;
 		bcopy(reply, pk->pt_ykver, 3);
 
+#if !defined(__APPLE__)
 		if (ykpiv_version_compare(pk, 5, 0, 0) >= 0 &&
 		    pk->pt_app_label == NULL &&
 		    pk->pt_xapdu == XLEN_YES &&
@@ -687,6 +688,7 @@ ykpiv_get_version(struct piv_token *pk)
 			pk->pt_xapdu_cmd_max = 0xB00;
 			pk->pt_xapdu_resp_max = 0x10000;
 		}
+#endif
 
 		err = NULL;
 	} else {
@@ -2081,6 +2083,7 @@ piv_select(struct piv_token *tk)
 
 	apdu = piv_apdu_make(CLA_ISO, INS_SELECT, SEL_APP_AID, 0);
 
+#if !defined(__APPLE__)
 	/*
 	 * If this is a T=1 card, and this is the first time we've talked to it,
 	 * try an ext-len SELECT APDU and see if it works.
@@ -2095,6 +2098,7 @@ piv_select(struct piv_token *tk)
 	} else if (tk->pt_xselect == XLEN_NO) {
 		tk->pt_xapdu = XLEN_NO;
 	}
+#endif
 
 again:
 	/*
