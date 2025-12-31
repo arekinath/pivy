@@ -4102,7 +4102,8 @@ read_all_aborts_on(errf_t *err)
 	return (err &&
 	    !errf_caused_by(err, "NotFoundError") &&
 	    !errf_caused_by(err, "PermissionError") &&
-	    !errf_caused_by(err, "NotSupportedError"));
+	    !errf_caused_by(err, "NotSupportedError") &&
+	    !errf_caused_by(err, "InvalidDataError"));
 }
 
 errf_t *
