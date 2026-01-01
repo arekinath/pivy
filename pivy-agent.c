@@ -1293,7 +1293,8 @@ process_request_identities(socket_entry_t *e)
 
 	n = 0;
 	while ((slot = piv_slot_next(selk, slot)) != NULL) {
-		if (!is_slot_enabled(slot))
+		if (!is_slot_enabled(slot) ||
+                    piv_slot_pubkey(slot) == NULL)
 			continue;
 		++n;
 	}
@@ -1303,7 +1304,8 @@ process_request_identities(socket_entry_t *e)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 	while ((slot = piv_slot_next(selk, slot)) != NULL) {
-		if (piv_slot_id(slot) == PIV_SLOT_KEY_MGMT)
+		if (piv_slot_id(slot) == PIV_SLOT_KEY_MGMT ||
+                    piv_slot_pubkey(slot) == NULL)
 			continue;
 		if (!is_slot_enabled(slot))
 			continue;
@@ -1322,7 +1324,7 @@ process_request_identities(socket_entry_t *e)
 	 * to try using it.
 	 */
 	if ((slot = piv_get_slot(selk, PIV_SLOT_KEY_MGMT)) != NULL &&
-	    is_slot_enabled(slot)) {
+	    is_slot_enabled(slot) && piv_slot_pubkey(slot) != NULL) {
 		comment[0] = 0;
 		snprintf(comment, sizeof (comment), "PIV_slot_%02X %s",
 		    piv_slot_id(slot), piv_slot_subject(slot));
