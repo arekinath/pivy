@@ -2944,7 +2944,7 @@ usage(void)
 	    "Options for 'generate'/'req-cert':\n"
 	    "  -a <algo>              Choose algorithm of new key\n"
 	    "                         EC algos: eccp256, eccp384\n"
-	    "                         RSA algos: rsa1024, rsa2048\n"
+	    "                         RSA algos: rsa1024, rsa2048, rsa3072\n"
 	    "  -n <cn>                Set a CN= attribute to be used on\n"
 	    "                         the new slot's certificate\n"
 	    "  -u <upn>               Set a UPN= attribute to be used on\n"
