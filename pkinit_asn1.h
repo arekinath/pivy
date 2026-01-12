@@ -23,13 +23,11 @@ extern const ASN1_ITEM PKINIT_PRINC_it;
 extern const ASN1_ITEM PKINIT_PRINC_NAME_it;
 
 typedef struct {
-	ASN1_ENCODING enc;
 	ASN1_INTEGER *type;
 	STACK_OF(ASN1_GENERALSTRING) *parts;
 } PKINIT_PRINC_NAME;
 
 typedef struct {
-	ASN1_ENCODING enc;
 	ASN1_GENERALSTRING *realm;
 	PKINIT_PRINC_NAME *name;
 } PKINIT_PRINC;

@@ -16,11 +16,6 @@
 
 #include "pkinit_asn1.h"
 
-static const ASN1_AUX PKINIT_PRINC_NAME_aux = {
-	.flags = ASN1_AFLG_ENCODING,
-	.enc_offset = offsetof(PKINIT_PRINC_NAME, enc)
-};
-
 static const ASN1_TEMPLATE PKINIT_PRINC_NAME_seq_tt[] = {
 	{
 		.flags = ASN1_TFLG_EXPLICIT,
@@ -43,14 +38,8 @@ const ASN1_ITEM PKINIT_PRINC_NAME_it = {
 	.utype = V_ASN1_SEQUENCE,
 	.templates = PKINIT_PRINC_NAME_seq_tt,
 	.tcount = sizeof(PKINIT_PRINC_NAME_seq_tt) / sizeof(ASN1_TEMPLATE),
-	.funcs = &PKINIT_PRINC_NAME_aux,
 	.size = sizeof(PKINIT_PRINC_NAME),
 	.sname = "PKINIT_PRINC_NAME"
-};
-
-static const ASN1_AUX PKINIT_PRINC_aux = {
-	.flags = ASN1_AFLG_ENCODING,
-	.enc_offset = offsetof(PKINIT_PRINC, enc)
 };
 
 static const ASN1_TEMPLATE PKINIT_PRINC_seq_tt[] = {
@@ -75,7 +64,6 @@ const ASN1_ITEM PKINIT_PRINC_it = {
 	.utype = V_ASN1_SEQUENCE,
 	.templates = PKINIT_PRINC_seq_tt,
 	.tcount = sizeof(PKINIT_PRINC_seq_tt) / sizeof(ASN1_TEMPLATE),
-	.funcs = &PKINIT_PRINC_aux,
 	.size = sizeof(PKINIT_PRINC),
 	.sname = "PKINIT_PRINC"
 };
