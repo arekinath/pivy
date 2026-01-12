@@ -1,3 +1,13 @@
+pivy (0.12.1-1) UNRELEASED; urgency=medium
+
+  * piv: disable xlen code on MacOS since it seems to be broken
+  * piv: fix xlen headers on data-less command APDUs
+  * piv: ignore InvalidDataError on reading all certs
+  * pivy-tool: add rsa3072 to list of possible values for -a
+  * update bundled libressl to 4.0.0, openssh to 10.0p1
+
+ -- Lexi Wilson <lexi@cooperi.net>  Mon, 12 Jan 2026 00:06:59 +0000
+
 pivy (0.12.0-1) UNRELEASED; urgency=medium
 
   * piv: add support for extended-length APDUs
