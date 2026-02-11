@@ -91,6 +91,7 @@ static const uint8_t *admin_key = DEFAULT_ADMIN_KEY;
 static int key_length = DEFAULT_KEY_LENGTH;
 static enum piv_alg key_alg = PIV_ALG_3DES;
 static enum piv_alg key_new_alg = 0;
+static boolean_t user_specified_alg = B_FALSE;
 
 static enum ykpiv_pin_policy pinpolicy = YKPIV_PIN_DEFAULT;
 static enum ykpiv_touch_policy touchpolicy = YKPIV_TOUCH_DEFAULT;
@@ -171,6 +172,71 @@ len_for_admin_alg(enum piv_alg alg)
 	default:
 		return (0);
 	}
+}
+
+static const char *
+admin_alg_name(enum piv_alg alg)
+{
+	const char *name = piv_alg_to_string(alg);
+	return (name != NULL ? name : "UNKNOWN");
+}
+
+static errf_t *
+diagnose_admin_auth_failure(struct piv_token *tk, enum piv_alg attempted_alg,
+    errf_t *auth_err)
+{
+	errf_t *err;
+
+	/* Only YubicoPIV >= 5.3.0 can query algorithm */
+	if (!piv_token_is_ykpiv(tk) ||
+	    ykpiv_version_compare(tk, 5, 3, 0) < 0) {
+		return errf("AdminAuthError", auth_err,
+		    "PIV admin authentication failed with %s algorithm\n"
+		    "  Possible solutions:\n"
+		    "  1. Verify key value: pivy-tool -K <hexkey> <command>\n"
+		    "  2. Try different algorithm: pivy-tool -A AES192 <command>\n"
+		    "  3. Factory reset (DESTRUCTIVE): pivy-tool factory-reset",
+		    admin_alg_name(attempted_alg));
+	}
+
+	/* Query actual algorithm from card */
+	enum piv_alg actual_alg;
+	boolean_t is_default;
+
+	err = ykpiv_admin_auth_info(tk, &actual_alg, &is_default, NULL);
+	if (err != ERRF_OK) {
+		errf_free(err);
+		return errf("AdminAuthError", auth_err,
+		    "PIV admin authentication failed (algorithm unknown)\n"
+		    "  Attempted: %s\n"
+		    "  Possible solutions:\n"
+		    "  1. Verify key value: pivy-tool -K <hexkey> <command>\n"
+		    "  2. Try common algorithms: pivy-tool -A AES192 <command>",
+		    admin_alg_name(attempted_alg));
+	}
+
+	/* Compare algorithms */
+	if (actual_alg != attempted_alg) {
+		return errf("AlgorithmMismatch", auth_err,
+		    "Management key algorithm mismatch detected\n"
+		    "  Attempted: %s (%zu-byte key)\n"
+		    "  Card configured for: %s (%zu-byte key)\n"
+		    "  Possible solutions:\n"
+		    "  1. Retry with correct algorithm: pivy-tool -A %s <command>\n"
+		    "  2. Factory reset (DESTRUCTIVE): pivy-tool factory-reset",
+		    admin_alg_name(attempted_alg), len_for_admin_alg(attempted_alg),
+		    admin_alg_name(actual_alg), len_for_admin_alg(actual_alg),
+		    admin_alg_name(actual_alg));
+	}
+
+	/* Algorithms match, must be wrong key value */
+	return errf("AdminAuthError", auth_err,
+	    "Management key value is incorrect (algorithm %s is correct)\n"
+	    "  Possible solutions:\n"
+	    "  1. Verify key: pivy-tool -K <hexkey> <command>\n"
+	    "  2. If PINFO exists, ensure PIN is correct\n"
+	    "  3. Factory reset (DESTRUCTIVE): pivy-tool factory-reset",
+	    admin_alg_name(actual_alg));
 }
 
 static uint8_t *
@@ -845,6 +911,125 @@ out:
 }
 
 static errf_t *
+try_admin_auth_with_recovery(struct piv_token *tk, enum piv_alg *used_alg)
+{
+	errf_t *err, *err_pinfo, *err_query, *err2;
+
+	/* Attempt 1: Try with current key_alg */
+	bunyan_log(BNY_TRACE, "attempting admin auth",
+	    "algorithm", BNY_STRING, admin_alg_name(key_alg),
+	    NULL);
+
+	err = piv_auth_admin(tk, admin_key, key_length, key_alg);
+	if (err == ERRF_OK) {
+		*used_alg = key_alg;
+		return (ERRF_OK);
+	}
+
+	/* Only retry on permission/argument errors */
+	if (!errf_caused_by(err, "PermissionError") &&
+	    !errf_caused_by(err, "ArgumentError")) {
+		*used_alg = key_alg;
+		return (err);
+	}
+
+	/* Attempt 2: Try PINFO key if using default */
+	if (admin_key == DEFAULT_ADMIN_KEY) {
+		bunyan_log(BNY_DEBUG, "admin auth failed with default key, "
+		    "trying PINFO",
+		    NULL);
+
+		err_pinfo = try_pinfo_admin_key(tk);
+		if (err_pinfo == ERRF_OK) {
+			/* Key updated, retry authentication */
+			err2 = piv_auth_admin(tk, admin_key, key_length, key_alg);
+			if (err2 == ERRF_OK) {
+				errf_free(err);
+				*used_alg = key_alg;
+				bunyan_log(BNY_INFO, "admin auth succeeded with PINFO key",
+				    NULL);
+				return (ERRF_OK);
+			}
+			/* PINFO auth failed too, continue to algorithm retry */
+			errf_free(err);
+			err = err2;
+		} else {
+			errf_free(err_pinfo);
+		}
+	}
+
+	/* Attempt 3: Try algorithm detection/retry (YubiKey >= 5.3.0 only) */
+	/* Skip if user explicitly specified algorithm */
+	if (user_specified_alg) {
+		bunyan_log(BNY_DEBUG, "skipping algorithm retry (user specified -A)",
+		    NULL);
+		goto diagnose;
+	}
+
+	if (!piv_token_is_ykpiv(tk) ||
+	    ykpiv_version_compare(tk, 5, 3, 0) < 0) {
+		goto diagnose;
+	}
+
+	/* Query actual algorithm */
+	enum piv_alg actual_alg;
+	boolean_t is_default;
+
+	err_query = ykpiv_admin_auth_info(tk, &actual_alg, &is_default, NULL);
+	if (err_query != ERRF_OK) {
+		errf_free(err_query);
+		goto diagnose;
+	}
+
+	/* Only retry if algorithm differs */
+	if (actual_alg == key_alg) {
+		bunyan_log(BNY_DEBUG, "algorithm matches, not retrying",
+		    "algorithm", BNY_STRING, admin_alg_name(key_alg),
+		    NULL);
+		goto diagnose;
+	}
+
+	/* Check if key length matches new algorithm */
+	size_t new_len = len_for_admin_alg(actual_alg);
+	if (new_len != key_length) {
+		bunyan_log(BNY_DEBUG, "algorithm mismatch, but key length incompatible",
+		    "current_alg", BNY_STRING, admin_alg_name(key_alg),
+		    "detected_alg", BNY_STRING, admin_alg_name(actual_alg),
+		    "current_len", BNY_UINT, (uint)key_length,
+		    "required_len", BNY_UINT, (uint)new_len,
+		    NULL);
+		goto diagnose;
+	}
+
+	/* Retry with detected algorithm */
+	bunyan_log(BNY_INFO, "retrying admin auth with detected algorithm",
+	    "attempted", BNY_STRING, admin_alg_name(key_alg),
+	    "detected", BNY_STRING, admin_alg_name(actual_alg),
+	    NULL);
+
+	err2 = piv_auth_admin(tk, admin_key, key_length, actual_alg);
+	if (err2 == ERRF_OK) {
+		errf_free(err);
+		key_alg = actual_alg;  /* Update global */
+		*used_alg = actual_alg;
+		bunyan_log(BNY_INFO, "admin auth succeeded with corrected algorithm",
+		    "algorithm", BNY_STRING, admin_alg_name(actual_alg),
+		    NULL);
+		return (ERRF_OK);
+	}
+
+	/* Algorithm retry failed too */
+	errf_free(err);
+	err = err2;
+
+diagnose:
+	/* Generate enhanced diagnostic error */
+	err = diagnose_admin_auth_failure(tk, key_alg, err);
+	*used_alg = key_alg;
+	return (err);
+}
+
+static errf_t *
 cmd_pinfo(void)
 {
 	struct piv_pinfo *pinfo;
@@ -923,16 +1108,8 @@ cmd_update_keyhist(void)
 	offcard = piv_token_keyhistory_offcard(selk);
 	url = piv_token_offcard_url(selk);
 
-admin_again:
-	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
-	if (err && (errf_caused_by(err, "PermissionError") ||
-	    errf_caused_by(err, "ArgumentError")) &&
-	    admin_key == DEFAULT_ADMIN_KEY) {
-		errf_free(err);
-		err = try_pinfo_admin_key(selk);
-		if (err == ERRF_OK)
-			goto admin_again;
-	}
+	enum piv_alg used_alg;
+	err = try_admin_auth_with_recovery(selk, &used_alg);
 	if (err == ERRF_OK) {
 		err = piv_write_keyhistory(selk, oncard, offcard, url);
 	}
@@ -1074,16 +1251,8 @@ cmd_init(void)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
-admin_again:
-	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
-	if (err && (errf_caused_by(err, "PermissionError") ||
-	    errf_caused_by(err, "ArgumentError")) &&
-	    admin_key == DEFAULT_ADMIN_KEY) {
-		errf_free(err);
-		err = try_pinfo_admin_key(selk);
-		if (err == ERRF_OK)
-			goto admin_again;
-	}
+	enum piv_alg used_alg;
+	err = try_admin_auth_with_recovery(selk, &used_alg);
 	if (err == ERRF_OK) {
 		err = piv_write_cardcap(selk, cardcap);
 	}
@@ -1129,16 +1298,8 @@ cmd_set_admin(uint8_t *new_admin_key, size_t len)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
-admin_again:
-	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
-	if (err && (errf_caused_by(err, "PermissionError") ||
-	    errf_caused_by(err, "ArgumentError")) &&
-	    admin_key == DEFAULT_ADMIN_KEY) {
-		errf_free(err);
-		err = try_pinfo_admin_key(selk);
-		if (err == ERRF_OK)
-			goto admin_again;
-	}
+	enum piv_alg used_alg;
+	err = try_admin_auth_with_recovery(selk, &used_alg);
 	if (err) {
 		err = funcerrf(err, "Failed to authenticate with old admin key");
 	} else {
@@ -1491,16 +1652,8 @@ cmd_import(uint slotid)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
-admin_again:
-	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
-	if (err && (errf_caused_by(err, "PermissionError") ||
-	    errf_caused_by(err, "ArgumentError")) &&
-	    admin_key == DEFAULT_ADMIN_KEY) {
-		errf_free(err);
-		err = try_pinfo_admin_key(selk);
-		if (err == ERRF_OK)
-			goto admin_again;
-	}
+	enum piv_alg used_alg;
+	err = try_admin_auth_with_recovery(selk, &used_alg);
 	if (err == ERRF_OK) {
 		err = ykpiv_import(selk, slotid, priv, pinpolicy, touchpolicy);
 	}
@@ -1556,16 +1709,8 @@ cmd_generate(uint slotid, enum piv_alg alg)
 	if ((err = piv_txn_begin(selk)))
 		return (err);
 	assert_select(selk);
-admin_again:
-	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
-	if (err && (errf_caused_by(err, "PermissionError") ||
-	    errf_caused_by(err, "ArgumentError")) &&
-	    admin_key == DEFAULT_ADMIN_KEY) {
-		errf_free(err);
-		err = try_pinfo_admin_key(selk);
-		if (err == ERRF_OK)
-			goto admin_again;
-	}
+	enum piv_alg used_alg;
+	err = try_admin_auth_with_recovery(selk, &used_alg);
 	if (err == ERRF_OK) {
 		if (pinpolicy == YKPIV_PIN_DEFAULT &&
 		    touchpolicy == YKPIV_TOUCH_DEFAULT) {
@@ -1758,16 +1903,8 @@ cmd_delete_cert(uint slotid)
 	if (slot == NULL)
 		slot = piv_force_slot(selk, slotid, PIV_ALG_3DES);
 
-admin_again:
-	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
-	if (err && (errf_caused_by(err, "PermissionError") ||
-	    errf_caused_by(err, "ArgumentError")) &&
-	    admin_key == DEFAULT_ADMIN_KEY) {
-		errf_free(err);
-		err = try_pinfo_admin_key(selk);
-		if (err == ERRF_OK)
-			goto admin_again;
-	}
+	enum piv_alg used_alg;
+	err = try_admin_auth_with_recovery(selk, &used_alg);
 
 	if (piv_token_is_ykpiv(selk) &&
 	    ykpiv_version_compare(selk, 5, 7, 0) >= 0) {
@@ -1864,16 +2001,8 @@ cmd_write_cert(uint slotid)
 	if ((err = piv_txn_begin(selk)))
 		errfx(1, err, "failed to open transaction");
 	assert_select(selk);
-admin_again:
-	err = piv_auth_admin(selk, admin_key, key_length, key_alg);
-	if (err && (errf_caused_by(err, "PermissionError") ||
-	    errf_caused_by(err, "ArgumentError")) &&
-	    admin_key == DEFAULT_ADMIN_KEY) {
-		errf_free(err);
-		err = try_pinfo_admin_key(selk);
-		if (err == ERRF_OK)
-			goto admin_again;
-	}
+	enum piv_alg used_alg;
+	err = try_admin_auth_with_recovery(selk, &used_alg);
 
 	if (err == ERRF_OK)
 		err = piv_write_cert(selk, slotid, cbuf, clen, PIV_COMP_NONE);
@@ -3031,6 +3160,7 @@ main(int argc, char *argv[])
 			if (err != ERRF_OK)
 				errfx(EXIT_BAD_ARGS, err, "failed to parse -A");
 			key_length = len_for_admin_alg(key_alg);
+			user_specified_alg = B_TRUE;
 			break;
 		case 'N':
 			err = piv_alg_from_string(optarg, &key_new_alg);
