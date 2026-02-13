@@ -3,6 +3,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/23d72dabcb3b12469f57b37170fcbc1789bd7457";
     nixpkgs-master.url = "github:NixOS/nixpkgs/b28c4999ed71543e71552ccfd0d7e68c581ba7e9";
     utils.url = "https://flakehub.com/f/numtide/flake-utils/0.1.102";
+    libssh-pivy.url = "path:./libssh-pivy";
   };
 
   outputs =
@@ -11,6 +12,7 @@
       nixpkgs,
       nixpkgs-master,
       utils,
+      libssh-pivy,
     }:
     (utils.lib.eachDefaultSystem (
       system:
@@ -23,11 +25,6 @@
           inherit system;
         };
 
-        openssh-src = pkgs.fetchurl {
-          url = "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p1.tar.gz";
-          sha256 = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
-        };
-
         # Use nixpkgs libressl with static libraries for pivy linking
         libressl = pkgs.libressl.overrideAttrs (oldAttrs: {
           cmakeFlags = (oldAttrs.cmakeFlags or [ ]) ++ [
@@ -35,45 +32,11 @@
           ];
         });
 
-        openssh = pkgs.stdenv.mkDerivation {
-          pname = "openssh-pivy";
-          version = "10.0p1";
-
-          src = openssh-src;
-
-          patches = [ ./openssh.patch ];
-
-          buildInputs = [ libressl.dev pkgs.zlib ];
-
-          configureFlags = [
-            "--disable-security-key"
-            "--disable-pkcs11"
-            "--with-ssl-dir=${libressl.dev}"
-          ];
-
-          CFLAGS = pkgs.lib.concatStringsSep " " [
-            "-I${libressl.dev}/include"
-            "-I${pkgs.zlib.dev}/include"
-            "-Wno-error"
-          ];
-
-          LDFLAGS = pkgs.lib.concatStringsSep " " [
-            "-L${libressl.out}/lib"
-            "-L${pkgs.zlib}/lib"
-          ];
-
-          dontBuild = true;
-
-          installPhase = ''
-            mkdir -p $out
-            cp -r . $out/
-          '';
-        };
-
         buildInputs = with pkgs; [
           libbsd
           libedit
           zlib
+          libssh-pivy.packages.${system}.default
         ] ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [
           pcsclite
         ];
@@ -98,10 +61,6 @@
           inherit buildInputs nativeBuildInputs;
 
           preBuild = ''
-            # Copy openssh to writable directory (Makefile needs to compile and write .o files)
-            cp -r ${openssh} openssh
-            chmod -R +w openssh
-
             # Create minimal libressl structure with pre-built library
             mkdir -p libressl/include libressl/crypto/.libs
             ln -sf ${libressl.dev}/include/* libressl/include/
@@ -117,7 +76,51 @@
             # Make libcrypto.a appear newer than configure marker
             touch .libressl.extract .libressl.patch .libressl.configure
             touch -r ${libressl.out}/lib/libcrypto.a libressl/crypto/.libs/libcrypto.a || true
+
+            # Create openssh directory with pre-built libssh-pivy
+            mkdir -p openssh/openbsd-compat
+            cp -r ${libssh-pivy.packages.${system}.default}/include/libssh-pivy/* openssh/
+            cp ${libssh-pivy.packages.${system}.default}/lib/libssh.a openssh/libssh.a
+            cp ${libssh-pivy.packages.${system}.default}/lib/libopenbsd-compat.a openssh/openbsd-compat/libopenbsd-compat.a || true
+
+            # Touch markers to skip openssh extract/patch/configure
             touch .openssh.extract .openssh.patch .openssh.configure
+
+            # Create dummy .c files that Makefile expects
+            # These won't be compiled if libssh.a is up-to-date
+            cat > openssh/dummy.c <<'DUMMY'
+            // Dummy file - libssh.a is pre-built from libssh-pivy
+            DUMMY
+
+            # Main sources from _LIBSSH_SOURCES
+            for src in sshbuf.c sshbuf-getput-basic.c sshbuf-getput-crypto.c sshbuf-misc.c \
+                       sshkey.c ssh-ed25519.c ssh-ecdsa.c ssh-rsa.c ssh-dss.c \
+                       cipher.c cipher-chachapoly.c cipher-chachapoly-libcrypto.c \
+                       digest-openssl.c atomicio.c hmac.c authfd.c misc.c match.c \
+                       ssh-sk.c log.c fatal.c xmalloc.c addrmatch.c addr.c; do
+              cp openssh/dummy.c "openssh/$src"
+            done
+
+            # _ED25519_SOURCES
+            for src in ed25519.c hash.c; do
+              cp openssh/dummy.c "openssh/$src"
+            done
+
+            # _CHAPOLY_SOURCES
+            for src in chacha.c poly1305.c; do
+              cp openssh/dummy.c "openssh/$src"
+            done
+
+            # _OBSD_COMPAT
+            for src in blowfish.c bcrypt_pbkdf.c base64.c bsd-setres_id.c vis.c \
+                       bsd-poll.c timingsafe_bcmp.c reallocarray.c recallocarray.c \
+                       explicit_bzero.c; do
+              cp openssh/dummy.c "openssh/openbsd-compat/$src"
+            done
+
+            # Make libssh.a appear MUCH newer than all source files so make doesn't rebuild it
+            # Touch it far in the future
+            touch -t 203801010000 openssh/libssh.a
           '';
 
           buildPhase = ''
@@ -175,7 +178,7 @@
         packages.default = pivy;
         packages.pivy = pivy;
         packages.libressl = libressl;
-        packages.openssh = openssh;
+        packages.libssh-pivy = libssh-pivy.packages.${system}.default;
 
         devShells.default = pkgs.mkShell {
           packages = buildInputs ++ nativeBuildInputs;
