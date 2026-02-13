@@ -23,45 +23,17 @@
           inherit system;
         };
 
-        libressl-src = pkgs.fetchurl {
-          url = "https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.0.0.tar.gz";
-          sha256 = "sha256-TYQZVfCsw9/HHQ49018oOvRhIiNQ4mhD/qlzHAJGoeQ=";
-        };
-
         openssh-src = pkgs.fetchurl {
           url = "https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p1.tar.gz";
           sha256 = "sha256-AhoucJoO30JQsSVr1anlAEEakN3avqgw7VnO+Q652Fw=";
         };
 
-        libressl = pkgs.stdenv.mkDerivation {
-          pname = "libressl-pivy";
-          version = "4.0.0";
-
-          src = libressl-src;
-
-          configureFlags = [
-            "--enable-static"
-            "--disable-asm"  # Simplify cross-compilation
+        # Use nixpkgs libressl with static libraries for pivy linking
+        libressl = pkgs.libressl.overrideAttrs (oldAttrs: {
+          cmakeFlags = (oldAttrs.cmakeFlags or [ ]) ++ [
+            "-DBUILD_SHARED_LIBS=OFF"
           ];
-
-          CFLAGS = "-fPIC -Wno-error";
-          LDFLAGS = "";
-
-          buildPhase = ''
-            cd crypto
-            make -j$NIX_BUILD_CORES
-          '';
-
-          installPhase = ''
-            mkdir -p $out/lib $out/include
-            # Copy static libraries only
-            cp .libs/libcrypto.a $out/lib/
-            cp .libs/libcompat.a $out/lib/ || true
-            cp .libs/libcompatnoopt.a $out/lib/ || true
-            # Copy headers
-            cp -r ../include/* $out/include/
-          '';
-        };
+        });
 
         openssh = pkgs.stdenv.mkDerivation {
           pname = "openssh-pivy";
@@ -71,22 +43,22 @@
 
           patches = [ ./openssh.patch ];
 
-          buildInputs = [ libressl pkgs.zlib ];
+          buildInputs = [ libressl.dev pkgs.zlib ];
 
           configureFlags = [
             "--disable-security-key"
             "--disable-pkcs11"
-            "--with-ssl-dir=${libressl}"
+            "--with-ssl-dir=${libressl.dev}"
           ];
 
           CFLAGS = pkgs.lib.concatStringsSep " " [
-            "-I${libressl}/include"
+            "-I${libressl.dev}/include"
             "-I${pkgs.zlib.dev}/include"
             "-Wno-error"
           ];
 
           LDFLAGS = pkgs.lib.concatStringsSep " " [
-            "-L${libressl}/lib"
+            "-L${libressl.out}/lib"
             "-L${pkgs.zlib}/lib"
           ];
 
@@ -132,8 +104,8 @@
 
             # Create minimal libressl structure with pre-built library
             mkdir -p libressl/include libressl/crypto/.libs
-            ln -sf ${libressl}/include/* libressl/include/
-            ln -sf ${libressl}/lib/libcrypto.a libressl/crypto/.libs/libcrypto.a
+            ln -sf ${libressl.dev}/include/* libressl/include/
+            ln -sf ${libressl.out}/lib/libcrypto.a libressl/crypto/.libs/libcrypto.a
 
             # Create a no-op Makefile in libressl/crypto
             cat > libressl/crypto/Makefile <<'EOF'
@@ -144,15 +116,15 @@
             # Touch markers to skip extract/patch/configure steps
             # Make libcrypto.a appear newer than configure marker
             touch .libressl.extract .libressl.patch .libressl.configure
-            touch -r ${libressl}/lib/libcrypto.a libressl/crypto/.libs/libcrypto.a || true
+            touch -r ${libressl.out}/lib/libcrypto.a libressl/crypto/.libs/libcrypto.a || true
             touch .openssh.extract .openssh.patch .openssh.configure
           '';
 
           buildPhase = ''
             runHook preBuild
             make -j$NIX_BUILD_CORES \
-              LIBRESSL_INC=${libressl}/include \
-              LIBRESSL_LIB=${libressl}/lib \
+              LIBRESSL_INC=${libressl.dev}/include \
+              LIBRESSL_LIB=${libressl.out}/lib \
               ZLIB_LIB=${pkgs.zlib}/lib \
               ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
                 SYSTEM_CFLAGS="-arch ${pkgs.stdenv.hostPlatform.darwinArch}" \
