@@ -7283,6 +7283,7 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 	uint8_t *sec = NULL;
 	size_t seclen;
 	boolean_t found = B_FALSE;
+	boolean_t prerfc = B_FALSE;
 
 	pubkey = piv_box_pubkey(box);
 
@@ -7311,6 +7312,7 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 		goto out;
 	}
 
+queryagain:
 	if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
 		err = ssherrf("sshbuf_put_u8", rc);
 		goto out;
@@ -7319,7 +7321,7 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 		err = ssherrf("sshbuf_put_cstring", rc);
 		goto out;
 	}
-	if ((rc = sshbuf_put_u32(req, 0))) {
+	if (prerfc && (rc = sshbuf_put_u32(req, 0))) {
 		err = ssherrf("sshbuf_put_u32", rc);
 		goto out;
 	}
@@ -7333,31 +7335,59 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 		err = ssherrf("sshbuf_get_u8", rc);
 		goto out;
 	}
-	if (code != SSH_AGENT_SUCCESS) {
+	switch (code) {
+	case SSH_AGENT_SUCCESS:
+		prerfc = B_TRUE;
+		if ((rc = sshbuf_get_u32(reply, &nexts))) {
+			err = ssherrf("sshbuf_get_u32", rc);
+			goto out;
+		}
+		break;
+	case SSH_AGENT_EXT_RESPONSE:
+		break;
+	default:
+		/*
+		 * Try adding the extra (uint32)0 after the extension name
+		 * to satisfy a very old pre-RFC agent.
+		 */
+		if (!prerfc) {
+			prerfc = B_TRUE;
+			sshbuf_reset(req);
+			sshbuf_reset(reply);
+			goto queryagain;
+		}
 		err = errf("NotSupportedError", NULL, "SSH agent does not "
 		    "support 'query' extension (returned code %d)", (int)code);
 		goto out;
 	}
-	if ((rc = sshbuf_get_u32(reply, &nexts))) {
-		err = ssherrf("sshbuf_get_u32", rc);
-		goto out;
-	}
-	for (i = 0; i < nexts; ++i) {
+	while (sshbuf_len(reply)) {
 		if ((rc = sshbuf_get_cstring(reply, &extname, &len))) {
 			err = ssherrf("sshbuf_get_cstring", rc);
 			goto out;
 		}
-		if (strcmp("ecdh-rebox@joyent.com", extname) == 0)
+		if (strcmp("ecdh-rebox@joyent.com", extname) == 0) {
+			prerfc = B_TRUE;
 			has_rebox = 1;
-		else if (strcmp("ecdh@joyent.com", extname) == 0)
+		} else if (strcmp("ecdh-rebox@arekinath.github.io", extname) == 0) {
+			prerfc = B_FALSE;
+			has_rebox = 1;
+		} else if (strcmp("ecdh@joyent.com", extname) == 0) {
+			prerfc = B_TRUE;
 			has_ecdh = 1;
+		} else if (strcmp("ecdh@arekinath.github.io", extname) == 0) {
+			prerfc = B_FALSE;
+			has_ecdh = 1;
+		}
 		free(extname);
 		extname = NULL;
 	}
 
 	sshbuf_reset(req);
 	sshbuf_reset(reply);
-	buf = sshbuf_new();
+	if (prerfc)
+		buf = sshbuf_new();
+	else
+		buf = req;
 	boxbuf = sshbuf_new();
 	if (buf == NULL || boxbuf == NULL) {
 		err = ERRF_NOMEM;
@@ -7379,7 +7409,9 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 			err = ssherrf("sshbuf_put_u8", rc);
 			goto out;
 		}
-		if ((rc = sshbuf_put_cstring(req, "ecdh-rebox@joyent.com"))) {
+		if ((rc = sshbuf_put_cstring(req,
+		    prerfc ? "ecdh-rebox@joyent.com" :
+		    "ecdh-rebox@arekinath.github.io"))) {
 			err = ssherrf("sshbuf_put_cstring", rc);
 			goto out;
 		}
@@ -7409,7 +7441,7 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 			goto out;
 		}
 
-		if ((rc = sshbuf_put_stringb(req, buf))) {
+		if (prerfc && (rc = sshbuf_put_stringb(req, buf))) {
 			err = ssherrf("sshbuf_put_stringb", rc);
 			goto out;
 		}
@@ -7424,7 +7456,25 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 			err = ssherrf("sshbuf_get_u8", rc);
 			goto out;
 		}
-		if (code != SSH_AGENT_SUCCESS) {
+		switch (code) {
+		case SSH_AGENT_SUCCESS:
+			break;
+		case SSH_AGENT_EXT_RESPONSE:
+			if ((rc = sshbuf_get_cstring(reply, &extname, &len))) {
+				err = ssherrf("sshbuf_get_cstring", rc);
+				goto out;
+			}
+			if (strcmp(extname,
+			    "ecdh-rebox@arekinath.github.io") != 0) {
+				err = errf("AgentProtocolError", NULL,
+				    "agent sent an ext response with bad "
+				    "extension name: %s", extname);
+				goto out;
+			}
+			free(extname);
+			extname = NULL;
+			break;
+		default:
 			err = errf("SSHAgentError", NULL, "SSH agent returned "
 			    "message code %d to rebox request", (int)code);
 			goto out;
@@ -7452,6 +7502,15 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 	}
 
 	if (has_ecdh) {
+		if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
+			err = ssherrf("sshbuf_put_u8", rc);
+			goto out;
+		}
+		if ((rc = sshbuf_put_cstring(req, "ecdh@joyent.com"))) {
+			err = ssherrf("sshbuf_put_cstring", rc);
+			goto out;
+		}
+
 		if ((rc = sshkey_putb(pubkey, boxbuf))) {
 			err = ssherrf("sshkey_putb", rc);
 			goto out;
@@ -7474,15 +7533,7 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 			goto out;
 		}
 
-		if ((rc = sshbuf_put_u8(req, SSH_AGENTC_EXTENSION))) {
-			err = ssherrf("sshbuf_put_u8", rc);
-			goto out;
-		}
-		if ((rc = sshbuf_put_cstring(req, "ecdh@joyent.com"))) {
-			err = ssherrf("sshbuf_put_cstring", rc);
-			goto out;
-		}
-		if ((rc = sshbuf_put_stringb(req, buf))) {
+		if (prerfc && (rc = sshbuf_put_stringb(req, buf))) {
 			err = ssherrf("sshbuf_put_stringb", rc);
 			goto out;
 		}
@@ -7497,7 +7548,24 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 			err = ssherrf("sshbuf_get_u8", rc);
 			goto out;
 		}
-		if (code != SSH_AGENT_SUCCESS) {
+		switch (code) {
+		case SSH_AGENT_SUCCESS:
+			break;
+		case SSH_AGENT_EXT_RESPONSE:
+			if ((rc = sshbuf_get_cstring(reply, &extname, &len))) {
+				err = ssherrf("sshbuf_get_cstring", rc);
+				goto out;
+			}
+			if (strcmp(extname, "ecdh@arekinath.github.io") != 0) {
+				err = errf("AgentProtocolError", NULL,
+				    "agent sent an ext response with bad "
+				    "extension name: %s", extname);
+				goto out;
+			}
+			free(extname);
+			extname = NULL;
+			break;
+		default:
 			err = errf("SSHAgentError", NULL, "SSH agent returned "
 			    "message code %d to ECDH request", (int)code);
 			goto out;
@@ -7517,7 +7585,8 @@ piv_box_open_agent(int fd, struct piv_ecdh_box *box)
 out:
 	sshbuf_free(req);
 	sshbuf_free(reply);
-	sshbuf_free(buf);
+	if (buf != req)
+		sshbuf_free(buf);
 	sshbuf_free(boxbuf);
 	sshbuf_free(datab);
 

@@ -234,6 +234,45 @@ typedef enum sessbind {
 	SESSBIND_FWD
 } sessbind_t;
 
+/* extension compatiblity mode */
+typedef enum extcompat {
+	/* Not sure yet (for a client) */
+	EXTCOMPAT_UNKNOWN	= 0,
+	/*
+	 * Client or extension expects pre-RFC semantics
+	 * (draft-miller-ssh-agent-00 to -11 etc)
+	 *
+	 * SSH_AGENTC_EXTENSION has a string inner blob, and SSH_AGENT_SUCCESS
+	 * messages are overloaded with additional fields for extension replies.
+	 */
+	EXTCOMPAT_DRAFT_00	= (1 << 0),
+
+	/*
+	 * Client or extension expects pre-RFC semantics from the
+	 * late draft-miller-ssh-agent era.
+	 *
+	 * SSH_AGENTC_EXTENSION can have additional data directly in the
+	 * message, but SSH_AGENT_SUCCESS messages are still overloaded with
+	 * additional fields.
+	 */
+	EXTCOMPAT_DRAFT_13	= (1 << 1),
+
+	EXTCOMPAT_DRAFT		= EXTCOMPAT_DRAFT_00 | EXTCOMPAT_DRAFT_13,
+
+	/*
+	 * Client or extension expects the RFC9987 semantics for extensions.
+	 *
+	 * SSH_AGENTC_EXTENSION has additional data directly in the
+	 * message, SSH_AGENT_SUCCESS messages cannot have additional data, and
+	 * extensions must use SSH_AGENT_EXTENSION_RESPONSE or
+	 * SSH_AGENT_EXTENSION_FAILURE, and include the extension name.
+	 */
+	EXTCOMPAT_RFC9987	= (1 << 2),
+
+	EXTCOMPAT_ALL		= EXTCOMPAT_DRAFT_00 | EXTCOMPAT_DRAFT_13 |
+				  EXTCOMPAT_RFC9987,
+} extcompat_t;
+
 typedef struct pid_entry {
 	boolean_t	pe_valid;
 	uint64_t	pe_time;
@@ -258,6 +297,7 @@ typedef struct socket_entry {
 	pid_entry_t	*se_pid_ent;
 	uint		 se_pid_idx;
 	sessbind_t	 se_sbind;
+	extcompat_t	 se_extcompat;
 #if defined(__sun)
 	zoneid_t	 se_zid;
 	char		 se_zname[128];
@@ -1505,15 +1545,34 @@ process_remove_all_identities(socket_entry_t *e)
 	return (NULL);
 }
 
-struct exthandler {
+typedef struct exthandler {
 	const char *eh_name;
-	boolean_t eh_string;
-	errf_t *(*eh_handler)(socket_entry_t *, struct sshbuf *);
-};
-struct exthandler exthandlers[];
+	extcompat_t eh_compat;
+	errf_t *(*eh_handler)(struct exthandler *, socket_entry_t *, struct sshbuf *);
+} exthandler_t;
+exthandler_t exthandlers[];
+
+/*
+ * Helper for extension handlers that places either an SSH_AGENT_SUCCESS
+ * byte or SSH_AGENT_EXT_RESPONSE + extension name into an sshbuf, depending
+ * on the compatibility mode of the extension and the client.
+ */
+static inline void
+ext_begin_response(exthandler_t *x, socket_entry_t *e, struct sshbuf *msg)
+{
+	int r;
+	if ((x->eh_compat & e->se_extcompat) & EXTCOMPAT_RFC9987) {
+		if ((r = sshbuf_put_u8(msg, SSH_AGENT_EXT_RESPONSE)) != 0 ||
+		    (r = sshbuf_put_cstring(msg, x->eh_name)) != 0)
+			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	} else {
+		if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)))
+			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	}
+}
 
 static errf_t *
-process_ext_ecdh(socket_entry_t *e, struct sshbuf *buf)
+process_ext_ecdh(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err;
@@ -1612,8 +1671,8 @@ pin_again:
 	    "partner_pk", BNY_SSHKEY, partner,
 	    NULL);
 
-	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
-	    (r = sshbuf_put_string(msg, secret, seclen)) != 0)
+	ext_begin_response(x, e, msg);
+	if ((r = sshbuf_put_string(msg, secret, seclen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	explicit_bzero(secret, seclen);
 	free(secret);
@@ -1629,7 +1688,7 @@ out:
 }
 
 static errf_t *
-process_ext_rebox(socket_entry_t *e, struct sshbuf *buf)
+process_ext_rebox(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err;
@@ -1758,8 +1817,8 @@ pin_again:
 
 	VERIFY0(piv_box_to_binary(newbox, &out, &outlen));
 
-	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
-	    (r = sshbuf_put_string(msg, out, outlen)) != 0)
+	ext_begin_response(x, e, msg);
+	if ((r = sshbuf_put_string(msg, out, outlen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
@@ -1784,7 +1843,7 @@ out:
 }
 
 static errf_t *
-process_ext_x509_certs(socket_entry_t *e, struct sshbuf *buf)
+process_ext_x509_certs(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 {
 	int rc;
 	struct sshbuf *msg;
@@ -1834,8 +1893,8 @@ process_ext_x509_certs(socket_entry_t *e, struct sshbuf *buf)
 	}
 	clen = rc;
 
-	if ((rc = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
-	    (rc = sshbuf_put_string(msg, cbuf, clen)) != 0)
+	ext_begin_response(x, e, msg);
+	if ((rc = sshbuf_put_string(msg, cbuf, clen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(rc));
 
 	if ((rc = sshbuf_put_stringb(e->se_output, msg)) != 0)
@@ -1849,7 +1908,7 @@ out:
 }
 
 static errf_t *
-process_ext_prehash(socket_entry_t *e, struct sshbuf *inbuf)
+process_ext_prehash(exthandler_t *x, socket_entry_t *e, struct sshbuf *inbuf)
 {
 	const u_char *data;
 	u_char *signature = NULL;
@@ -1941,8 +2000,8 @@ pin_again:
 	}
 	agent_piv_close(B_FALSE);
 
-	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
-	    (r = sshbuf_put_string(msg, rawsig, rslen)) != 0)
+	ext_begin_response(x, e, msg);
+	if ((r = sshbuf_put_string(msg, rawsig, rslen)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 	if ((r = sshbuf_put_stringb(e->se_output, msg)) != 0)
@@ -1958,7 +2017,7 @@ out:
 }
 
 static errf_t *
-process_ext_sessbind(socket_entry_t *e, struct sshbuf *buf)
+process_ext_sessbind(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err = ERRF_OK;
@@ -2006,7 +2065,7 @@ out:
 }
 
 static errf_t *
-process_ext_attest(socket_entry_t *e, struct sshbuf *buf)
+process_ext_attest(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 {
 	int r;
 	errf_t *err;
@@ -2074,8 +2133,8 @@ process_ext_attest(socket_entry_t *e, struct sshbuf *buf)
 	len = tlv_rem(tlv);
 	tlv_skip(tlv);
 
-	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
-	    (r = sshbuf_put_u32(msg, 2)) != 0)
+	ext_begin_response(x, e, msg);
+	if ((r = sshbuf_put_u32(msg, 2)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 
 	if ((r = sshbuf_put_string(msg, cert, certlen)) != 0 ||
@@ -2096,22 +2155,67 @@ out:
 }
 
 static errf_t *
-process_ext_query(socket_entry_t *e, struct sshbuf *buf)
+process_ext_query(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 {
-	int r, n = 0;
+	int r;
 	struct exthandler *h;
 	struct sshbuf *msg;
+	uint32_t flags;
+
+	if (sshbuf_len(buf)) {
+		/*
+		 * Old versions of pivy and sshpk-agent implemented the pre-RFC
+		 * version of the extension mechanism, which overloaded
+		 * SSH_AGENT_SUCCESS and also included an extra 32-bit zero
+		 * after the name of the query extension. We can use the extra
+		 * zero word here to sniff that this is a pre-RFC client and
+		 * then provide it the kind of responses it expects.
+		 */
+		if ((r = sshbuf_get_u32(buf, &flags)) != 0)
+			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+		if (flags == 0 && sshbuf_len(buf) == 0)
+			e->se_extcompat = EXTCOMPAT_DRAFT;
+		bunyan_log(BNY_INFO, "client is using pre-RFC9987 agent "
+		    "extensions", NULL);
+	} else {
+		/*
+		 * Otherwise we now know this client can deal with modern
+		 * RFC9987 extension replies.
+		 */
+		e->se_extcompat = EXTCOMPAT_RFC9987;
+	}
 
 	if ((msg = sshbuf_new()) == NULL)
 		fatal("%s: sshbuf_new failed", __func__);
 
-	for (h = exthandlers; h->eh_name != NULL; ++h)
-		++n;
+	if ((x->eh_compat & e->se_extcompat) & EXTCOMPAT_RFC9987) {
+		if ((r = sshbuf_put_u8(msg, SSH_AGENT_EXT_RESPONSE)) != 0 ||
+		    (r = sshbuf_put_cstring(msg, x->eh_name)) != 0)
+			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	} else {
+		/*
+		 * Old versions of pivy (and sshpk-agent) also expect there
+		 * to be a count of the number of extensions included before
+		 * the names.
+		 */
+		uint count = 0;
+		for (h = exthandlers; h->eh_name != NULL; ++h) {
+			if (strcmp(h->eh_name, "query") == 0)
+				continue;
+			if ((h->eh_compat & e->se_extcompat) == 0)
+				continue;
+			++count;
+		}
 
-	if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) != 0 ||
-	    (r = sshbuf_put_u32(msg, n)) != 0)
-		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+		if ((r = sshbuf_put_u8(msg, SSH_AGENT_SUCCESS)) ||
+		    (r = sshbuf_put_u32(msg, count)))
+			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+	}
 	for (h = exthandlers; h->eh_name != NULL; ++h) {
+		if (strcmp(h->eh_name, "query") == 0)
+			continue;
+		if ((h->eh_compat & e->se_extcompat) == 0)
+			continue;
 		if ((r = sshbuf_put_cstring(msg, h->eh_name)) != 0)
 			fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	}
@@ -2124,14 +2228,19 @@ process_ext_query(socket_entry_t *e, struct sshbuf *buf)
 }
 
 struct exthandler exthandlers[] = {
-{ "query", 				B_FALSE,	process_ext_query },
-{ "ecdh@joyent.com", 			B_TRUE,		process_ext_ecdh },
-{ "ecdh-rebox@joyent.com", 		B_TRUE,		process_ext_rebox },
-{ "x509-certs@joyent.com", 		B_FALSE,	process_ext_x509_certs },
-{ "ykpiv-attest@joyent.com", 		B_TRUE,		process_ext_attest },
-{ "session-bind@openssh.com", 		B_FALSE,	process_ext_sessbind },
-{ "sign-prehash@arekinath.github.io",	B_FALSE,	process_ext_prehash },
-{ NULL, B_FALSE, NULL }
+{ "query", 				EXTCOMPAT_ALL,		process_ext_query },
+{ "session-bind@openssh.com", 		EXTCOMPAT_RFC9987,	process_ext_sessbind },
+{ "ecdh@joyent.com",			EXTCOMPAT_DRAFT_00,	process_ext_ecdh },
+{ "ecdh@arekinath.github.io",		EXTCOMPAT_RFC9987,	process_ext_ecdh },
+{ "ecdh-rebox@joyent.com", 		EXTCOMPAT_DRAFT_00,	process_ext_rebox },
+{ "ecdh-rebox@arekinath.github.io",	EXTCOMPAT_RFC9987,	process_ext_rebox },
+{ "ykpiv-attest@joyent.com", 		EXTCOMPAT_DRAFT_00,	process_ext_attest },
+{ "ykpiv-attest@arekinath.github.io",	EXTCOMPAT_RFC9987,	process_ext_attest },
+{ "x509-certs@joyent.com",		EXTCOMPAT_DRAFT_13,	process_ext_x509_certs },
+{ "x509-certs@arekinath.github.io",	EXTCOMPAT_RFC9987,	process_ext_x509_certs },
+{ "sign-prehash@arekinath.github.io",	EXTCOMPAT_DRAFT_13,	process_ext_prehash },
+{ "sign-prehash-v2@arekinath.github.io",EXTCOMPAT_RFC9987,	process_ext_prehash },
+{ NULL, EXTCOMPAT_UNKNOWN, NULL }
 };
 
 static errf_t *
@@ -2142,13 +2251,16 @@ process_extension(socket_entry_t *e)
 	char *extname = NULL;
 	size_t enlen;
 	struct sshbuf *inner = NULL;
-	struct exthandler *h, *hdlr = NULL;
+	exthandler_t *h, *hdlr = NULL;
 
 	if ((r = sshbuf_get_cstring(e->se_request, &extname, &enlen)))
 		return (parserrf("sshbuf_get_cstring", r));
 	VERIFY(extname != NULL);
 
 	for (h = exthandlers; h->eh_name != NULL; ++h) {
+		if ((h->eh_compat & e->se_extcompat) == 0 &&
+		    e->se_extcompat != EXTCOMPAT_UNKNOWN)
+			continue;
 		if (strcmp(h->eh_name, extname) == 0) {
 			hdlr = h;
 			break;
@@ -2163,7 +2275,13 @@ process_extension(socket_entry_t *e)
 	bunyan_add_vars(msg_log_frame,
 	    "extension", BNY_STRING, h->eh_name, NULL);
 
-	if (h->eh_string) {
+	/*
+	 * On draft-00 extensions, there was an inner string on the request
+	 * containing the extension-specific data. Unpack it here and give that
+	 * to the extension handler. Otherwise, we give it the request buffer
+	 * itself (after we've removed the request number and extension name).
+	 */
+	if ((e->se_extcompat & h->eh_compat) == EXTCOMPAT_DRAFT_00) {
 		if ((r = sshbuf_froms(e->se_request, &inner))) {
 			err = parserrf("sshbuf_froms", r);
 			goto out;
@@ -2173,7 +2291,7 @@ process_extension(socket_entry_t *e)
 	}
 	VERIFY(inner != NULL);
 
-	err = hdlr->eh_handler(e, inner);
+	err = hdlr->eh_handler(hdlr, e, inner);
 
 	if (err) {
 		send_extfail(e);
@@ -2188,7 +2306,7 @@ process_extension(socket_entry_t *e)
 	}
 
 out:
-	if (h->eh_string)
+	if ((e->se_extcompat & h->eh_compat) == EXTCOMPAT_DRAFT_00)
 		sshbuf_free(inner);
 	free(extname);
 	return (err);
