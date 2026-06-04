@@ -2276,6 +2276,21 @@ process_extension(socket_entry_t *e)
 	    "extension", BNY_STRING, h->eh_name, NULL);
 
 	/*
+	 * If we haven't identified what extension compat mode we need for this
+	 * client yet, but they request an extension that's only compatible with
+	 * specific versions (e.g. the old ecdh@joyent.com name for pre-RFC
+	 * ECDH) we can assume they want those semantics.
+	 */
+	if (e->se_extcompat == EXTCOMPAT_UNKNOWN &&
+	    h->eh_compat != EXTCOMPAT_ALL) {
+		e->se_extcompat = h->eh_compat;
+		if ((e->se_extcompat & EXTCOMPAT_RFC9987) == 0) {
+			bunyan_log(BNY_INFO, "client is using pre-RFC9987 "
+			    "agent extensions", NULL);
+		}
+	}
+
+	/*
 	 * On draft-00 extensions, there was an inner string on the request
 	 * containing the extension-specific data. Unpack it here and give that
 	 * to the extension handler. Otherwise, we give it the request buffer
