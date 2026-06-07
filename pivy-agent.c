@@ -2041,6 +2041,16 @@ process_ext_sessbind(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 
 	if (e->se_sbind == SESSBIND_NONE) {
 		e->se_sbind = new_sbind;
+
+		/*
+		 * Once a connection starts being used for forwarded traffic,
+		 * the actual client on the other side may change. We should
+		 * forget what we previously learnt about the client's
+		 * extension compat level as a result.
+		 */
+		if (is_forwarding)
+			e->se_extcompat = EXTCOMPAT_UNKNOWN;
+
 		bunyan_log(BNY_INFO, "session-bind marking connection",
 		    "sbind_state", BNY_STRING, (is_forwarding == 0) ? "auth" :
 		    "forwarding", NULL);
@@ -2229,7 +2239,7 @@ process_ext_query(exthandler_t *x, socket_entry_t *e, struct sshbuf *buf)
 
 struct exthandler exthandlers[] = {
 { "query", 				EXTCOMPAT_ALL,		process_ext_query },
-{ "session-bind@openssh.com", 		EXTCOMPAT_RFC9987,	process_ext_sessbind },
+{ "session-bind@openssh.com", 		EXTCOMPAT_ALL,		process_ext_sessbind },
 { "ecdh@joyent.com",			EXTCOMPAT_DRAFT_00,	process_ext_ecdh },
 { "ecdh@arekinath.github.io",		EXTCOMPAT_RFC9987,	process_ext_ecdh },
 { "ecdh-rebox@joyent.com", 		EXTCOMPAT_DRAFT_00,	process_ext_rebox },
@@ -2252,6 +2262,7 @@ process_extension(socket_entry_t *e)
 	size_t enlen;
 	struct sshbuf *inner = NULL;
 	exthandler_t *h, *hdlr = NULL;
+	int free_inner = 0;
 
 	if ((r = sshbuf_get_cstring(e->se_request, &extname, &enlen)))
 		return (parserrf("sshbuf_get_cstring", r));
@@ -2296,11 +2307,13 @@ process_extension(socket_entry_t *e)
 	 * to the extension handler. Otherwise, we give it the request buffer
 	 * itself (after we've removed the request number and extension name).
 	 */
-	if ((e->se_extcompat & h->eh_compat) == EXTCOMPAT_DRAFT_00) {
+	if ((e->se_extcompat & h->eh_compat) == EXTCOMPAT_DRAFT_00 &&
+	    h->eh_compat != EXTCOMPAT_ALL) {
 		if ((r = sshbuf_froms(e->se_request, &inner))) {
 			err = parserrf("sshbuf_froms", r);
 			goto out;
 		}
+		free_inner = 1;
 	} else {
 		inner = e->se_request;
 	}
@@ -2321,7 +2334,7 @@ process_extension(socket_entry_t *e)
 	}
 
 out:
-	if ((e->se_extcompat & h->eh_compat) == EXTCOMPAT_DRAFT_00)
+	if (free_inner)
 		sshbuf_free(inner);
 	free(extname);
 	return (err);
