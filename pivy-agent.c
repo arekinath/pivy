@@ -886,7 +886,7 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 
 	if (confirm_mode == C_FORWARDED) {
 		const char *ssh = NULL;
-		const size_t len = strlen(e->se_exepath);
+		size_t len;
 		const uint64_t now = monotime();
 		const int64_t delta = now - e->se_pid_ent->pe_last_auth;
 		/*
@@ -903,7 +903,8 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 		 * first connection that "ssh" process has made, assume it's
 		 * the auth socket.
 		 */
-		if (e->se_sbind == SESSBIND_NONE) {
+		if (e->se_sbind == SESSBIND_NONE && e->se_exepath) {
+			len = strlen(e->se_exepath);
 			if (len >= 4)
 				ssh = &e->se_exepath[len - 4];
 			if (ssh != NULL && strcmp(ssh, "/ssh") != 0)
@@ -911,6 +912,32 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 			if (len == 3 && strcmp(e->se_exepath, "ssh") == 0)
 				ssh = e->se_exepath;
 			if (e->se_pid_idx == 0 || ssh == NULL) {
+				e->se_authz = AUTHZ_ALLOWED;
+				return;
+			}
+		} else if (e->se_sbind == SESSBIND_NONE && e->se_exeargs) {
+			/*
+			 * If we don't have access to exepath (e.g. the client
+			 * is running with a different euid to us on Linux),
+			 * but we can see exeargs, use that. It's not perfect
+			 * but it catches most cases.
+			 */
+			len = strlen(e->se_exeargs);
+			ssh = strpbrk(e->se_exeargs, " \t\n");
+			if (ssh != NULL) {
+				if (ssh >= e->se_exeargs + 3)
+					ssh -= 3;
+				if (ssh > e->se_exeargs)
+					--ssh;
+			}
+			if (strncmp(ssh, "ssh", 3) != 0 &&
+			    strncmp(ssh, "/ssh", 4) != 0)
+				ssh = NULL;
+			bunyan_log(BNY_INFO, "classifying process",
+			    "is_ssh", BNY_STRING, ssh ? "yes" : "no",
+			    "exeargs", BNY_STRING, e->se_exeargs,
+			    NULL);
+			if (ssh == NULL || e->se_pid_idx == 0) {
 				e->se_authz = AUTHZ_ALLOWED;
 				return;
 			}
@@ -2745,6 +2772,7 @@ check_socket_access(int fd, socket_entry_t *ent)
 	uid_t euid;
 	struct ucred *peer;
 	socklen_t len;
+	ssize_t wrote;
 	char fn[128], ln[1024];
 
 	peer = calloc(1, sizeof (struct ucred));
@@ -2758,10 +2786,23 @@ check_socket_access(int fd, socket_entry_t *ent)
 	ent->se_gid = peer->gid;
 	ent->se_pid = peer->pid;
 	free(peer);
+
+	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
+		error("uid mismatch: peer euid %u not on allow list",
+		    (u_int) euid);
+		return (0);
+	}
+
 	snprintf(fn, sizeof (fn), "/proc/%d/exe", (int)ent->se_pid);
-	len = readlink(fn, ln, sizeof (ln));
-	if (len > 0 && len < sizeof (ln)) {
-		ent->se_exepath = strndup(ln, len);
+	wrote = readlink(fn, ln, sizeof (ln));
+	if (wrote < 0) {
+		bunyan_log(BNY_WARN, "readlink failed on client exepath",
+		    "path", BNY_STRING, fn,
+		    "errno", BNY_INT, errno,
+		    "err", BNY_STRING, strerror(errno),
+		    NULL);
+	} else {
+		ent->se_exepath = strndup(ln, wrote);
 	}
 	snprintf(fn, sizeof (fn), "/proc/%d/cmdline", (int)ent->se_pid);
 	f = fopen(fn, "r");
@@ -2773,12 +2814,6 @@ check_socket_access(int fd, socket_entry_t *ent)
 				ln[i] = ' ';
 		}
 		ent->se_exeargs = strndup(ln, len);
-	}
-
-	if (!allow_any_uid && (euid != 0) && !check_uid(euid)) {
-		error("uid mismatch: peer euid %u not on allow list",
-		    (u_int) euid);
-		return (0);
 	}
 
 	return (1);
