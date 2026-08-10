@@ -933,10 +933,6 @@ try_confirm_client(socket_entry_t *e, enum piv_slotid slotid)
 			if (strncmp(ssh, "ssh", 3) != 0 &&
 			    strncmp(ssh, "/ssh", 4) != 0)
 				ssh = NULL;
-			bunyan_log(BNY_INFO, "classifying process",
-			    "is_ssh", BNY_STRING, ssh ? "yes" : "no",
-			    "exeargs", BNY_STRING, e->se_exeargs,
-			    NULL);
 			if (ssh == NULL || e->se_pid_idx == 0) {
 				e->se_authz = AUTHZ_ALLOWED;
 				return;
